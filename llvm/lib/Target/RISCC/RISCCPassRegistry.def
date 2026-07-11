@@ -1,0 +1,8 @@
+// Intentionally no include guard: consumed by TargetPassRegistry.inc.
+#ifndef MACHINE_FUNCTION_PASS
+#define MACHINE_FUNCTION_PASS(NAME, CREATE_PASS)
+#endif
+MACHINE_FUNCTION_PASS("riscc-isel",
+                      RISCCISelDAGToDAGPass(*this, getOptLevel()))
+MACHINE_FUNCTION_PASS("riscc-branch-select", RISCCBranchSelectorPass())
+#undef MACHINE_FUNCTION_PASS

@@ -630,6 +630,8 @@ const char *tools::getLDMOption(const llvm::Triple &T, const ArgList &Args) {
     return "elf32briscv";
   case llvm::Triple::riscv64be:
     return "elf64briscv";
+  case llvm::Triple::riscc:
+    return "elf32lriscc";
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel:
     return "elf32_sparc";
@@ -798,6 +800,11 @@ std::string tools::getCPUName(const Driver &D, const ArgList &Args,
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
     return riscv::getRISCVTargetCPU(Args, T);
+
+  case llvm::Triple::riscc:
+    if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
+      return A->getValue();
+    return "full";
 
   case llvm::Triple::bpfel:
   case llvm::Triple::bpfeb:

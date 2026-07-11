@@ -1,0 +1,86 @@
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: yaml2obj input.yaml -o input.o
+# RUN: ld.lld -m elf32lriscc -T layout.ld input.o -o output
+# RUN: llvm-readobj --file-headers output | FileCheck %s --check-prefix=HEADER
+# RUN: llvm-objdump --full-contents --section=.text output | FileCheck %s --check-prefix=CONTENTS
+
+# HEADER:      Class: 32-bit (0x1)
+# HEADER:      DataEncoding: LittleEndian
+# HEADER:      Machine: EM_RISCC (0xC8C8)
+# HEADER:      EF_RISCC_ABI_V1 (0x1)
+# HEADER:      EF_RISCC_PROFILE_FULL (0x10)
+
+# CONTENTS:      Contents of section .text:
+# CONTENTS-NEXT: 0000 34340034 00340000 00800080 00007800
+
+#--- input.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 00000000000000000000000000000000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: data
+        Type:   R_RISCC_ABS8
+      - Offset: 0x1
+        Symbol: data
+        Type:   R_RISCC_LO8
+      - Offset: 0x2
+        Symbol: data
+        Type:   R_RISCC_HI8
+      - Offset: 0x3
+        Symbol: data
+        Type:   R_RISCC_ABS16
+      - Offset: 0x5
+        Symbol: data
+        Type:   R_RISCC_ABS32
+      - Offset: 0x9
+        Symbol: func
+        Type:   R_RISCC_CODE_LO8
+      - Offset: 0xa
+        Symbol: func
+        Type:   R_RISCC_CODE_HI8
+      - Offset: 0xb
+        Symbol: func
+        Type:   R_RISCC_CODE16
+      - Offset: 0xe
+        Symbol: func
+        Type:   R_RISCC_PCREL8_WORD
+  - Name:    .target
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+  - Name:    .data
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Content: 00
+Symbols:
+  - Name:    func
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .target
+  - Name:    data
+    Type:    STT_OBJECT
+    Binding: STB_GLOBAL
+    Section: .data
+
+#--- layout.ld
+OUTPUT_FORMAT(elf32-riscc)
+ENTRY(func)
+SECTIONS {
+  .text 0 : { *(.text) }
+  .target 0x100 : { *(.target) }
+  .data 0x10034 : { *(.data) }
+}

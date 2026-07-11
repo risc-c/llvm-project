@@ -325,6 +325,9 @@ enum {
   EM_VE = 251,            // NEC SX-Aurora VE
   EM_CSKY = 252,          // C-SKY 32-bit processor
   EM_LOONGARCH = 258,     // LoongArch
+  // Provisional downstream value for the RISC-C architecture. Keep this
+  // isolated so it can be replaced if an official value is assigned.
+  EM_RISCC = 0xC8C8,
 };
 
 // Object file classes.
@@ -1035,6 +1038,27 @@ enum : unsigned {
 // ELF Relocation types for MSP430
 enum {
 #include "ELFRelocs/MSP430.def"
+};
+
+// RISC-C specific e_flags.
+enum : unsigned {
+  EF_RISCC_ABI_MASK = 0x0000000f,
+  EF_RISCC_ABI_V1 = 0x00000001,
+
+  EF_RISCC_PROFILE_MASK = 0x000000f0,
+  EF_RISCC_PROFILE_FULL = 0x00000010,
+  EF_RISCC_PROFILE_MIN = 0x00000020,
+  EF_RISCC_PROFILE_SYS = 0x00000030,
+  EF_RISCC_PROFILE_NANO = 0x00000040,
+
+  // Split-memory linker scripts tag data addresses inside ELF with this bit.
+  // Relocations erase the tag before writing an architectural data address.
+  RISCC_ELF_DATA_ADDRESS_TAG = 0x00010000,
+};
+
+// ELF relocation types for RISC-C.
+enum {
+#include "ELFRelocs/RISCC.def"
 };
 
 // ELF Relocation type for VE.

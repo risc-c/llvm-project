@@ -1,0 +1,147 @@
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: yaml2obj input.yaml -o input.o
+# RUN: ld.lld -m elf32lriscc -T unified.ld input.o -o unified
+# RUN: llvm-objdump --full-contents --section=.text unified | FileCheck %s --check-prefix=UNIFIED
+# RUN: ld.lld -m elf32lriscc -T split.ld input.o -o split
+# RUN: llvm-objdump --full-contents --section=.text split | FileCheck %s --check-prefix=SPLIT
+# RUN: llvm-readobj -S split | FileCheck %s --check-prefix=SECTIONS
+# RUN: yaml2obj invalid.yaml -o invalid.o
+# RUN: not ld.lld -m elf32lriscc -T unified.ld invalid.o -o invalid 2>&1 | FileCheck %s --check-prefix=NOT-TLS
+# RUN: yaml2obj overflow.yaml -o overflow.o
+# RUN: not ld.lld -m elf32lriscc -T unified.ld overflow.o -o overflow 2>&1 | FileCheck %s --check-prefix=TPOFF-RANGE
+# RUN: not ld.lld -shared -m elf32lriscc -T unified.ld input.o -o shared 2>&1 | FileCheck %s --check-prefix=SHARED
+
+# UNIFIED: Contents of section .text:
+# UNIFIED-NEXT: 0000 00000200
+# SPLIT: Contents of section .text:
+# SPLIT-NEXT: 0000 00000200
+# SECTIONS: Name: .tdata
+# SECTIONS: SHF_TLS
+# SECTIONS: Name: .tbss
+# SECTIONS: SHF_TLS
+# NOT-TLS: error: {{.*}}relocation R_RISCC_TPOFF_LO8 against ordinary requires a TLS symbol
+# TPOFF-RANGE: error: {{.*}}relocation R_RISCC_TPOFF_LO8 out of range: 65536 is not in [0, 65535]
+# SHARED: error: relocation R_RISCC_TPOFF_HI8 cannot be used against symbol 'tls_zeroed'; recompile with -fPIC
+
+#--- input.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 00000000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: tls_zeroed
+        Type:   R_RISCC_TPOFF_HI8
+      - Offset: 0x2
+        Symbol: tls_zeroed
+        Type:   R_RISCC_TPOFF_LO8
+  - Name:    .tdata
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE, SHF_TLS ]
+    Content: 3412
+  - Name:    .tbss
+    Type:    SHT_NOBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE, SHF_TLS ]
+    Size:    2
+Symbols:
+  - Name:    tls_initialized
+    Type:    STT_TLS
+    Binding: STB_GLOBAL
+    Section: .tdata
+  - Name:    tls_zeroed
+    Type:    STT_TLS
+    Binding: STB_GLOBAL
+    Section: .tbss
+
+#--- invalid.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: ordinary
+        Type:   R_RISCC_TPOFF_LO8
+  - Name:    .data
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Content: 0000
+Symbols:
+  - Name:    ordinary
+    Type:    STT_OBJECT
+    Binding: STB_GLOBAL
+    Section: .data
+
+#--- overflow.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: tls_overflow
+        Type:   R_RISCC_TPOFF_LO8
+  - Name:    .tdata
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE, SHF_TLS ]
+    Content: 0000
+  - Name:    .tbss
+    Type:    SHT_NOBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE, SHF_TLS ]
+    Size:    0x10000
+Symbols:
+  - Name:    tls_overflow
+    Type:    STT_TLS
+    Binding: STB_GLOBAL
+    Section: .tbss
+    Value:   0xfffe
+
+#--- unified.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .tdata 0x120 : { *(.tdata) }
+  .tbss : { *(.tbss) }
+}
+
+#--- split.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .tdata 0x10020 : { *(.tdata) }
+  .tbss : { *(.tbss) }
+}

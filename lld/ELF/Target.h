@@ -123,6 +123,10 @@ public:
   // Do finalize relaxation after collecting relaxation infos.
   virtual void finalizeRelax(int passes) const {}
 
+  // Validate target-specific constraints after final section addresses have
+  // been assigned and before the output file is created.
+  virtual void validateOutput() const {}
+
   virtual void applyJumpInstrMod(uint8_t *loc, JumpModType type,
                                  JumpModType val) const {}
   virtual void applyBranchToBranchOpt() const {}
@@ -216,6 +220,7 @@ void setMipsTargetInfo(Ctx &);
 void setPPC64TargetInfo(Ctx &);
 void setPPCTargetInfo(Ctx &);
 void setRISCVTargetInfo(Ctx &);
+void setRISCCTargetInfo(Ctx &);
 void setSPARCV9TargetInfo(Ctx &);
 void setSystemZTargetInfo(Ctx &);
 void setX86TargetInfo(Ctx &);

@@ -229,6 +229,9 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
   case llvm::Triple::msp430:
     return createMSP430TargetCodeGenInfo(CGM);
 
+  case llvm::Triple::riscc:
+    return createRISCCTargetCodeGenInfo(CGM);
+
   case llvm::Triple::riscv32:
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:

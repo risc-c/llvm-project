@@ -261,6 +261,13 @@ TEST(ELFObjectFileTest, MachineTestForMSP430) {
     checkFormatAndArch(Data, Formats[Idx], Triple::msp430);
 }
 
+TEST(ELFObjectFileTest, MachineTestForRISCC) {
+  std::array<StringRef, 4> Formats = {"elf32-riscc", "elf32-riscc",
+                                      "elf64-unknown", "elf64-unknown"};
+  for (auto [Idx, Data] : enumerate(generateData(ELF::EM_RISCC)))
+    checkFormatAndArch(Data, Formats[Idx], Triple::riscc);
+}
+
 TEST(ELFObjectFileTest, MachineTestForLoongArch) {
   std::array<StringRef, 4> Formats = {"elf32-loongarch", "elf32-loongarch",
                                       "elf64-loongarch", "elf64-loongarch"};

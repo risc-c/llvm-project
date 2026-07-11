@@ -1,0 +1,332 @@
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: yaml2obj errors.yaml -o errors.o
+# RUN: not ld.lld -m elf32lriscc -T errors.ld errors.o -o output 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=RELOCS
+# RUN: yaml2obj full.yaml -o full.o
+# RUN: yaml2obj sys.yaml -o sys.o
+# RUN: yaml2obj min.yaml -o min.o
+# RUN: ld.lld -m elf32lriscc -e 0 full.o sys.o -o full-sys
+# RUN: llvm-readobj --file-headers full-sys | \
+# RUN:   FileCheck %s --check-prefix=MERGED-FULL
+# RUN: ld.lld -m elf32lriscc -e 0 min.o sys.o -o min-sys
+# RUN: llvm-readobj --file-headers min-sys | \
+# RUN:   FileCheck %s --check-prefix=MERGED-SYS
+# RUN: %python patch-flags.py full.o missing-abi.o 0x10
+# RUN: %python patch-flags.py full.o unknown-abi.o 0x12
+# RUN: %python patch-flags.py full.o nano.o 0x41
+# RUN: %python patch-flags.py full.o missing-profile.o 0x1
+# RUN: %python patch-flags.py full.o unknown-profile.o 0x51
+# RUN: %python patch-flags.py full.o unknown-bits.o 0x111
+# RUN: not ld.lld -m elf32lriscc -e 0 missing-abi.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=MISSING-ABI
+# RUN: not ld.lld -m elf32lriscc -e 0 unknown-abi.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=UNKNOWN-ABI
+# RUN: not ld.lld -m elf32lriscc -e 0 nano.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=NANO
+# RUN: not ld.lld -m elf32lriscc -e 0 missing-profile.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=MISSING-PROFILE
+# RUN: not ld.lld -m elf32lriscc -e 0 unknown-profile.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=UNKNOWN-PROFILE
+# RUN: not ld.lld -m elf32lriscc -e 0 unknown-bits.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=UNKNOWN-BITS
+# RUN: yaml2obj domains.yaml -o domains.o
+# RUN: not ld.lld -m elf32lriscc -T domains-unified.ld domains.o \
+# RUN:   -o domains-unified 2>&1 | FileCheck %s --check-prefix=UNIFIED-DOMAINS
+# RUN: not ld.lld -m elf32lriscc -T domains-split.ld domains.o \
+# RUN:   -o domains-split 2>&1 | FileCheck %s --check-prefix=SPLIT-DOMAINS
+# RUN: yaml2obj debug.yaml -o debug.o
+# RUN: ld.lld -m elf32lriscc -T debug.ld debug.o -o debug
+# RUN: llvm-objdump --full-contents --section=.debug_info debug | \
+# RUN:   FileCheck %s --check-prefix=DEBUG
+# RUN: yaml2obj layout.yaml -o layout.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0x10000 -e _start layout.o \
+# RUN:   -o code-high 2>&1 | FileCheck %s --check-prefix=CODE-HIGH
+# RUN: not ld.lld -m elf32lriscc -Ttext=0x1 -e _start layout.o \
+# RUN:   -o code-odd 2>&1 | FileCheck %s --check-prefix=CODE-ODD
+# RUN: not ld.lld -m elf32lriscc -Ttext=0xfffe -e _start layout.o \
+# RUN:   -o code-crosses 2>&1 | FileCheck %s --check-prefix=CODE-CROSSES
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 -e 0x10000 layout.o \
+# RUN:   -o entry-high 2>&1 | FileCheck %s --check-prefix=ENTRY-HIGH
+
+# RELOCS-DAG: error: {{.*}}relocation R_RISCC_CODE16 cannot encode tagged data-space or out-of-range address 0x10000
+# RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_CODE16: 0x101 is not aligned to 2 bytes
+# RELOCS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD out of range: {{.*}} is not in [-128, 127]
+# RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_PCREL8_WORD: 0x101 is not aligned to 2 bytes
+
+# MERGED-FULL: Flags [ (0x11)
+# MERGED-FULL: EF_RISCC_ABI_V1 (0x1)
+# MERGED-FULL: EF_RISCC_PROFILE_FULL (0x10)
+
+# MERGED-SYS: Flags [ (0x31)
+# MERGED-SYS: EF_RISCC_ABI_V1 (0x1)
+# MERGED-SYS: EF_RISCC_PROFILE_SYS (0x30)
+
+# MISSING-ABI: error: missing-abi.o: unsupported RISC-C ABI flags 0x0 (expected ABI v1)
+# UNKNOWN-ABI: error: unknown-abi.o: unsupported RISC-C ABI flags 0x2 (expected ABI v1)
+# NANO: error: nano.o: RISC-C Nano uses an incompatible ABI and cannot be linked as mainline RISC-C
+# MISSING-PROFILE: error: missing-profile.o: unsupported RISC-C ISA profile flags 0x0
+# UNKNOWN-PROFILE: error: unknown-profile.o: unsupported RISC-C ISA profile flags 0x50
+# UNKNOWN-BITS: error: unknown-bits.o: unsupported RISC-C ELF flags 0x100
+
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE16 against data requires a code symbol, but the symbol is defined in non-executable section .data
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_LO8 against data requires a code symbol, but the symbol is defined in non-executable section .data
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_HI8 against data requires a code symbol, but the symbol is defined in non-executable section .data
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD against data requires a code symbol, but the symbol is defined in non-executable section .data
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS8 against func requires a data symbol, but the symbol is defined in executable section .text
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS16 against func requires a data symbol, but the symbol is defined in executable section .text
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS32 against func requires a data symbol, but the symbol is defined in executable section .text
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_LO8 against func requires a data symbol, but the symbol is defined in executable section .text
+# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_HI8 against func requires a data symbol, but the symbol is defined in executable section .text
+
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE16 against data requires a code symbol, but the symbol is defined in non-executable section .data
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_LO8 against data requires a code symbol, but the symbol is defined in non-executable section .data
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_HI8 against data requires a code symbol, but the symbol is defined in non-executable section .data
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD against data requires a code symbol, but the symbol is defined in non-executable section .data
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS8 against func requires a data symbol, but the symbol is defined in executable section .text
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS16 against func requires a data symbol, but the symbol is defined in executable section .text
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS32 against func requires a data symbol, but the symbol is defined in executable section .text
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_LO8 against func requires a data symbol, but the symbol is defined in executable section .text
+# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_HI8 against func requires a data symbol, but the symbol is defined in executable section .text
+
+# DEBUG: Contents of section .debug_info:
+# DEBUG-NEXT: 0000 0001
+
+# CODE-HIGH-DAG: error: executable section .text range {{.*}} is outside the RISC-C code byte address range [0x0, 0x10000)
+# CODE-HIGH-DAG: error: entry point 0x10000 is not an aligned RISC-C code byte address in [0x0, 0x10000)
+# CODE-ODD-DAG: error: executable section .text address 0x1 is not 2-byte aligned
+# CODE-ODD-DAG: error: entry point 0x1 is not an aligned RISC-C code byte address in [0x0, 0x10000)
+# CODE-CROSSES: error: executable section .text range {{.*}} is outside the RISC-C code byte address range [0x0, 0x10000)
+# ENTRY-HIGH: error: entry point 0x10000 is not an aligned RISC-C code byte address in [0x0, 0x10000)
+
+#--- errors.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000000000000000
+  - Name: .rela.text
+    Type: SHT_RELA
+    Link: .symtab
+    Info: .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: tagged
+        Type:   R_RISCC_CODE16
+      - Offset: 0x2
+        Symbol: odd
+        Type:   R_RISCC_CODE16
+      - Offset: 0x4
+        Symbol: far
+        Type:   R_RISCC_PCREL8_WORD
+      - Offset: 0x6
+        Symbol: odd
+        Type:   R_RISCC_PCREL8_WORD
+  - Name:    .data
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Content: 00
+Symbols:
+  - Name:    tagged
+    Index:   SHN_ABS
+    Value:   0x10000
+  - Name:    odd
+    Index:   SHN_ABS
+    Value:   0x101
+  - Name:    far
+    Index:   SHN_ABS
+    Value:   0x300
+
+#--- errors.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .data 0x10000 : { *(.data) }
+}
+
+#--- full.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text.full
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+
+#--- sys.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_SYS ]
+Sections:
+  - Name:    .text.sys
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+
+#--- min.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_MIN ]
+Sections:
+  - Name:    .text.min
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+
+#--- domains.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+  - Name:    .refs
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Content: 000000000000000000000000000000000000000000000000
+  - Name:    .rela.refs
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .refs
+    Relocations:
+      - Offset: 0x0
+        Symbol: data
+        Type:   R_RISCC_CODE16
+      - Offset: 0x2
+        Symbol: data
+        Type:   R_RISCC_CODE_LO8
+      - Offset: 0x3
+        Symbol: data
+        Type:   R_RISCC_CODE_HI8
+      - Offset: 0x4
+        Symbol: data
+        Type:   R_RISCC_PCREL8_WORD
+      - Offset: 0x5
+        Symbol: func
+        Type:   R_RISCC_ABS8
+      - Offset: 0x6
+        Symbol: func
+        Type:   R_RISCC_ABS16
+      - Offset: 0x8
+        Symbol: func
+        Type:   R_RISCC_ABS32
+      - Offset: 0xc
+        Symbol: func
+        Type:   R_RISCC_LO8
+      - Offset: 0xd
+        Symbol: func
+        Type:   R_RISCC_HI8
+  - Name:    .data
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Content: 00
+Symbols:
+  - Name:    func
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .text
+  - Name:    data
+    Type:    STT_OBJECT
+    Binding: STB_GLOBAL
+    Section: .data
+
+#--- domains-unified.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .refs 0x20 : { *(.refs) }
+  .data 0x100 : { *(.data) }
+}
+
+#--- domains-split.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .refs 0x20 : { *(.refs) }
+  .data 0x10000 : { *(.data) }
+}
+
+#--- debug.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+  - Name:    .debug_info
+    Type:    SHT_PROGBITS
+    Content: 0000
+  - Name:    .rela.debug_info
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .debug_info
+    Relocations:
+      - Offset: 0x0
+        Symbol: func
+        Type:   R_RISCC_ABS16
+Symbols:
+  - Name:    func
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .text
+
+#--- debug.ld
+SECTIONS {
+  .text 0x100 : { *(.text) }
+  .debug_info 0 : { *(.debug_info) }
+}
+
+#--- layout.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 00000000
+Symbols:
+  - Name:    _start
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .text
+
+#--- patch-flags.py
+import struct
+import sys
+
+data = bytearray(open(sys.argv[1], "rb").read())
+struct.pack_into("<I", data, 36, int(sys.argv[3], 0))
+open(sys.argv[2], "wb").write(data)

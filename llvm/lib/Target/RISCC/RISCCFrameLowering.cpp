@@ -1,0 +1,92 @@
+#include "RISCCFrameLowering.h"
+#include "RISCCInstrInfo.h"
+#include "RISCCMachineFunctionInfo.h"
+#include "RISCCSubtarget.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/RegisterScavenging.h"
+#include "llvm/Support/ErrorHandling.h"
+
+using namespace llvm;
+
+RISCCFrameLowering::RISCCFrameLowering(const RISCCSubtarget &STI)
+    : TargetFrameLowering(StackGrowsDown, Align(2), 0, Align(2)), STI(STI) {}
+
+static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                     const DebugLoc &DL, const RISCCInstrInfo &TII,
+                     int64_t Amount, MachineInstr::MIFlag Flag) {
+  if (!Amount) return;
+  if (isInt<8>(Amount)) {
+    BuildMI(MBB, I, DL, TII.get(RISCC::ADDI), RISCC::R7)
+        .addReg(RISCC::R7).addImm(Amount).setMIFlag(Flag);
+    return;
+  }
+  BuildMI(MBB, I, DL, TII.get(RISCC::LI), RISCC::R0)
+      .addImm(std::abs(Amount)).setMIFlag(Flag);
+  BuildMI(MBB, I, DL, TII.get(Amount < 0 ? RISCC::SUB : RISCC::ADD), RISCC::R7)
+      .addReg(RISCC::R7).addReg(RISCC::R0, RegState::Kill).setMIFlag(Flag);
+}
+
+void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
+                                      MachineBasicBlock &MBB) const {
+  auto I = MBB.begin();
+  DebugLoc DL = I == MBB.end() ? DebugLoc() : I->getDebugLoc();
+  const auto &TII = *STI.getInstrInfo();
+  uint64_t Size = MF.getFrameInfo().getStackSize();
+  if (Size > 0xffff)
+    report_fatal_error("RISC-C stack frame exceeds the 16-bit address space");
+  adjustSP(MBB, I, DL, TII, -int64_t(Size), MachineInstr::FrameSetup);
+
+  int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
+  if (FI >= 0) {
+    BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
+        .addReg(RISCC::S7).setMIFlag(MachineInstr::FrameSetup);
+    BuildMI(MBB, I, DL, TII.get(RISCC::STW))
+        .addReg(RISCC::R0, RegState::Kill).addFrameIndex(FI).addImm(0)
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
+}
+
+void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
+                                      MachineBasicBlock &MBB) const {
+  auto I = MBB.getLastNonDebugInstr();
+  DebugLoc DL = I == MBB.end() ? DebugLoc() : I->getDebugLoc();
+  const auto &TII = *STI.getInstrInfo();
+  int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
+  if (FI >= 0) {
+    BuildMI(MBB, I, DL, TII.get(RISCC::LDW), RISCC::R0)
+        .addFrameIndex(FI).addImm(0).setMIFlag(MachineInstr::FrameDestroy);
+    BuildMI(MBB, I, DL, TII.get(RISCC::MTS), RISCC::S7)
+        .addReg(RISCC::R0, RegState::Kill).setMIFlag(MachineInstr::FrameDestroy);
+  }
+  adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
+           MachineInstr::FrameDestroy);
+}
+
+MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
+    MachineFunction &, MachineBasicBlock &MBB,
+    MachineBasicBlock::iterator I) const {
+  // Outgoing arguments live in the function's reserved call frame.  Keeping
+  // SP fixed is important because wide-operation custom expansion can put the
+  // setup and destroy pseudos in different basic blocks.
+  return MBB.erase(I);
+}
+
+void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
+    MachineFunction &MF, RegScavenger *RS) const {
+  if (MF.getFrameInfo().getMaxCallFrameSize() > 126)
+    report_fatal_error(
+        "RISC-C initial backend supports outgoing call frames of at most "
+        "126 bytes");
+  if (MF.getFrameInfo().hasCalls()) {
+    int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
+    MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
+  }
+  // Large frame offsets and high-pressure post-RA expansions may need to
+  // scavenge a GPR.  Reserve an addressable spill slot before frame layout so
+  // RegScavenger can preserve a live register instead of aborting.
+  if (RS && MF.getFrameInfo().hasStackObjects()) {
+    int FI = MF.getFrameInfo().CreateSpillStackObject(2, Align(2));
+    RS->addScavengingFrameIndex(FI);
+  }
+}

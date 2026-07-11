@@ -1256,6 +1256,7 @@ constexpr EnumStringDef<unsigned, 2> ElfMachineTypeDefs[] = {
   ENUM_ENT(EM_CR,            "National Semiconductor CompactRISC"),
   ENUM_ENT(EM_F2MC16,        "Fujitsu F2MC16"),
   ENUM_ENT(EM_MSP430,        "Texas Instruments msp430 microcontroller"),
+  ENUM_ENT(EM_RISCC,         "RISC-C 16-bit processor"),
   ENUM_ENT(EM_BLACKFIN,      "Analog Devices Blackfin"),
   ENUM_ENT(EM_SE_C33,        "S1C33 Family of Seiko Epson processors"),
   ENUM_ENT(EM_SEP,           "Sharp embedded microprocessor"),
@@ -1728,6 +1729,16 @@ constexpr EnumStringDef<unsigned, 2> ElfHeaderRISCVFlagsDefs[] = {
 };
 constexpr auto ElfHeaderRISCVFlags =
     BUILD_ENUM_STRINGS(ElfHeaderRISCVFlagsDefs);
+
+constexpr EnumStringDef<unsigned, 2> ElfHeaderRISCCFlagsDefs[] = {
+    ENUM_ENT_1(EF_RISCC_ABI_V1),
+    ENUM_ENT_1(EF_RISCC_PROFILE_FULL),
+    ENUM_ENT_1(EF_RISCC_PROFILE_MIN),
+    ENUM_ENT_1(EF_RISCC_PROFILE_SYS),
+    ENUM_ENT_1(EF_RISCC_PROFILE_NANO),
+};
+constexpr auto ElfHeaderRISCCFlags =
+    BUILD_ENUM_STRINGS(ElfHeaderRISCCFlagsDefs);
 
 constexpr EnumStringDef<unsigned, 2> ElfHeaderSPARCFlagsDefs[] = {
     ENUM_ENT(EF_SPARC_32PLUS, "V8+ ABI"),
@@ -3757,6 +3768,10 @@ template <class ELFT> void GNUELFDumper<ELFT>::printFileHeaders() {
         unsigned(ELF::EF_MIPS_ABI), unsigned(ELF::EF_MIPS_MACH));
   else if (e.e_machine == EM_RISCV)
     ElfFlags = printFlags(e.e_flags, EnumStrings(ElfHeaderRISCVFlags));
+  else if (e.e_machine == EM_RISCC)
+    ElfFlags = printFlags(e.e_flags, EnumStrings(ElfHeaderRISCCFlags),
+                          unsigned(ELF::EF_RISCC_ABI_MASK),
+                          unsigned(ELF::EF_RISCC_PROFILE_MASK));
   else if (e.e_machine == EM_SPARC32PLUS || e.e_machine == EM_SPARCV9)
     ElfFlags = printFlags(e.e_flags, EnumStrings(ElfHeaderSPARCFlags),
                           unsigned(ELF::EF_SPARCV9_MM));
@@ -7656,6 +7671,10 @@ template <class ELFT> void LLVMELFDumper<ELFT>::printFileHeaders() {
       }
     } else if (E.e_machine == EM_RISCV)
       W.printFlags("Flags", E.e_flags, EnumStrings(ElfHeaderRISCVFlags));
+    else if (E.e_machine == EM_RISCC)
+      W.printFlags("Flags", E.e_flags, EnumStrings(ElfHeaderRISCCFlags),
+                   unsigned(ELF::EF_RISCC_ABI_MASK),
+                   unsigned(ELF::EF_RISCC_PROFILE_MASK));
     else if (E.e_machine == EM_SPARC32PLUS || E.e_machine == EM_SPARCV9)
       W.printFlags("Flags", E.e_flags, EnumStrings(ElfHeaderSPARCFlags),
                    unsigned(ELF::EF_SPARCV9_MM));

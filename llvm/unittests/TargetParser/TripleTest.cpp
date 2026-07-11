@@ -674,6 +674,18 @@ TEST(TripleTest, ParsedIDs) {
   EXPECT_EQ(Triple::UnknownOS, T.getOS());
   EXPECT_EQ(Triple::UnknownEnvironment, T.getEnvironment());
 
+  T = Triple("riscc-none-elf");
+  EXPECT_EQ(Triple::riscc, T.getArch());
+  EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
+  EXPECT_EQ(Triple::UnknownOS, T.getOS());
+  EXPECT_EQ(Triple::UnknownEnvironment, T.getEnvironment());
+
+  T = Triple("riscc");
+  EXPECT_EQ(Triple::riscc, T.getArch());
+  EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
+  EXPECT_EQ(Triple::UnknownOS, T.getOS());
+  EXPECT_EQ(Triple::UnknownEnvironment, T.getEnvironment());
+
   T = Triple("lanai-unknown-unknown");
   EXPECT_EQ(Triple::lanai, T.getArch());
   EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
@@ -1963,6 +1975,12 @@ TEST(TripleTest, BitWidthChecks) {
   EXPECT_EQ(T.getArchPointerBitWidth(), 64U);
 
   T.setArch(Triple::msp430);
+  EXPECT_TRUE(T.isArch16Bit());
+  EXPECT_FALSE(T.isArch32Bit());
+  EXPECT_FALSE(T.isArch64Bit());
+  EXPECT_EQ(T.getArchPointerBitWidth(), 16U);
+
+  T.setArch(Triple::riscc);
   EXPECT_TRUE(T.isArch16Bit());
   EXPECT_FALSE(T.isArch32Bit());
   EXPECT_FALSE(T.isArch64Bit());
@@ -3758,6 +3776,14 @@ TEST(DataLayoutTest, CheriRISCV32) {
               testing::HasSubstr("pe200:64:64:64:32"));
   EXPECT_THAT(TT.computeDataLayout("cheriot"),
               testing::HasSubstr("A200-P200-G200"));
+}
+
+TEST(DataLayoutTest, RISCC) {
+  Triple TT("riscc-none-elf");
+
+  EXPECT_EQ("e-m:e-P1-p:16:16-p1:16:16-i8:8-i16:16-i32:16-i64:16-"
+            "f32:16-f64:16-a:8:16-n8:16-S16",
+            TT.computeDataLayout());
 }
 
 } // end anonymous namespace

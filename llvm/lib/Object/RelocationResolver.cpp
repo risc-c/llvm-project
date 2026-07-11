@@ -177,6 +177,49 @@ static uint64_t resolveMSP430(uint64_t Type, uint64_t Offset, uint64_t S,
   }
 }
 
+static bool supportsRISCC(uint64_t Type) {
+  switch (Type) {
+  case ELF::R_RISCC_ABS8:
+  case ELF::R_RISCC_ABS16:
+  case ELF::R_RISCC_ABS32:
+  case ELF::R_RISCC_LO8:
+  case ELF::R_RISCC_HI8:
+  case ELF::R_RISCC_CODE16:
+  case ELF::R_RISCC_CODE_LO8:
+  case ELF::R_RISCC_CODE_HI8:
+  case ELF::R_RISCC_PCREL8_WORD:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static uint64_t resolveRISCC(uint64_t Type, uint64_t Offset, uint64_t S,
+                             uint64_t /*LocData*/, int64_t Addend) {
+  uint64_t Value = S + Addend;
+  switch (Type) {
+  case ELF::R_RISCC_ABS8:
+  case ELF::R_RISCC_LO8:
+    return Value & 0xff;
+  case ELF::R_RISCC_ABS16:
+    return Value & 0xffff;
+  case ELF::R_RISCC_ABS32:
+    return Value & 0xffff;
+  case ELF::R_RISCC_HI8:
+    return (Value >> 8) & 0xff;
+  case ELF::R_RISCC_CODE16:
+    return (Value >> 1) & 0x7fff;
+  case ELF::R_RISCC_CODE_LO8:
+    return (Value >> 1) & 0xff;
+  case ELF::R_RISCC_CODE_HI8:
+    return (Value >> 9) & 0xff;
+  case ELF::R_RISCC_PCREL8_WORD:
+    return ((Value - (Offset + 2)) >> 1) & 0xff;
+  default:
+    llvm_unreachable("Invalid relocation type");
+  }
+}
+
 static bool supportsPPC64(uint64_t Type) {
   switch (Type) {
   case ELF::R_PPC64_ADDR32:
@@ -872,6 +915,8 @@ getRelocationResolver(const ObjectFile &Obj) {
       return {supportsMips32, resolveMips32};
     case Triple::msp430:
       return {supportsMSP430, resolveMSP430};
+    case Triple::riscc:
+      return {supportsRISCC, resolveRISCC};
     case Triple::sparc:
       return {supportsSparc32, resolveSparc32};
     case Triple::hexagon:

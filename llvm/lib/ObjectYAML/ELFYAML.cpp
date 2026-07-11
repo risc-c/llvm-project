@@ -284,6 +284,7 @@ void ScalarEnumerationTraits<ELFYAML::ELF_EM>::enumeration(
   ECase(EM_CR);
   ECase(EM_F2MC16);
   ECase(EM_MSP430);
+  ECase(EM_RISCC);
   ECase(EM_BLACKFIN);
   ECase(EM_SE_C33);
   ECase(EM_SEP);
@@ -554,6 +555,13 @@ void ScalarBitSetTraits<ELFYAML::ELF_EF>::bitset(IO &IO,
     BCaseMask(EF_AVR_ARCH_XMEGA6, EF_AVR_ARCH_MASK);
     BCaseMask(EF_AVR_ARCH_XMEGA7, EF_AVR_ARCH_MASK);
     BCase(EF_AVR_LINKRELAX_PREPARED);
+    break;
+  case ELF::EM_RISCC:
+    BCaseMask(EF_RISCC_ABI_V1, EF_RISCC_ABI_MASK);
+    BCaseMask(EF_RISCC_PROFILE_FULL, EF_RISCC_PROFILE_MASK);
+    BCaseMask(EF_RISCC_PROFILE_MIN, EF_RISCC_PROFILE_MASK);
+    BCaseMask(EF_RISCC_PROFILE_SYS, EF_RISCC_PROFILE_MASK);
+    BCaseMask(EF_RISCC_PROFILE_NANO, EF_RISCC_PROFILE_MASK);
     break;
   case ELF::EM_LOONGARCH:
     BCaseMask(EF_LOONGARCH_ABI_SOFT_FLOAT, EF_LOONGARCH_ABI_MODIFIER_MASK);
@@ -889,6 +897,9 @@ void ScalarEnumerationTraits<ELFYAML::ELF_REL>::enumeration(
     break;
   case ELF::EM_RISCV:
 #include "llvm/BinaryFormat/ELFRelocs/RISCV.def"
+    break;
+  case ELF::EM_RISCC:
+#include "llvm/BinaryFormat/ELFRelocs/RISCC.def"
     break;
   case ELF::EM_LANAI:
 #include "llvm/BinaryFormat/ELFRelocs/Lanai.def"

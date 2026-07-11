@@ -1,0 +1,9 @@
+#ifndef LLVM_LIB_TARGET_RISCC_TARGETINFO_RISCCTARGETINFO_H
+#define LLVM_LIB_TARGET_RISCC_TARGETINFO_RISCCTARGETINFO_H
+
+namespace llvm {
+class Target;
+Target &getTheRISCCTarget();
+}
+
+#endif

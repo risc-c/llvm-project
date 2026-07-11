@@ -30,6 +30,7 @@
 #include "Targets/NVPTX.h"
 #include "Targets/OSTargets.h"
 #include "Targets/PPC.h"
+#include "Targets/RISCC.h"
 #include "Targets/RISCV.h"
 #include "Targets/SPIR.h"
 #include "Targets/Sparc.h"
@@ -283,6 +284,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::msp430:
     return std::make_unique<MSP430TargetInfo>(Triple, Opts);
+
+  case llvm::Triple::riscc:
+    return std::make_unique<RISCCTargetInfo>(Triple, Opts);
 
   case llvm::Triple::mips:
     switch (os) {
