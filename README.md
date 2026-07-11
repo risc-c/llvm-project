@@ -1,3 +1,10 @@
+# Experimental RISC-C LLVM Backend
+
+This fork contains early compiler and linker support for the RISC-C architecture.
+
+The backend is experimental and incomplete. The ISA, ABI, object format, relocation
+model, and compiler implementation may change without compatibility guarantees.
+
 # The LLVM Compiler Infrastructure
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/llvm/llvm-project/badge)](https://securityscorecards.dev/viewer/?uri=github.com/llvm/llvm-project)
