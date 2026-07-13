@@ -35,6 +35,7 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerSELECTCC(SDValue, SelectionDAG &) const;
   SDValue lowerShift(SDValue, SelectionDAG &) const;
   SDValue lowerMULLOHI(SDValue, SelectionDAG &, bool Signed) const;
+  SDValue lowerVASTART(SDValue, SelectionDAG &) const;
   SDValue lowerCallResult(SDValue, SDValue, CallingConv::ID, bool,
                           const SmallVectorImpl<ISD::InputArg> &,
                           const SDLoc &, SelectionDAG &,

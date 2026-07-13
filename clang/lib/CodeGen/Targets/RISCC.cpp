@@ -92,15 +92,20 @@ public:
       FI.getReturnInfo() =
           classifyReturnType(FI.getReturnType(), LargeReturn);
 
-    // Variadic calls are deliberately outside ABI v1.  Classifying all their
-    // visible parameters as stack arguments keeps accidental uses from
-    // conflicting with the fixed-argument register convention.
-    unsigned RemainingSlots = FI.isVariadic() ? 0 : ArgumentSlots;
+    unsigned RemainingSlots = ArgumentSlots;
     if (LargeReturn)
       --RemainingSlots; // The hidden result pointer is passed in r1.
 
     for (auto &Arg : FI.arguments())
       Arg.info = classifyArgumentType(Arg.type, RemainingSlots);
+  }
+
+  RValue EmitVAArg(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
+                   AggValueSlot Slot) const override {
+    return emitVoidPtrVAArg(CGF, VAListAddr, Ty, /*IsIndirect=*/false,
+                            getContext().getTypeInfoInChars(Ty),
+                            CharUnits::fromQuantity(SlotBits / 8),
+                            /*AllowHigherAlign=*/false, Slot);
   }
 };
 

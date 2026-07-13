@@ -65,9 +65,10 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
           Base = Ptr.getOperand(0); Disp = C->getSExtValue();
         }
       }
-      SDValue D = CurDAG->getTargetConstant(Disp, DL, MVT::i16);
+      SDValue DispOperand = CurDAG->getTargetConstant(
+          APInt(16, Disp, true), DL, MVT::i16);
       CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
-                           {Base, D, Chain});
+                           {Base, DispOperand, Chain});
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {
@@ -94,8 +95,10 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
           Base = Ptr.getOperand(0); Disp = C->getSExtValue();
         }
       }
-      SDValue D = CurDAG->getTargetConstant(Disp, DL, MVT::i16);
-      CurDAG->SelectNodeTo(N, RISCC::STW, MVT::Other, {Val, Base, D, Chain});
+      SDValue DispOperand = CurDAG->getTargetConstant(
+          APInt(16, Disp, true), DL, MVT::i16);
+      CurDAG->SelectNodeTo(N, RISCC::STW, MVT::Other,
+                           {Val, Base, DispOperand, Chain});
       return;
     }
     if (ST->getMemoryVT() == MVT::i8) {

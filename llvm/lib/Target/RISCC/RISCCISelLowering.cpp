@@ -1,5 +1,6 @@
 #include "RISCCISelLowering.h"
 #include "RISCCInstrInfo.h"
+#include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "llvm/CodeGen/CallingConvLower.h"
@@ -74,6 +75,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i16, Custom);
   setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
   setOperationAction(ISD::STACKRESTORE, MVT::Other, Expand);
+  setOperationAction(ISD::VASTART, MVT::Other, Custom);
+  setOperationAction(ISD::VAEND, MVT::Other, Expand);
+  setOperationAction(ISD::VAARG, MVT::Other, Expand);
+  setOperationAction(ISD::VACOPY, MVT::Other, Expand);
 
   setLoadExtAction(ISD::EXTLOAD, MVT::i16, MVT::i8, Legal);
   setLoadExtAction(ISD::ZEXTLOAD, MVT::i16, MVT::i8, Legal);
@@ -96,6 +101,7 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerShift(Op, DAG);
   case ISD::UMUL_LOHI: return lowerMULLOHI(Op, DAG, false);
   case ISD::SMUL_LOHI: return lowerMULLOHI(Op, DAG, true);
+  case ISD::VASTART: return lowerVASTART(Op, DAG);
   case ISD::DYNAMIC_STACKALLOC: {
     const Function &Fn = DAG.getMachineFunction().getFunction();
     DAG.getContext()->diagnose(DiagnosticInfoUnsupported(
@@ -107,6 +113,18 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
   }
   default: llvm_unreachable("unexpected custom RISC-C lowering");
   }
+}
+
+SDValue RISCCTargetLowering::lowerVASTART(SDValue Op,
+                                          SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  const auto *FuncInfo = MF.getInfo<RISCCMachineFunctionInfo>();
+  SDLoc DL(Op);
+  SDValue FirstVarArg = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(),
+                                          getPointerTy(MF.getDataLayout()));
+  const Value *SrcValue = cast<SrcValueSDNode>(Op.getOperand(2))->getValue();
+  return DAG.getStore(Op.getOperand(0), DL, FirstVarArg, Op.getOperand(1),
+                      MachinePointerInfo(SrcValue));
 }
 
 SDValue RISCCTargetLowering::lowerMULLOHI(SDValue Op, SelectionDAG &DAG,
@@ -283,19 +301,21 @@ SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
 template <typename ArgT>
 static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
                              const SmallVectorImpl<ArgT> &Args) {
-  if (State.isVarArg())
-    report_fatal_error("RISC-C v1 does not support variadic functions");
-  static const MCPhysReg Regs[] = {RISCC::R1, RISCC::R2, RISCC::R3, RISCC::R4};
+  static const MCPhysReg ArgRegs[] = {RISCC::R1, RISCC::R2, RISCC::R3,
+                                      RISCC::R4};
   unsigned NextReg = 0;
   bool OnStack = false;
 
   for (unsigned I = 0; I < Args.size();) {
-    unsigned End = I + 1;
-    while (End < Args.size() && Args[End].OrigArgIndex == Args[I].OrigArgIndex)
-      ++End;
-    unsigned Parts = End - I;
-    if (!OnStack && NextReg + Parts <= std::size(Regs)) {
-      for (; I != End; ++I) {
+    unsigned ArgEnd = I + 1;
+    while (ArgEnd < Args.size() &&
+           Args[ArgEnd].OrigArgIndex == Args[I].OrigArgIndex)
+      ++ArgEnd;
+    const unsigned NumParts = ArgEnd - I;
+    const bool UseRegisters = !Args[I].Flags.isVarArg() && !OnStack &&
+                              NextReg + NumParts <= std::size(ArgRegs);
+    if (UseRegisters) {
+      for (; I != ArgEnd; ++I) {
         MVT VT = Args[I].VT, LocVT = VT;
         CCValAssign::LocInfo LI = CCValAssign::Full;
         if (VT == MVT::i1 || VT == MVT::i8) {
@@ -305,12 +325,12 @@ static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
                    : Args[I].Flags.isSExt() ? CCValAssign::SExt
                                             : CCValAssign::AExt;
         }
-        MCRegister R = State.AllocateReg(Regs[NextReg++]);
+        MCRegister R = State.AllocateReg(ArgRegs[NextReg++]);
         Locs.push_back(CCValAssign::getReg(I, VT, R, LocVT, LI));
       }
     } else {
       OnStack = true;
-      for (; I != End; ++I) {
+      for (; I != ArgEnd; ++I) {
         MVT VT = Args[I].VT, LocVT = VT;
         CCValAssign::LocInfo LI = CCValAssign::Full;
         if (VT == MVT::i1 || VT == MVT::i8) {
@@ -358,6 +378,12 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
     if (VA.getLocInfo() != CCValAssign::Full)
       V = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), V);
     InVals.push_back(V);
+  }
+  MachineFrameInfo &FrameInfo = MF.getFrameInfo();
+  if (IsVarArg && FrameInfo.hasVAStart()) {
+    // The varargs area begins after the fixed stack arguments.
+    int VarArgsFI = FrameInfo.CreateFixedObject(2, State.getStackSize(), true);
+    MF.getInfo<RISCCMachineFunctionInfo>()->setVarArgsFrameIndex(VarArgsFI);
   }
   return Chain;
 }
