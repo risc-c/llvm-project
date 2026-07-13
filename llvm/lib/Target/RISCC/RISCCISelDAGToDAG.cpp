@@ -23,6 +23,9 @@ public:
     return SelectionDAGISel::runOnMachineFunction(MF);
   }
   void Select(SDNode *) override;
+  bool SelectInlineAsmMemoryOperand(
+      const SDValue &, InlineAsm::ConstraintCode,
+      std::vector<SDValue> &) override;
   std::pair<SDValue, SDValue> selectWordAddress(SDValue, const SDLoc &);
 
 #include "RISCCGenDAGISel.inc"
@@ -53,6 +56,15 @@ RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
   SDValue Disp = CurDAG->getTargetConstant(
       APInt(16, Displacement, true), DL, MVT::i16);
   return {Base, Disp};
+}
+
+bool RISCCDAGToDAGISel::SelectInlineAsmMemoryOperand(
+    const SDValue &Op, InlineAsm::ConstraintCode ConstraintID,
+    std::vector<SDValue> &OutOps) {
+  if (ConstraintID != InlineAsm::ConstraintCode::m)
+    return true;
+  OutOps.push_back(Op);
+  return false;
 }
 
 void RISCCDAGToDAGISel::Select(SDNode *N) {
