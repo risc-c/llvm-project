@@ -21,6 +21,16 @@ namespace {
 class RISCCAsmBackend final : public MCAsmBackend {
   uint8_t OSABI;
 
+  void adjustCodeAddress(const MCFixup &Fixup, uint64_t &Value) const {
+    if (Value & 1)
+      getContext().reportError(Fixup.getLoc(),
+                               "code address must be 2-byte aligned");
+    Value >>= 1;
+    if (Value > 0x7fff)
+      getContext().reportError(Fixup.getLoc(),
+                               "code address exceeds 15-bit range");
+  }
+
 public:
   explicit RISCCAsmBackend(uint8_t OSABI)
       : MCAsmBackend(llvm::endianness::little), OSABI(OSABI) {}
@@ -32,13 +42,18 @@ public:
 
   MCFixupKindInfo getFixupKindInfo(MCFixupKind Kind) const override {
     static const MCFixupKindInfo Infos[] = {
-      {"fixup_abs8", 0, 8, 0}, {"fixup_abs16", 0, 16, 0},
-      {"fixup_abs32", 0, 32, 0}, {"fixup_lo8", 0, 8, 0},
-      {"fixup_hi8", 0, 8, 0}, {"fixup_code16", 0, 16, 0},
-      {"fixup_code_lo8", 0, 8, 0}, {"fixup_code_hi8", 0, 8, 0},
-      {"fixup_pcrel8_word", 0, 8, 0},
-      {"fixup_tpoff_lo8", 0, 8, 0}, {"fixup_tpoff_hi8", 0, 8, 0},
-      {"fixup_insn_align", 0, 0, 0}
+        {"fixup_abs8", 0, 8, 0},
+        {"fixup_abs16", 0, 16, 0},
+        {"fixup_abs32", 0, 32, 0},
+        {"fixup_lo8", 0, 8, 0},
+        {"fixup_hi8", 0, 8, 0},
+        {"fixup_code16", 0, 16, 0},
+        {"fixup_code_lo8", 0, 8, 0},
+        {"fixup_code_hi8", 0, 8, 0},
+        {"fixup_pcrel8_word", 0, 8, 0},
+        {"fixup_tpoff_lo8", 0, 8, 0},
+        {"fixup_tpoff_hi8", 0, 8, 0},
+        {"fixup_insn_align", 0, 0, 0},
     };
     static_assert(std::size(Infos) == RISCC::NumTargetFixupKinds);
     if (Kind < FirstTargetFixupKind)
@@ -63,51 +78,44 @@ public:
     if (IsResolved) {
       if (Kind == FK_Data_1) {
         switch (Target.getSpecifier()) {
-        case RISCCMCExpr::VK_LO8: Value &= 0xff; break;
-        case RISCCMCExpr::VK_HI8: Value >>= 8; break;
+        case RISCCMCExpr::VK_LO8:
+          Value &= 0xff;
+          break;
+        case RISCCMCExpr::VK_HI8:
+          Value >>= 8;
+          break;
         case RISCCMCExpr::VK_CODE_LO8:
         case RISCCMCExpr::VK_CODE_HI8:
-          if (Value & 1)
-            getContext().reportError(Fixup.getLoc(),
-                                     "code address must be 2-byte aligned");
-          Value >>= 1;
-          if (Value > 0x7fff)
-            getContext().reportError(Fixup.getLoc(),
-                                     "code address exceeds 15-bit range");
+          adjustCodeAddress(Fixup, Value);
           if (Target.getSpecifier() == RISCCMCExpr::VK_CODE_LO8)
             Value &= 0xff;
           else
             Value >>= 8;
           break;
-        default: break;
+        default:
+          break;
         }
       }
       if (Kind == FK_Data_2 && Target.getSpecifier() == RISCCMCExpr::VK_CODE) {
-        if (Value & 1)
-          getContext().reportError(Fixup.getLoc(),
-                                   "code address must be 2-byte aligned");
-        Value >>= 1;
-        if (Value > 0x7fff)
-          getContext().reportError(Fixup.getLoc(),
-                                   "code address exceeds 15-bit range");
+        adjustCodeAddress(Fixup, Value);
       }
       switch (Kind) {
-      case RISCC::fixup_hi8: Value >>= 8; break;
-      case RISCC::fixup_lo8: Value &= 0xff; break;
-      case RISCC::fixup_tpoff_hi8: Value >>= 8; break;
-      case RISCC::fixup_tpoff_lo8: Value &= 0xff; break;
+      case RISCC::fixup_hi8:
+      case RISCC::fixup_tpoff_hi8:
+        Value >>= 8;
+        break;
+      case RISCC::fixup_lo8:
+      case RISCC::fixup_tpoff_lo8:
+        Value &= 0xff;
+        break;
       case RISCC::fixup_code16:
       case RISCC::fixup_code_lo8:
       case RISCC::fixup_code_hi8:
-        if (Value & 1)
-          getContext().reportError(Fixup.getLoc(),
-                                   "code address must be 2-byte aligned");
-        Value >>= 1;
-        if (Value > 0x7fff)
-          getContext().reportError(Fixup.getLoc(),
-                                   "code address exceeds 15-bit range");
-        if (Kind == RISCC::fixup_code_lo8) Value &= 0xff;
-        if (Kind == RISCC::fixup_code_hi8) Value >>= 8;
+        adjustCodeAddress(Fixup, Value);
+        if (Kind == RISCC::fixup_code_lo8)
+          Value &= 0xff;
+        if (Kind == RISCC::fixup_code_hi8)
+          Value >>= 8;
         break;
       case RISCC::fixup_pcrel8_word: {
         if (Value & 1)
@@ -120,7 +128,8 @@ public:
         Value = Rel & 0xff;
         break;
       }
-      default: break;
+      default:
+        break;
       }
     } else {
       Value = 0;

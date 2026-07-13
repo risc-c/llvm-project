@@ -29,6 +29,9 @@ using namespace lld;
 using namespace lld::elf;
 
 namespace {
+constexpr uint64_t dataAddressMask = RISCC_ELF_DATA_ADDRESS_TAG - 1;
+constexpr unsigned taggedAddressBits = 17;
+
 class RISCC final : public TargetInfo {
 public:
   RISCC(Ctx &ctx) : TargetInfo(ctx) { defaultImageBase = 0; }
@@ -58,8 +61,8 @@ uint32_t RISCC::calcEFlags() const {
     return cast<ObjFile<ELF32LE>>(file)->getObj().getHeader().e_flags;
   };
 
-  // Capability order is min < sys < full, although the provisional numeric
-  // e_flags encodings are not ordered that way.
+  // Capability order is min < sys < full, although the numeric e_flags
+  // encodings are not ordered that way.
   unsigned outputRank = 0;
   for (InputFile *file : ctx.objectFiles) {
     uint32_t flags = getFlags(file);
@@ -96,9 +99,18 @@ uint32_t RISCC::calcEFlags() const {
     outputRank = std::max(outputRank, rank);
   }
 
-  uint32_t profile = outputRank == 3   ? EF_RISCC_PROFILE_FULL
-                     : outputRank == 2 ? EF_RISCC_PROFILE_SYS
-                                       : EF_RISCC_PROFILE_MIN;
+  uint32_t profile;
+  switch (outputRank) {
+  case 3:
+    profile = EF_RISCC_PROFILE_FULL;
+    break;
+  case 2:
+    profile = EF_RISCC_PROFILE_SYS;
+    break;
+  default:
+    profile = EF_RISCC_PROFILE_MIN;
+    break;
+  }
   return EF_RISCC_ABI_V1 | profile;
 }
 
@@ -155,12 +167,6 @@ RelExpr RISCC::getRelExpr(RelType type, const Symbol &s,
 void RISCC::scanSection(InputSectionBase &sec) {
   TargetInfo::scanSection(sec);
 
-  // Non-ALLOC relocations describe the ELF/debug representation, where an
-  // ordinary absolute byte address may legitimately name code. Only enforce
-  // architectural code/data domains for allocated runtime sections.
-  if (!(sec.flags & SHF_ALLOC))
-    return;
-
   for (const Relocation &rel : sec.relocs()) {
     if (!rel.sym)
       continue;
@@ -184,9 +190,6 @@ void RISCC::scanSection(InputSectionBase &sec) {
         Err(ctx) << sec.getLocation(rel.offset) << ": relocation "
                  << rel.type << " against " << rel.sym
                  << " requires a TLS symbol";
-      if (ctx.arg.shared)
-        Err(ctx) << sec.getLocation(rel.offset) << ": relocation "
-                 << rel.type << " cannot be used with -shared";
       break;
     default:
       break;
@@ -203,7 +206,7 @@ void RISCC::validateOutput() const {
   if (ctx.arg.relocatable)
     return;
 
-  constexpr uint64_t codeLimit = 0x10000;
+  constexpr uint64_t codeLimit = RISCC_ELF_DATA_ADDRESS_TAG;
   for (const OutputSection *section : ctx.outputSections) {
     if ((section->flags & (SHF_ALLOC | SHF_EXECINSTR)) !=
             (SHF_ALLOC | SHF_EXECINSTR) ||
@@ -227,6 +230,11 @@ void RISCC::validateOutput() const {
   if (!ctx.arg.entry.empty()) {
     if (Symbol *symbol = ctx.symtab->find(ctx.arg.entry)) {
       if (symbol->isDefined()) {
+        if (const OutputSection *section = symbol->getOutputSection();
+            section && !(section->flags & SHF_EXECINSTR))
+          Err(ctx) << "entry symbol " << symbol
+                   << " is defined in non-executable section "
+                   << section->name;
         entry = symbol->getVA(ctx);
         hasEntry = true;
       }
@@ -242,7 +250,7 @@ void RISCC::validateOutput() const {
 
 bool RISCC::checkCodeAddress(uint8_t *loc, const Relocation &rel,
                              uint64_t val) const {
-  if (val > 0xffff) {
+  if (val >= RISCC_ELF_DATA_ADDRESS_TAG) {
     Err(ctx) << getErrorLoc(ctx, loc) << "relocation " << rel.type
              << " cannot encode tagged data-space or out-of-range address 0x"
              << utohexstr(val);
@@ -257,26 +265,26 @@ void RISCC::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_RISCC_NONE:
     break;
   case R_RISCC_ABS8: {
-    checkUInt(ctx, loc, val, 17, rel);
-    uint64_t dataVal = val & 0xffff;
+    checkUInt(ctx, loc, val, taggedAddressBits, rel);
+    uint64_t dataVal = val & dataAddressMask;
     checkUInt(ctx, loc, dataVal, 8, rel);
     *loc = dataVal;
     break;
   }
   case R_RISCC_ABS16:
-    checkUInt(ctx, loc, val, 17, rel);
-    write16le(loc, val & 0xffff);
+    checkUInt(ctx, loc, val, taggedAddressBits, rel);
+    write16le(loc, val & dataAddressMask);
     break;
   case R_RISCC_ABS32:
-    checkUInt(ctx, loc, val, 17, rel);
-    write32le(loc, val & 0xffff);
+    checkUInt(ctx, loc, val, taggedAddressBits, rel);
+    write32le(loc, val & dataAddressMask);
     break;
   case R_RISCC_LO8:
-    checkUInt(ctx, loc, val, 17, rel);
+    checkUInt(ctx, loc, val, taggedAddressBits, rel);
     *loc = val & 0xff;
     break;
   case R_RISCC_HI8:
-    checkUInt(ctx, loc, val, 17, rel);
+    checkUInt(ctx, loc, val, taggedAddressBits, rel);
     *loc = (val >> 8) & 0xff;
     break;
   case R_RISCC_CODE16:

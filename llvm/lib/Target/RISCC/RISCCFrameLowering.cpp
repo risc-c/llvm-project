@@ -15,16 +15,22 @@ RISCCFrameLowering::RISCCFrameLowering(const RISCCSubtarget &STI)
 static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      const DebugLoc &DL, const RISCCInstrInfo &TII,
                      int64_t Amount, MachineInstr::MIFlag Flag) {
-  if (!Amount) return;
+  if (!Amount)
+    return;
   if (isInt<8>(Amount)) {
     BuildMI(MBB, I, DL, TII.get(RISCC::ADDI), RISCC::R7)
-        .addReg(RISCC::R7).addImm(Amount).setMIFlag(Flag);
+        .addReg(RISCC::R7)
+        .addImm(Amount)
+        .setMIFlag(Flag);
     return;
   }
   BuildMI(MBB, I, DL, TII.get(RISCC::LI), RISCC::R0)
-      .addImm(std::abs(Amount)).setMIFlag(Flag);
+      .addImm(std::abs(Amount))
+      .setMIFlag(Flag);
   BuildMI(MBB, I, DL, TII.get(Amount < 0 ? RISCC::SUB : RISCC::ADD), RISCC::R7)
-      .addReg(RISCC::R7).addReg(RISCC::R0, RegState::Kill).setMIFlag(Flag);
+      .addReg(RISCC::R7)
+      .addReg(RISCC::R0, RegState::Kill)
+      .setMIFlag(Flag);
 }
 
 void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
@@ -40,9 +46,12 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
   int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
   if (FI >= 0) {
     BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
-        .addReg(RISCC::S7).setMIFlag(MachineInstr::FrameSetup);
+        .addReg(RISCC::S7)
+        .setMIFlag(MachineInstr::FrameSetup);
     BuildMI(MBB, I, DL, TII.get(RISCC::STW))
-        .addReg(RISCC::R0, RegState::Kill).addFrameIndex(FI).addImm(0)
+        .addReg(RISCC::R0, RegState::Kill)
+        .addFrameIndex(FI)
+        .addImm(0)
         .setMIFlag(MachineInstr::FrameSetup);
   }
 }
@@ -55,9 +64,12 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
   if (FI >= 0) {
     BuildMI(MBB, I, DL, TII.get(RISCC::LDW), RISCC::R0)
-        .addFrameIndex(FI).addImm(0).setMIFlag(MachineInstr::FrameDestroy);
+        .addFrameIndex(FI)
+        .addImm(0)
+        .setMIFlag(MachineInstr::FrameDestroy);
     BuildMI(MBB, I, DL, TII.get(RISCC::MTS), RISCC::S7)
-        .addReg(RISCC::R0, RegState::Kill).setMIFlag(MachineInstr::FrameDestroy);
+        .addReg(RISCC::R0, RegState::Kill)
+        .setMIFlag(MachineInstr::FrameDestroy);
   }
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
            MachineInstr::FrameDestroy);
@@ -75,9 +87,8 @@ MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
 void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
     MachineFunction &MF, RegScavenger *RS) const {
   if (MF.getFrameInfo().getMaxCallFrameSize() > 126)
-    report_fatal_error(
-        "RISC-C initial backend supports outgoing call frames of at most "
-        "126 bytes");
+    report_fatal_error("RISC-C supports outgoing call frames of at most 126 "
+                       "bytes");
   if (MF.getFrameInfo().hasCalls()) {
     int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);

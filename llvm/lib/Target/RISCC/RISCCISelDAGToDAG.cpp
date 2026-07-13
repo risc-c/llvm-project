@@ -23,6 +23,7 @@ public:
     return SelectionDAGISel::runOnMachineFunction(MF);
   }
   void Select(SDNode *) override;
+  std::pair<SDValue, SDValue> selectWordAddress(SDValue, const SDLoc &);
 
 #include "RISCCGenDAGISel.inc"
 };
@@ -37,6 +38,22 @@ public:
 }
 
 char RISCCDAGToDAGISelLegacy::ID = 0;
+
+std::pair<SDValue, SDValue>
+RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
+  SDValue Base = Ptr;
+  int64_t Displacement = 0;
+  if (Ptr.getOpcode() == ISD::ADD) {
+    if (auto *C = dyn_cast<ConstantSDNode>(Ptr.getOperand(1));
+        C && isInt<8>(C->getSExtValue())) {
+      Base = Ptr.getOperand(0);
+      Displacement = C->getSExtValue();
+    }
+  }
+  SDValue Disp = CurDAG->getTargetConstant(
+      APInt(16, Displacement, true), DL, MVT::i16);
+  return {Base, Disp};
+}
 
 void RISCCDAGToDAGISel::Select(SDNode *N) {
   if (N->isMachineOpcode()) {
@@ -57,18 +74,9 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     auto *LD = cast<LoadSDNode>(N);
     SDValue Chain = LD->getChain(), Ptr = LD->getBasePtr();
     if (LD->getMemoryVT() == MVT::i16) {
-      SDValue Base = Ptr;
-      int64_t Disp = 0;
-      if (Ptr.getOpcode() == ISD::ADD) {
-        if (auto *C = dyn_cast<ConstantSDNode>(Ptr.getOperand(1));
-            C && isInt<8>(C->getSExtValue())) {
-          Base = Ptr.getOperand(0); Disp = C->getSExtValue();
-        }
-      }
-      SDValue DispOperand = CurDAG->getTargetConstant(
-          APInt(16, Disp, true), DL, MVT::i16);
+      auto [Base, Disp] = selectWordAddress(Ptr, DL);
       CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
-                           {Base, DispOperand, Chain});
+                           {Base, Disp, Chain});
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {
@@ -87,18 +95,9 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     auto *ST = cast<StoreSDNode>(N);
     SDValue Chain = ST->getChain(), Val = ST->getValue(), Ptr = ST->getBasePtr();
     if (ST->getMemoryVT() == MVT::i16) {
-      SDValue Base = Ptr;
-      int64_t Disp = 0;
-      if (Ptr.getOpcode() == ISD::ADD) {
-        if (auto *C = dyn_cast<ConstantSDNode>(Ptr.getOperand(1));
-            C && isInt<8>(C->getSExtValue())) {
-          Base = Ptr.getOperand(0); Disp = C->getSExtValue();
-        }
-      }
-      SDValue DispOperand = CurDAG->getTargetConstant(
-          APInt(16, Disp, true), DL, MVT::i16);
+      auto [Base, Disp] = selectWordAddress(Ptr, DL);
       CurDAG->SelectNodeTo(N, RISCC::STW, MVT::Other,
-                           {Val, Base, DispOperand, Chain});
+                           {Val, Base, Disp, Chain});
       return;
     }
     if (ST->getMemoryVT() == MVT::i8) {

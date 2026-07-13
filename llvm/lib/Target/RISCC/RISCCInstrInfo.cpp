@@ -67,34 +67,47 @@ void RISCCInstrInfo::loadRegFromStackSlot(
       .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
 }
 
-static bool isCondBranch(unsigned O) {
-  return O == RISCC::BEQZ || O == RISCC::BNEZ || O == RISCC::BLTZ ||
-         O == RISCC::BGEZ;
+static bool isCondBranch(unsigned Opcode) {
+  return Opcode == RISCC::BEQZ || Opcode == RISCC::BNEZ ||
+         Opcode == RISCC::BLTZ || Opcode == RISCC::BGEZ;
 }
 
 bool RISCCInstrInfo::reverseBranchCondition(
     SmallVectorImpl<MachineOperand> &Cond) const {
   assert(Cond.size() == 1 && Cond[0].isImm());
   switch (Cond[0].getImm()) {
-  case RISCC::BEQZ: Cond[0].setImm(RISCC::BNEZ); return false;
-  case RISCC::BNEZ: Cond[0].setImm(RISCC::BEQZ); return false;
-  case RISCC::BLTZ: Cond[0].setImm(RISCC::BGEZ); return false;
-  case RISCC::BGEZ: Cond[0].setImm(RISCC::BLTZ); return false;
-  default: return true;
+  case RISCC::BEQZ:
+    Cond[0].setImm(RISCC::BNEZ);
+    return false;
+  case RISCC::BNEZ:
+    Cond[0].setImm(RISCC::BEQZ);
+    return false;
+  case RISCC::BLTZ:
+    Cond[0].setImm(RISCC::BGEZ);
+    return false;
+  case RISCC::BGEZ:
+    Cond[0].setImm(RISCC::BLTZ);
+    return false;
+  default:
+    return true;
   }
 }
 
 bool RISCCInstrInfo::analyzeBranch(
     MachineBasicBlock &MBB, MachineBasicBlock *&TBB, MachineBasicBlock *&FBB,
-    SmallVectorImpl<MachineOperand> &Cond, bool AllowModify) const {
+    SmallVectorImpl<MachineOperand> &Cond, bool) const {
   auto I = MBB.getLastNonDebugInstr();
-  if (I == MBB.end()) return false;
+  if (I == MBB.end())
+    return false;
   if (I->getOpcode() == RISCC::JMP8 || I->getOpcode() == RISCC::JMP16) {
-    if (!I->getOperand(0).isMBB()) return true;
+    if (!I->getOperand(0).isMBB())
+      return true;
     TBB = I->getOperand(0).getMBB();
-    if (I == MBB.begin()) return false;
+    if (I == MBB.begin())
+      return false;
     --I;
-    while (I->isDebugInstr() && I != MBB.begin()) --I;
+    while (I->isDebugInstr() && I != MBB.begin())
+      --I;
     if (isCondBranch(I->getOpcode()) && I->getOperand(0).isMBB()) {
       FBB = TBB;
       TBB = I->getOperand(0).getMBB();
@@ -123,7 +136,8 @@ unsigned RISCCInstrInfo::removeBranch(MachineBasicBlock &MBB,
     I->eraseFromParent();
     ++Count;
   }
-  if (BytesRemoved) *BytesRemoved = Bytes;
+  if (BytesRemoved)
+    *BytesRemoved = Bytes;
   return Count;
 }
 
@@ -134,25 +148,38 @@ unsigned RISCCInstrInfo::insertBranch(
   unsigned Count = 0, Bytes = 0;
   if (!Cond.empty()) {
     BuildMI(&MBB, DL, get(Cond[0].getImm())).addMBB(TBB);
-    ++Count; Bytes += 2;
-    if (FBB) { BuildMI(&MBB, DL, get(RISCC::JMP8)).addMBB(FBB); ++Count; Bytes += 2; }
+    ++Count;
+    Bytes += 2;
+    if (FBB) {
+      BuildMI(&MBB, DL, get(RISCC::JMP8)).addMBB(FBB);
+      ++Count;
+      Bytes += 2;
+    }
   } else {
     BuildMI(&MBB, DL, get(RISCC::JMP8)).addMBB(TBB);
-    ++Count; Bytes += 2;
+    ++Count;
+    Bytes += 2;
   }
-  if (BytesAdded) *BytesAdded = Bytes;
+  if (BytesAdded)
+    *BytesAdded = Bytes;
   return Count;
 }
 
 unsigned RISCCInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   switch (MI.getOpcode()) {
-  case TargetOpcode::CFI_INSTRUCTION: case TargetOpcode::EH_LABEL:
-  case TargetOpcode::IMPLICIT_DEF: case TargetOpcode::KILL:
-  case TargetOpcode::DBG_VALUE: return 0;
-  case TargetOpcode::INLINEASM: case TargetOpcode::INLINEASM_BR:
+  case TargetOpcode::CFI_INSTRUCTION:
+  case TargetOpcode::EH_LABEL:
+  case TargetOpcode::IMPLICIT_DEF:
+  case TargetOpcode::KILL:
+  case TargetOpcode::DBG_VALUE:
+    return 0;
+  case TargetOpcode::INLINEASM:
+  case TargetOpcode::INLINEASM_BR:
     return getInlineAsmLength(MI.getOperand(0).getSymbolName(),
                               MI.getMF()->getTarget().getMCAsmInfo());
-  case TargetOpcode::BUNDLE: return getInstBundleSize(MI);
-  default: return MI.getDesc().getSize();
+  case TargetOpcode::BUNDLE:
+    return getInstBundleSize(MI);
+  default:
+    return MI.getDesc().getSize();
   }
 }

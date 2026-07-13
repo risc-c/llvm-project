@@ -15,7 +15,6 @@ using namespace clang::CodeGen;
 namespace {
 
 class RISCCABIInfo : public DefaultABIInfo {
-  static constexpr unsigned ArgumentSlots = 4;
   static constexpr unsigned ReturnSlots = 4;
   static constexpr unsigned SlotBits = 16;
 
@@ -35,16 +34,14 @@ class RISCCABIInfo : public DefaultABIInfo {
     return ABIArgInfo::getDirect(CoerceTy);
   }
 
-  ABIArgInfo classifyReturnType(QualType Ty, bool &LargeReturn) const {
+  ABIArgInfo classifyReturnType(QualType Ty) const {
     if (Ty->isVoidType())
       return ABIArgInfo::getIgnore();
 
     const unsigned Size = getContext().getTypeSize(Ty);
-    if (Size > ReturnSlots * SlotBits) {
-      LargeReturn = true;
+    if (Size > ReturnSlots * SlotBits)
       return getNaturalAlignIndirect(Ty,
                                      getDataLayout().getAllocaAddrSpace());
-    }
 
     // Small aggregates are returned as low-word-first 16-bit slots in
     // r1..r4.  Explicit coercion is important: leaving the source aggregate
@@ -58,18 +55,9 @@ class RISCCABIInfo : public DefaultABIInfo {
     return ABIArgInfo::getDirect();
   }
 
-  ABIArgInfo classifyArgumentType(QualType Ty,
-                                  unsigned &RemainingSlots) const {
+  ABIArgInfo classifyArgumentType(QualType Ty) const {
     Ty = useFirstFieldIfTransparentUnion(Ty);
-    unsigned Size = getContext().getTypeSize(Ty);
-    unsigned Slots = llvm::alignTo(Size, SlotBits) / SlotBits;
-
-    // An argument is never split.  Once one argument cannot fit, it and every
-    // following argument are assigned to the stack by the backend CC.
-    if (Slots > RemainingSlots)
-      RemainingSlots = 0;
-    else
-      RemainingSlots -= Slots;
+    const unsigned Size = getContext().getTypeSize(Ty);
 
     // The ABI promotes byte-sized integer arguments to one 16-bit slot.
     if (Ty->isIntegralOrEnumerationType() && Size <= 8)
@@ -87,17 +75,11 @@ public:
   explicit RISCCABIInfo(CodeGenTypes &CGT) : DefaultABIInfo(CGT) {}
 
   void computeInfo(CGFunctionInfo &FI) const override {
-    bool LargeReturn = false;
     if (!getCXXABI().classifyReturnType(FI))
-      FI.getReturnInfo() =
-          classifyReturnType(FI.getReturnType(), LargeReturn);
-
-    unsigned RemainingSlots = ArgumentSlots;
-    if (LargeReturn)
-      --RemainingSlots; // The hidden result pointer is passed in r1.
+      FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
 
     for (auto &Arg : FI.arguments())
-      Arg.info = classifyArgumentType(Arg.type, RemainingSlots);
+      Arg.info = classifyArgumentType(Arg.type);
   }
 
   RValue EmitVAArg(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,

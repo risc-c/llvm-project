@@ -51,6 +51,8 @@
 # RUN:   -o code-crosses 2>&1 | FileCheck %s --check-prefix=CODE-CROSSES
 # RUN: not ld.lld -m elf32lriscc -Ttext=0 -e 0x10000 layout.o \
 # RUN:   -o entry-high 2>&1 | FileCheck %s --check-prefix=ENTRY-HIGH
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 -e data_entry layout.o \
+# RUN:   -o entry-data 2>&1 | FileCheck %s --check-prefix=ENTRY-DATA
 
 # RELOCS-DAG: error: {{.*}}relocation R_RISCC_CODE16 cannot encode tagged data-space or out-of-range address 0x10000
 # RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_CODE16: 0x101 is not aligned to 2 bytes
@@ -104,6 +106,7 @@
 # CODE-ODD-DAG: error: entry point 0x1 is not an aligned RISC-C code byte address in [0x0, 0x10000)
 # CODE-CROSSES: error: executable section .text range {{.*}} is outside the RISC-C code byte address range [0x0, 0x10000)
 # ENTRY-HIGH: error: entry point 0x10000 is not an aligned RISC-C code byte address in [0x0, 0x10000)
+# ENTRY-DATA: error: entry symbol data_entry is defined in non-executable section .data
 
 #--- errors.yaml
 --- !ELF
@@ -324,11 +327,19 @@ Sections:
     Type:    SHT_PROGBITS
     Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
     Content: 00000000
+  - Name:    .data
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Content: 0000
 Symbols:
   - Name:    _start
     Type:    STT_FUNC
     Binding: STB_GLOBAL
     Section: .text
+  - Name:    data_entry
+    Type:    STT_OBJECT
+    Binding: STB_GLOBAL
+    Section: .data
 
 #--- patch-flags.py
 import struct

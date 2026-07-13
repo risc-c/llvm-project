@@ -4,6 +4,7 @@
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=null < %t/address.s 2>&1 | FileCheck %s --check-prefix=ADDRESS
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/encoding.s 2>&1 | FileCheck %s --check-prefix=ENCODING
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/far-branch.s 2>&1 | FileCheck %s --check-prefix=BRANCH
+# RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/alignment.s 2>&1 | FileCheck %s --check-prefix=ALIGN
 
 #--- ranges.s
 ldi r0, 256
@@ -29,7 +30,7 @@ jal16 s7, lo8(func)
 beqz code(func)
 # ENCODING: error: target modifier is invalid on a short branch
 li r0, lo8(data)
-# ENCODING: error: LI accepts only an unmodified or code() expression
+# ENCODING: error: LI accepts only an unmodified, code(), or tpoff() expression
 
 #--- far-branch.s
 beqz far
@@ -37,3 +38,8 @@ beqz far
 .space 514
 far:
 nop
+
+#--- alignment.s
+.byte 0
+nop
+# ALIGN: error: instruction must be 2-byte aligned

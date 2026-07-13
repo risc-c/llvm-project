@@ -1,7 +1,5 @@
 #include "RISCCFixupKinds.h"
 #include "RISCCMCTargetDesc.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
@@ -28,21 +26,22 @@ public:
 
   void emitInstruction(const MCInst &Inst,
                        const MCSubtargetInfo &STI) override {
-    // Determine the encoded size before the base streamer appends it.  The
-    // marker is object-only, so it does not pollute llvm-mc -show-encoding.
-    SmallString<16> Bytes;
-    SmallVector<MCFixup, 4> IgnoredFixups;
-    getAssembler().getEmitter().encodeInstruction(Inst, Bytes, IgnoredFixups,
-                                                  STI);
+    MCFragment *Fragment = getCurrentFragment();
+    size_t Offset = getCurFragSize();
     MCELFStreamer::emitInstruction(Inst, STI);
-    if (Bytes.empty())
+
+    // The base streamer may append into a fresh fragment. Mark the actual
+    // instruction start so the assembler can diagnose odd code addresses.
+    if (Fragment != getCurrentFragment()) {
+      Fragment = getCurrentFragment();
+      Offset = 0;
+    }
+    if (getCurFragSize() == Offset)
       return;
 
-    MCFragment *F = getCurrentFragment();
-    assert(getCurFragSize() >= Bytes.size());
-    F->addFixup(MCFixup::create(
-        getCurFragSize() - Bytes.size(),
-        MCConstantExpr::create(0, getContext()), RISCC::fixup_insn_align));
+    Fragment->addFixup(MCFixup::create(
+        Offset, MCConstantExpr::create(0, getContext()),
+        RISCC::fixup_insn_align));
   }
 };
 
@@ -51,12 +50,12 @@ public:
   RISCCTargetELFStreamer(MCStreamer &S, const MCSubtargetInfo &STI)
       : MCTargetStreamer(S) {
     auto &ES = static_cast<MCELFStreamer &>(Streamer);
-    unsigned Profile = STI.hasFeature(RISCC::FeatureMul)
-                           ? ELF::EF_RISCC_PROFILE_FULL
-                       : STI.hasFeature(RISCC::FeatureSys) ||
-                                 STI.hasFeature(RISCC::FeatureWideShift)
-                           ? ELF::EF_RISCC_PROFILE_SYS
-                           : ELF::EF_RISCC_PROFILE_MIN;
+    unsigned Profile = ELF::EF_RISCC_PROFILE_MIN;
+    if (STI.hasFeature(RISCC::FeatureSys) ||
+        STI.hasFeature(RISCC::FeatureWideShift))
+      Profile = ELF::EF_RISCC_PROFILE_SYS;
+    if (STI.hasFeature(RISCC::FeatureMul))
+      Profile = ELF::EF_RISCC_PROFILE_FULL;
     ES.getWriter().setELFHeaderEFlags(ELF::EF_RISCC_ABI_V1 | Profile);
   }
 };

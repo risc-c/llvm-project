@@ -18,12 +18,28 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "riscc-asm-printer"
 
 namespace {
+static unsigned invertBranchOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case RISCC::BEQZ:
+    return RISCC::BNEZ;
+  case RISCC::BNEZ:
+    return RISCC::BEQZ;
+  case RISCC::BLTZ:
+    return RISCC::BGEZ;
+  case RISCC::BGEZ:
+    return RISCC::BLTZ;
+  default:
+    llvm_unreachable("unexpected conditional branch");
+  }
+}
+
 class RISCCAsmPrinter final : public AsmPrinter {
 public:
   static char ID;
@@ -31,7 +47,9 @@ public:
       : AsmPrinter(TM, std::move(S), ID) {}
   StringRef getPassName() const override { return "RISC-C Assembly Printer"; }
   bool runOnMachineFunction(MachineFunction &MF) override {
-    SetupMachineFunction(MF); emitFunctionBody(); return false;
+    SetupMachineFunction(MF);
+    emitFunctionBody();
+    return false;
   }
   void emitInstruction(const MachineInstr *MI) override {
     RISCC_MC::verifyInstructionPredicates(MI->getOpcode(),
@@ -39,16 +57,10 @@ public:
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
     if (MI->getOpcode() == RISCC::LONG_BR) {
-      // LONG_BR is a post-layout six-byte macro.  Emit its two real
-      // instructions here so both object output and textual -S output are
-      // valid; an empty-AsmString pseudo cannot be handled by InstPrinter.
-      unsigned ShortOpc = MI->getOperand(0).getImm();
-      unsigned Inverse = ShortOpc == RISCC::BEQZ ? RISCC::BNEZ
-                       : ShortOpc == RISCC::BNEZ ? RISCC::BEQZ
-                       : ShortOpc == RISCC::BLTZ ? RISCC::BGEZ
-                                                : RISCC::BLTZ;
+      // LONG_BR is expanded here so textual and object output use the same
+      // inverse short branch followed by a four-byte jump.
       MCInst Skip;
-      Skip.setOpcode(Inverse);
+      Skip.setOpcode(invertBranchOpcode(MI->getOperand(0).getImm()));
       Skip.addOperand(MCOperand::createImm(2)); // Skip the four-byte JMP16.
       EmitToStreamer(*OutStreamer, Skip);
 
@@ -83,14 +95,18 @@ public:
     if (ExtraCode && ExtraCode[0])
       return AsmPrinter::PrintAsmOperand(MI, OpNo, ExtraCode, OS);
     const MachineOperand &MO = MI->getOperand(OpNo);
-    if (MO.isReg()) OS << RISCCInstPrinter::getRegisterName(MO.getReg());
-    else if (MO.isImm()) OS << MO.getImm();
-    else return true;
+    if (MO.isReg())
+      OS << RISCCInstPrinter::getRegisterName(MO.getReg());
+    else if (MO.isImm())
+      OS << MO.getImm();
+    else
+      return true;
     return false;
   }
   bool PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNo,
                              const char *ExtraCode, raw_ostream &OS) override {
-    if (ExtraCode && ExtraCode[0]) return true;
+    if (ExtraCode && ExtraCode[0])
+      return true;
     OS << '[' << RISCCInstPrinter::getRegisterName(MI->getOperand(OpNo).getReg())
        << ']';
     return false;
@@ -111,7 +127,8 @@ PreservedAnalyses RISCCAsmPrinterBeginPass::run(Module &M,
                                                 ModuleAnalysisManager &MAM) {
   auto &AP = static_cast<RISCCAsmPrinter &>(
       MAM.getResult<AsmPrinterAnalysis>(M).getPrinter());
-  setupModuleAsmPrinter(M, MAM, AP); AP.doInitialization(M);
+  setupModuleAsmPrinter(M, MAM, AP);
+  AP.doInitialization(M);
   return PreservedAnalyses::all();
 }
 PreservedAnalyses RISCCAsmPrinterPass::run(
@@ -120,13 +137,15 @@ PreservedAnalyses RISCCAsmPrinterPass::run(
       MFAM.getResult<ModuleAnalysisManagerMachineFunctionProxy>(MF)
           .getCachedResult<AsmPrinterAnalysis>(*MF.getFunction().getParent())
           ->getPrinter());
-  setupMachineFunctionAsmPrinter(MFAM, MF, AP); AP.runOnMachineFunction(MF);
+  setupMachineFunctionAsmPrinter(MFAM, MF, AP);
+  AP.runOnMachineFunction(MF);
   return PreservedAnalyses::all();
 }
 PreservedAnalyses RISCCAsmPrinterEndPass::run(Module &M,
                                               ModuleAnalysisManager &MAM) {
   auto &AP = static_cast<RISCCAsmPrinter &>(
       MAM.getResult<AsmPrinterAnalysis>(M).getPrinter());
-  setupModuleAsmPrinter(M, MAM, AP); AP.doFinalization(M);
+  setupModuleAsmPrinter(M, MAM, AP);
+  AP.doFinalization(M);
   return PreservedAnalyses::all();
 }

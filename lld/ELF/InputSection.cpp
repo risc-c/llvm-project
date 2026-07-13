@@ -778,8 +778,9 @@ static int64_t getTlsTpOffset(Ctx &ctx, const Symbol &s) {
     // to allow a signed 16-bit offset to reach 0x1000 of TCB/thread-library
     // data and 0xf000 of the program's TLS segment.
     return s.getVA(ctx, 0) + (tls->p_vaddr & (tls->p_align - 1)) - 0x7000;
-  case EM_LOONGARCH:
   case EM_RISCC:
+    return s.getVA(ctx, 0) + (tls->p_vaddr & (tls->p_align - 1));
+  case EM_LOONGARCH:
   case EM_RISCV:
     // For TLSDESC=>IE, R_RISCV_TLSDESC_{LOAD_LO12,ADD_LO12_I,CALL} reference
     // a non-TLS label and reach here.

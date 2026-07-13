@@ -11,12 +11,79 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
 namespace {
+static unsigned immediateOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case RISCC::LDI:
+    return 0;
+  case RISCC::LUI:
+    return 1;
+  case RISCC::ADDI:
+    return 2;
+  case RISCC::CMPI:
+    return 3;
+  case RISCC::ANDI:
+    return 4;
+  case RISCC::ORI:
+    return 5;
+  case RISCC::XORI:
+    return 6;
+  default:
+    llvm_unreachable("not an immediate RISC-C opcode");
+  }
+}
+
+static unsigned branchCondition(unsigned Opcode) {
+  switch (Opcode) {
+  case RISCC::BEQZ:
+    return 0;
+  case RISCC::BNEZ:
+    return 1;
+  case RISCC::BLTZ:
+    return 2;
+  case RISCC::BGEZ:
+    return 3;
+  case RISCC::JMP8:
+    return 4;
+  default:
+    llvm_unreachable("not a short RISC-C branch");
+  }
+}
+
+static unsigned registerFunction(unsigned Opcode) {
+  switch (Opcode) {
+  case RISCC::ADD:
+    return 0;
+  case RISCC::SUB:
+    return 1;
+  case RISCC::SLT:
+    return 2;
+  case RISCC::SLTU:
+    return 3;
+  case RISCC::AND:
+    return 4;
+  case RISCC::OR:
+    return 5;
+  case RISCC::XOR:
+    return 6;
+  case RISCC::MUL:
+    return 7;
+  case RISCC::LDWX:
+    return 8;
+  case RISCC::LDB:
+    return 10;
+  case RISCC::LDBS:
+    return 14;
+  default:
+    llvm_unreachable("not a register RISC-C opcode");
+  }
+}
+
 class RISCCMCCodeEmitter final : public MCCodeEmitter {
-  const MCInstrInfo &MCII;
   MCContext &Ctx;
 
   unsigned reg(const MCOperand &Op) const {
@@ -32,15 +99,15 @@ class RISCCMCCodeEmitter final : public MCCodeEmitter {
     support::endian::write(CB, Word, llvm::endianness::little);
   }
   unsigned immediate(const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
-                     unsigned Offset, RISCC::Fixups DefaultKind) const;
+                     unsigned Offset, RISCC::Fixups DefaultKind,
+                     SMLoc Loc) const;
   unsigned branchImmediate(const MCOperand &Op,
-                           SmallVectorImpl<MCFixup> &Fixups) const;
+                           SmallVectorImpl<MCFixup> &Fixups, SMLoc Loc) const;
   unsigned codeImmediate(const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
                          unsigned Offset, SMLoc Loc) const;
 
 public:
-  RISCCMCCodeEmitter(const MCInstrInfo &MCII, MCContext &Ctx)
-      : MCII(MCII), Ctx(Ctx) {}
+  explicit RISCCMCCodeEmitter(MCContext &Ctx) : Ctx(Ctx) {}
   void encodeInstruction(const MCInst &, SmallVectorImpl<char> &,
                          SmallVectorImpl<MCFixup> &,
                          const MCSubtargetInfo &) const override;
@@ -48,17 +115,17 @@ public:
 }
 
 unsigned RISCCMCCodeEmitter::branchImmediate(
-    const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups) const {
+    const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups, SMLoc Loc) const {
   if (Op.isImm()) {
     if (!isInt<8>(Op.getImm())) {
-      Ctx.reportError(SMLoc(), "branch displacement exceeds signed 8-bit range");
+      Ctx.reportError(Loc, "branch displacement exceeds signed 8-bit range");
       return 0;
     }
     return Op.getImm() & 0xff;
   }
   const MCExpr *Expr = Op.getExpr();
   if (const auto *RE = dyn_cast<RISCCMCExpr>(Expr)) {
-    Ctx.reportError(SMLoc(), "target modifier is invalid on a short branch");
+    Ctx.reportError(Loc, "target modifier is invalid on a short branch");
     Expr = RE->getSubExpr();
   }
   Fixups.push_back(MCFixup::create(0, Expr, RISCC::fixup_pcrel8_word, true));
@@ -89,7 +156,8 @@ unsigned RISCCMCCodeEmitter::codeImmediate(
 unsigned RISCCMCCodeEmitter::immediate(const MCOperand &Op,
                                        SmallVectorImpl<MCFixup> &Fixups,
                                        unsigned Offset,
-                                       RISCC::Fixups DefaultKind) const {
+                                       RISCC::Fixups DefaultKind,
+                                       SMLoc Loc) const {
   if (Op.isImm())
     return Op.getImm();
 
@@ -97,66 +165,78 @@ unsigned RISCCMCCodeEmitter::immediate(const MCOperand &Op,
   RISCC::Fixups Kind = DefaultKind;
   if (const auto *RE = dyn_cast<RISCCMCExpr>(Expr)) {
     switch (RE->getKind()) {
-    case RISCCMCExpr::VK_None: break;
-    case RISCCMCExpr::VK_LO8: Kind = RISCC::fixup_lo8; break;
-    case RISCCMCExpr::VK_HI8: Kind = RISCC::fixup_hi8; break;
-    case RISCCMCExpr::VK_CODE:
-      Kind = DefaultKind == RISCC::fixup_hi8 ? RISCC::fixup_code_hi8
-           : DefaultKind == RISCC::fixup_lo8 ? RISCC::fixup_code_lo8
-                                             : RISCC::fixup_code16;
+    case RISCCMCExpr::VK_None:
       break;
-    case RISCCMCExpr::VK_CODE_LO8: Kind = RISCC::fixup_code_lo8; break;
-    case RISCCMCExpr::VK_CODE_HI8: Kind = RISCC::fixup_code_hi8; break;
+    case RISCCMCExpr::VK_LO8:
+      Kind = RISCC::fixup_lo8;
+      break;
+    case RISCCMCExpr::VK_HI8:
+      Kind = RISCC::fixup_hi8;
+      break;
+    case RISCCMCExpr::VK_CODE:
+      if (DefaultKind == RISCC::fixup_hi8)
+        Kind = RISCC::fixup_code_hi8;
+      else if (DefaultKind == RISCC::fixup_lo8)
+        Kind = RISCC::fixup_code_lo8;
+      else
+        Kind = RISCC::fixup_code16;
+      break;
+    case RISCCMCExpr::VK_CODE_LO8:
+      Kind = RISCC::fixup_code_lo8;
+      break;
+    case RISCCMCExpr::VK_CODE_HI8:
+      Kind = RISCC::fixup_code_hi8;
+      break;
     case RISCCMCExpr::VK_TPOFF:
       if (DefaultKind == RISCC::fixup_lo8)
         Kind = RISCC::fixup_tpoff_lo8;
       else if (DefaultKind == RISCC::fixup_hi8)
         Kind = RISCC::fixup_tpoff_hi8;
       else
-        Ctx.reportError(SMLoc(), "tpoff() requires a 16-bit immediate");
+        Ctx.reportError(Loc, "tpoff() requires a 16-bit immediate");
       break;
     }
     Expr = RE->getSubExpr();
   }
-  bool PCRel = Kind == RISCC::fixup_pcrel8_word;
-  Fixups.push_back(MCFixup::create(Offset, Expr, Kind, PCRel));
+  Fixups.push_back(MCFixup::create(
+      Offset, Expr, Kind, Kind == RISCC::fixup_pcrel8_word));
   return 0;
 }
 
 void RISCCMCCodeEmitter::encodeInstruction(
-    const MCInst &MI, SmallVectorImpl<char> &CB,
+    const MCInst &MI, SmallVectorImpl<char> &Code,
     SmallVectorImpl<MCFixup> &Fixups, const MCSubtargetInfo &) const {
-  unsigned O = MI.getOpcode();
-  uint16_t W = 0;
+  const unsigned Opcode = MI.getOpcode();
+  uint16_t Word = 0;
 
-  switch (O) {
+  switch (Opcode) {
   case RISCC::LDW:
   case RISCC::STW: {
-    unsigned Major = O == RISCC::STW;
-    W = (Major << 14) | (reg(MI.getOperand(0)) << 11) |
-        (reg(MI.getOperand(1)) << 8) |
-        (immediate(MI.getOperand(2), Fixups, 0, RISCC::fixup_abs8) & 0xff);
+    const unsigned Major = Opcode == RISCC::STW;
+    Word = (Major << 14) | (reg(MI.getOperand(0)) << 11) |
+           (reg(MI.getOperand(1)) << 8) |
+           (immediate(MI.getOperand(2), Fixups, 0, RISCC::fixup_abs8,
+                      MI.getLoc()) &
+            0xff);
     break;
   }
   case RISCC::LDI:
   case RISCC::LUI:
   case RISCC::CMPI: {
-    unsigned IOp = O == RISCC::LDI ? 0 : O == RISCC::LUI ? 1 : 3;
-    W = ri(reg(MI.getOperand(0)), IOp,
-           immediate(MI.getOperand(1), Fixups, 0,
-                     O == RISCC::LUI ? RISCC::fixup_hi8
-                                     : RISCC::fixup_lo8));
+    const RISCC::Fixups FixupKind =
+        Opcode == RISCC::LUI ? RISCC::fixup_hi8 : RISCC::fixup_lo8;
+    Word = ri(reg(MI.getOperand(0)), immediateOpcode(Opcode),
+              immediate(MI.getOperand(1), Fixups, 0, FixupKind, MI.getLoc()));
     break;
   }
   case RISCC::ADDI:
   case RISCC::ANDI:
   case RISCC::ORI:
   case RISCC::XORI: {
-    unsigned IOp = O == RISCC::ADDI ? 2 : O == RISCC::ANDI ? 4
-                                     : O == RISCC::ORI ? 5 : 6;
-    unsigned ImmOp = MI.getNumOperands() == 3 ? 2 : 1;
-    W = ri(reg(MI.getOperand(0)), IOp,
-           immediate(MI.getOperand(ImmOp), Fixups, 0, RISCC::fixup_lo8));
+    const unsigned ImmediateOperand = MI.getNumOperands() == 3 ? 2 : 1;
+    Word = ri(reg(MI.getOperand(0)), immediateOpcode(Opcode),
+              immediate(MI.getOperand(ImmediateOperand), Fixups, 0,
+                        RISCC::fixup_lo8, MI.getLoc()));
     break;
   }
   case RISCC::BEQZ:
@@ -164,84 +244,91 @@ void RISCCMCCodeEmitter::encodeInstruction(
   case RISCC::BLTZ:
   case RISCC::BGEZ:
   case RISCC::JMP8: {
-    unsigned CC = O == RISCC::BEQZ ? 0 : O == RISCC::BNEZ ? 1
-                                : O == RISCC::BLTZ ? 2 : O == RISCC::BGEZ ? 3 : 4;
-    W = ri(CC, 7, branchImmediate(MI.getOperand(0), Fixups));
+    Word = ri(branchCondition(Opcode), 7,
+              branchImmediate(MI.getOperand(0), Fixups, MI.getLoc()));
     break;
   }
-  case RISCC::ADD: case RISCC::SUB: case RISCC::SLT: case RISCC::SLTU:
-  case RISCC::AND: case RISCC::OR: case RISCC::XOR: case RISCC::MUL:
-  case RISCC::LDWX: case RISCC::LDB: case RISCC::LDBS: {
-    unsigned Func = O == RISCC::ADD ? 0 : O == RISCC::SUB ? 1
-      : O == RISCC::SLT ? 2 : O == RISCC::SLTU ? 3 : O == RISCC::AND ? 4
-      : O == RISCC::OR ? 5 : O == RISCC::XOR ? 6 : O == RISCC::MUL ? 7
-      : O == RISCC::LDWX ? 8 : O == RISCC::LDB ? 10 : 14;
-    W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), Func,
-           reg(MI.getOperand(2)));
+  case RISCC::ADD:
+  case RISCC::SUB:
+  case RISCC::SLT:
+  case RISCC::SLTU:
+  case RISCC::AND:
+  case RISCC::OR:
+  case RISCC::XOR:
+  case RISCC::MUL:
+  case RISCC::LDWX:
+  case RISCC::LDB:
+  case RISCC::LDBS: {
+    Word = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)),
+              registerFunction(Opcode),
+              reg(MI.getOperand(2)));
     break;
   }
   case RISCC::STB:
-    W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x0b, 0);
+    Word = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x0b, 0);
     break;
-  case RISCC::SHRI: case RISCC::SARI: case RISCC::SHLI: {
-    unsigned Func = O == RISCC::SHRI ? 0x0c : O == RISCC::SARI ? 0x0d : 0x0f;
-    W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), Func,
-           (MI.getOperand(2).getImm() - 1) & 7);
+  case RISCC::SHRI:
+  case RISCC::SARI:
+  case RISCC::SHLI: {
+    const unsigned Function = Opcode == RISCC::SHRI   ? 0x0c
+                              : Opcode == RISCC::SARI ? 0x0d
+                                                      : 0x0f;
+    Word = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), Function,
+              (MI.getOperand(2).getImm() - 1) & 7);
     break;
   }
-  case RISCC::RET: case RISCC::RETI:
-    W = rr(O == RISCC::RETI ? 7 : 0, reg(MI.getOperand(0)), 0x1f, 0);
+  case RISCC::RET:
+  case RISCC::RETI:
+    Word = rr(Opcode == RISCC::RETI ? 7 : 0, reg(MI.getOperand(0)), 0x1f, 0);
     break;
   case RISCC::JAL:
-    W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x1f, 1);
+    Word = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x1f, 1);
     break;
-  case RISCC::MFS: case RISCC::MTS:
-    W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x1f,
-           O == RISCC::MFS ? 2 : 3);
+  case RISCC::MFS:
+  case RISCC::MTS:
+    Word = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x1f,
+              Opcode == RISCC::MFS ? 2 : 3);
     break;
-  case RISCC::CLI: case RISCC::STI:
-    W = rr(O == RISCC::STI ? 7 : 0, 0, 0x1f, 6);
+  case RISCC::CLI:
+  case RISCC::STI:
+    Word = rr(Opcode == RISCC::STI ? 7 : 0, 0, 0x1f, 6);
     break;
   case RISCC::JAL16:
-    W = rr(reg(MI.getOperand(0)), 0, 0x1f, 5);
-    emit16(CB, W);
-    emit16(CB, codeImmediate(MI.getOperand(1), Fixups, 2, MI.getLoc()));
+    Word = rr(reg(MI.getOperand(0)), 0, 0x1f, 5);
+    emit16(Code, Word);
+    emit16(Code,
+           codeImmediate(MI.getOperand(1), Fixups, 2, MI.getLoc()));
     return;
   case RISCC::CALL16:
   case RISCC::JMP16:
-    W = rr(O == RISCC::CALL16 ? 7 : 0, 0, 0x1f, 5);
-    emit16(CB, W);
-    emit16(CB, codeImmediate(MI.getOperand(0), Fixups, 2, MI.getLoc()));
+    Word = rr(Opcode == RISCC::CALL16 ? 7 : 0, 0, 0x1f, 5);
+    emit16(Code, Word);
+    emit16(Code,
+           codeImmediate(MI.getOperand(0), Fixups, 2, MI.getLoc()));
     return;
   case RISCC::CALL:
-    W = rr(7, reg(MI.getOperand(0)), 0x1f, 1);
+    Word = rr(7, reg(MI.getOperand(0)), 0x1f, 1);
     break;
   case RISCC::RETS:
-    W = rr(0, 7, 0x1f, 0);
+    Word = rr(0, 7, 0x1f, 0);
     break;
   case RISCC::MOV:
-    W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 5,
-           reg(MI.getOperand(1)));
+    Word = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 5,
+              reg(MI.getOperand(1)));
     break;
-  case RISCC::NOP: W = rr(0, 0, 5, 0); break;
-  case RISCC::HALT: W = ri(4, 7, 0xff); break;
-  case RISCC::LONG_BR: {
-    unsigned ShortOpc = MI.getOperand(0).getImm();
-    unsigned InvCC = ShortOpc == RISCC::BEQZ ? 1
-                   : ShortOpc == RISCC::BNEZ ? 0
-                   : ShortOpc == RISCC::BLTZ ? 3 : 2;
-    emit16(CB, ri(InvCC, 7, 2));
-    emit16(CB, rr(0, 0, 0x1f, 5));
-    emit16(CB, codeImmediate(MI.getOperand(1), Fixups, 4, MI.getLoc()));
-    return;
-  }
+  case RISCC::NOP:
+    Word = rr(0, 0, 5, 0);
+    break;
+  case RISCC::HALT:
+    Word = ri(4, 7, 0xff);
+    break;
   case RISCC::LI: {
-    unsigned Rd = reg(MI.getOperand(0));
+    const unsigned Destination = reg(MI.getOperand(0));
     const MCOperand &Imm = MI.getOperand(1);
     if (Imm.isImm()) {
-      unsigned V = Imm.getImm();
-      emit16(CB, ri(Rd, 1, V >> 8));
-      emit16(CB, ri(Rd, 5, V));
+      const unsigned Value = Imm.getImm();
+      emit16(Code, ri(Destination, 1, Value >> 8));
+      emit16(Code, ri(Destination, 5, Value));
     } else {
       const MCExpr *Expr = Imm.getExpr();
       RISCCMCExpr::VariantKind Variant = RISCCMCExpr::VK_None;
@@ -249,26 +336,24 @@ void RISCCMCCodeEmitter::encodeInstruction(
         Variant = RE->getKind();
         if (Variant != RISCCMCExpr::VK_CODE &&
             Variant != RISCCMCExpr::VK_TPOFF)
-          Ctx.reportError(MI.getLoc(),
-                          "LI accepts only an unmodified, code(), or tpoff() expression");
+          Ctx.reportError(
+              MI.getLoc(),
+              "LI accepts only an unmodified, code(), or tpoff() expression");
         Expr = RE->getSubExpr();
       }
-      RISCC::Fixups Hi = Variant == RISCCMCExpr::VK_CODE
-                             ? RISCC::fixup_code_hi8
-                         : Variant == RISCCMCExpr::VK_TPOFF
-                             ? RISCC::fixup_tpoff_hi8
-                             : RISCC::fixup_hi8;
-      RISCC::Fixups Lo = Variant == RISCCMCExpr::VK_CODE
-                             ? RISCC::fixup_code_lo8
-                         : Variant == RISCCMCExpr::VK_TPOFF
-                             ? RISCC::fixup_tpoff_lo8
-                             : RISCC::fixup_lo8;
-      Fixups.push_back(MCFixup::create(
-          0, Expr, Hi));
-      Fixups.push_back(MCFixup::create(
-          2, Expr, Lo));
-      emit16(CB, ri(Rd, 1, 0));
-      emit16(CB, ri(Rd, 5, 0));
+      RISCC::Fixups HiFixup = RISCC::fixup_hi8;
+      RISCC::Fixups LoFixup = RISCC::fixup_lo8;
+      if (Variant == RISCCMCExpr::VK_CODE) {
+        HiFixup = RISCC::fixup_code_hi8;
+        LoFixup = RISCC::fixup_code_lo8;
+      } else if (Variant == RISCCMCExpr::VK_TPOFF) {
+        HiFixup = RISCC::fixup_tpoff_hi8;
+        LoFixup = RISCC::fixup_tpoff_lo8;
+      }
+      Fixups.push_back(MCFixup::create(0, Expr, HiFixup));
+      Fixups.push_back(MCFixup::create(2, Expr, LoFixup));
+      emit16(Code, ri(Destination, 1, 0));
+      emit16(Code, ri(Destination, 5, 0));
     }
     return;
   }
@@ -276,10 +361,10 @@ void RISCCMCCodeEmitter::encodeInstruction(
     Ctx.reportError(MI.getLoc(), "unsupported RISC-C instruction encoding");
     return;
   }
-  emit16(CB, W);
+  emit16(Code, Word);
 }
 
-MCCodeEmitter *llvm::createRISCCMCCodeEmitter(const MCInstrInfo &MCII,
+MCCodeEmitter *llvm::createRISCCMCCodeEmitter(const MCInstrInfo &,
                                                MCContext &Ctx) {
-  return new RISCCMCCodeEmitter(MCII, Ctx);
+  return new RISCCMCCodeEmitter(Ctx);
 }

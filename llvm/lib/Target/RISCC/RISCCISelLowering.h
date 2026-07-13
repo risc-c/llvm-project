@@ -15,10 +15,10 @@ enum NodeType {
   Wrapper,
   BR_CC,
   SET_CC,
-  SELECT_CC
-  ,SHL
-  ,SRL
-  ,SRA
+  SELECT_CC,
+  SHL,
+  SRL,
+  SRA,
 };
 }
 

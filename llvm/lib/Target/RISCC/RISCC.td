@@ -21,7 +21,6 @@ def : ProcessorModel<"full", NoSchedModel,
 def RISCCInstrInfo : InstrInfo;
 
 def RISCCAsmParser : AsmParser {
-  let ShouldEmitMatchRegisterAltName = 1;
   let AllowDuplicateRegisterNames = 0;
 }
 

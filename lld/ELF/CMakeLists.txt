@@ -31,8 +31,8 @@ add_lld_library(lldELF
   Arch/MSP430.cpp
   Arch/PPC.cpp
   Arch/PPC64.cpp
-  Arch/RISCV.cpp
   Arch/RISCC.cpp
+  Arch/RISCV.cpp
   Arch/SPARCV9.cpp
   Arch/SystemZ.cpp
   Arch/X86.cpp

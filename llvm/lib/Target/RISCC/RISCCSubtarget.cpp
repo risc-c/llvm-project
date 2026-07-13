@@ -13,12 +13,12 @@ using namespace llvm;
 
 RISCCSubtarget &RISCCSubtarget::initializeSubtargetDependencies(StringRef CPU,
                                                                 StringRef FS) {
-  if (CPU.empty()) CPU = "full";
+  if (CPU.empty())
+    CPU = "full";
   ParseSubtargetFeatures(CPU, CPU, FS);
   if (CPU != "full" || !HasSys || !HasWideShift || !HasMul)
-    report_fatal_error(
-        "RISC-C SelectionDAG code generation currently supports only "
-        "-mcpu=full; reduced-profile lowering is not implemented yet");
+    report_fatal_error("RISC-C SelectionDAG code generation supports only "
+                       "-mcpu=full");
   return *this;
 }
 

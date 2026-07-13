@@ -285,9 +285,6 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
   case llvm::Triple::msp430:
     return std::make_unique<MSP430TargetInfo>(Triple, Opts);
 
-  case llvm::Triple::riscc:
-    return std::make_unique<RISCCTargetInfo>(Triple, Opts);
-
   case llvm::Triple::mips:
     switch (os) {
     case llvm::Triple::Linux:
@@ -507,6 +504,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
     default:
       return std::make_unique<RISCV64TargetInfo>(Triple, Opts);
     }
+
+  case llvm::Triple::riscc:
+    return std::make_unique<RISCCTargetInfo>(Triple, Opts);
 
   case llvm::Triple::sparc:
     switch (os) {

@@ -89,19 +89,32 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
 SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
                                             SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
-  case ISD::GlobalAddress: return lowerGlobalAddress(Op, DAG);
-  case ISD::GlobalTLSAddress: return lowerGlobalTLSAddress(Op, DAG);
-  case ISD::ExternalSymbol: return lowerExternalSymbol(Op, DAG);
-  case ISD::BlockAddress: return lowerBlockAddress(Op, DAG);
-  case ISD::ADDRSPACECAST: return lowerAddrSpaceCast(Op, DAG);
-  case ISD::BR_CC: return lowerBRCC(Op, DAG);
-  case ISD::SETCC: return lowerSETCC(Op, DAG);
-  case ISD::SELECT_CC: return lowerSELECTCC(Op, DAG);
-  case ISD::SHL: case ISD::SRL: case ISD::SRA:
+  case ISD::GlobalAddress:
+    return lowerGlobalAddress(Op, DAG);
+  case ISD::GlobalTLSAddress:
+    return lowerGlobalTLSAddress(Op, DAG);
+  case ISD::ExternalSymbol:
+    return lowerExternalSymbol(Op, DAG);
+  case ISD::BlockAddress:
+    return lowerBlockAddress(Op, DAG);
+  case ISD::ADDRSPACECAST:
+    return lowerAddrSpaceCast(Op, DAG);
+  case ISD::BR_CC:
+    return lowerBRCC(Op, DAG);
+  case ISD::SETCC:
+    return lowerSETCC(Op, DAG);
+  case ISD::SELECT_CC:
+    return lowerSELECTCC(Op, DAG);
+  case ISD::SHL:
+  case ISD::SRL:
+  case ISD::SRA:
     return lowerShift(Op, DAG);
-  case ISD::UMUL_LOHI: return lowerMULLOHI(Op, DAG, false);
-  case ISD::SMUL_LOHI: return lowerMULLOHI(Op, DAG, true);
-  case ISD::VASTART: return lowerVASTART(Op, DAG);
+  case ISD::UMUL_LOHI:
+    return lowerMULLOHI(Op, DAG, false);
+  case ISD::SMUL_LOHI:
+    return lowerMULLOHI(Op, DAG, true);
+  case ISD::VASTART:
+    return lowerVASTART(Op, DAG);
   case ISD::DYNAMIC_STACKALLOC: {
     const Function &Fn = DAG.getMachineFunction().getFunction();
     DAG.getContext()->diagnose(DiagnosticInfoUnsupported(
@@ -111,7 +124,8 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
         DAG.getConstant(0, SDLoc(Op), Op.getValueType()), Op.getOperand(0)};
     return DAG.getMergeValues(Results, SDLoc(Op));
   }
-  default: llvm_unreachable("unexpected custom RISC-C lowering");
+  default:
+    llvm_unreachable("unexpected custom RISC-C lowering");
   }
 }
 
@@ -299,6 +313,19 @@ SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
 }
 
 template <typename ArgT>
+static std::pair<MVT, CCValAssign::LocInfo>
+getArgumentLocation(const ArgT &Arg) {
+  if (Arg.VT != MVT::i1 && Arg.VT != MVT::i8)
+    return {Arg.VT, CCValAssign::Full};
+
+  CCValAssign::LocInfo Info =
+      Arg.VT == MVT::i1 || Arg.Flags.isZExt()
+          ? CCValAssign::ZExt
+          : Arg.Flags.isSExt() ? CCValAssign::SExt : CCValAssign::AExt;
+  return {MVT::i16, Info};
+}
+
+template <typename ArgT>
 static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
                              const SmallVectorImpl<ArgT> &Args) {
   static const MCPhysReg ArgRegs[] = {RISCC::R1, RISCC::R2, RISCC::R3,
@@ -316,31 +343,17 @@ static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
                               NextReg + NumParts <= std::size(ArgRegs);
     if (UseRegisters) {
       for (; I != ArgEnd; ++I) {
-        MVT VT = Args[I].VT, LocVT = VT;
-        CCValAssign::LocInfo LI = CCValAssign::Full;
-        if (VT == MVT::i1 || VT == MVT::i8) {
-          LocVT = MVT::i16;
-          LI = VT == MVT::i1 || Args[I].Flags.isZExt()
-                   ? CCValAssign::ZExt
-                   : Args[I].Flags.isSExt() ? CCValAssign::SExt
-                                            : CCValAssign::AExt;
-        }
+        auto [LocVT, LocInfo] = getArgumentLocation(Args[I]);
         MCRegister R = State.AllocateReg(ArgRegs[NextReg++]);
-        Locs.push_back(CCValAssign::getReg(I, VT, R, LocVT, LI));
+        Locs.push_back(
+            CCValAssign::getReg(I, Args[I].VT, R, LocVT, LocInfo));
       }
     } else {
       OnStack = true;
       for (; I != ArgEnd; ++I) {
-        MVT VT = Args[I].VT, LocVT = VT;
-        CCValAssign::LocInfo LI = CCValAssign::Full;
-        if (VT == MVT::i1 || VT == MVT::i8) {
-          LocVT = MVT::i16;
-          LI = VT == MVT::i1 || Args[I].Flags.isZExt()
-                   ? CCValAssign::ZExt
-                   : Args[I].Flags.isSExt() ? CCValAssign::SExt
-                                            : CCValAssign::AExt;
-        }
-        CC_RISCC_Stack(I, VT, LocVT, LI, Args[I].Flags, Args[I].OrigTy, State);
+        auto [LocVT, LocInfo] = getArgumentLocation(Args[I]);
+        CC_RISCC_Stack(I, Args[I].VT, LocVT, LocInfo, Args[I].Flags,
+                       Args[I].OrigTy, State);
       }
     }
   }
@@ -449,7 +462,8 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   Ops.push_back(DAG.getRegisterMask(
       STI.getRegisterInfo()->getCallPreservedMask(DAG.getMachineFunction(),
                                                    CLI.CallConv)));
-  if (Glue) Ops.push_back(Glue);
+  if (Glue)
+    Ops.push_back(Glue);
   Chain = DAG.getNode(RISCCISD::CALL, DL,
                       DAG.getVTList(MVT::Other, MVT::Glue), Ops);
   Glue = Chain.getValue(1);
@@ -469,7 +483,8 @@ SDValue RISCCTargetLowering::lowerCallResult(
   for (unsigned I = 0; I != Locs.size(); ++I) {
     const CCValAssign &VA = Locs[I];
     SDValue V = DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
-    Chain = V.getValue(1); Glue = V.getValue(2);
+    Chain = V.getValue(1);
+    Glue = V.getValue(2);
     if (VA.getLocInfo() == CCValAssign::SExt)
       V = DAG.getNode(ISD::AssertSext, DL, VA.getLocVT(), V,
                       DAG.getValueType(VA.getValVT()));
@@ -515,7 +530,8 @@ SDValue RISCCTargetLowering::LowerReturn(
     Ops.push_back(DAG.getRegister(Locs[I].getLocReg(), Locs[I].getLocVT()));
   }
   Ops[0] = Chain;
-  if (Glue) Ops.push_back(Glue);
+  if (Glue)
+    Ops.push_back(Glue);
   return DAG.getNode(RISCCISD::RET_FLAG, DL, MVT::Other, Ops);
 }
 
@@ -526,135 +542,189 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
                                  MachineBasicBlock *Target) {
   bool Swap = CC == ISD::SETGT || CC == ISD::SETLE ||
               CC == ISD::SETUGT || CC == ISD::SETULE;
-  if (Swap) std::swap(LHS, RHS);
+  if (Swap)
+    std::swap(LHS, RHS);
   unsigned Cmp, Br;
   switch (CC) {
-  case ISD::SETEQ: Cmp = RISCC::SUB; Br = RISCC::BEQZ; break;
-  case ISD::SETNE: Cmp = RISCC::SUB; Br = RISCC::BNEZ; break;
-  case ISD::SETLT: case ISD::SETGT:
-    Cmp = RISCC::SLT; Br = RISCC::BNEZ; break;
-  case ISD::SETGE: case ISD::SETLE:
-    Cmp = RISCC::SLT; Br = RISCC::BEQZ; break;
-  case ISD::SETULT: case ISD::SETUGT:
-    Cmp = RISCC::SLTU; Br = RISCC::BNEZ; break;
-  case ISD::SETUGE: case ISD::SETULE:
-    Cmp = RISCC::SLTU; Br = RISCC::BEQZ; break;
-  default: llvm_unreachable("unsupported integer condition");
+  case ISD::SETEQ:
+    Cmp = RISCC::SUB;
+    Br = RISCC::BEQZ;
+    break;
+  case ISD::SETNE:
+    Cmp = RISCC::SUB;
+    Br = RISCC::BNEZ;
+    break;
+  case ISD::SETLT:
+  case ISD::SETGT:
+    Cmp = RISCC::SLT;
+    Br = RISCC::BNEZ;
+    break;
+  case ISD::SETGE:
+  case ISD::SETLE:
+    Cmp = RISCC::SLT;
+    Br = RISCC::BEQZ;
+    break;
+  case ISD::SETULT:
+  case ISD::SETUGT:
+    Cmp = RISCC::SLTU;
+    Br = RISCC::BNEZ;
+    break;
+  case ISD::SETUGE:
+  case ISD::SETULE:
+    Cmp = RISCC::SLTU;
+    Br = RISCC::BEQZ;
+    break;
+  default:
+    llvm_unreachable("unsupported integer condition");
   }
   BuildMI(MBB, I, DL, TII.get(Cmp), RISCC::R0).addReg(LHS).addReg(RHS);
   BuildMI(MBB, I, DL, TII.get(Br)).addMBB(Target);
 }
 
+static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
+                                            MachineBasicBlock *MBB,
+                                            const RISCCInstrInfo &TII) {
+  DebugLoc DL = MI.getDebugLoc();
+  MachineFunction *MF = MBB->getParent();
+  const BasicBlock *IRBlock = MBB->getBasicBlock();
+  auto InsertAt = std::next(MBB->getIterator());
+  MachineBasicBlock *Loop = MF->CreateMachineBasicBlock(IRBlock);
+  MachineBasicBlock *Remainder = MF->CreateMachineBasicBlock(IRBlock);
+  MF->insert(InsertAt, Loop);
+  MF->insert(InsertAt, Remainder);
+  Remainder->splice(Remainder->begin(), MBB, std::next(MI.getIterator()),
+                    MBB->end());
+  Remainder->transferSuccessorsAndUpdatePHIs(MBB);
+  MBB->addSuccessor(Loop);
+  MBB->addSuccessor(Remainder);
+  Loop->addSuccessor(Loop);
+  Loop->addSuccessor(Remainder);
+
+  MachineRegisterInfo &MRI = MF->getRegInfo();
+  Register ShiftPhi = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register ShiftNext = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register AmountPhi = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register AmountNext = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register Destination = MI.getOperand(0).getReg();
+  Register Source = MI.getOperand(1).getReg();
+  Register Amount = MI.getOperand(2).getReg();
+
+  BuildMI(*MBB, MI, DL, TII.get(RISCC::MOV), RISCC::R0).addReg(Amount);
+  BuildMI(*MBB, MI, DL, TII.get(RISCC::BEQZ)).addMBB(Remainder);
+
+  BuildMI(*Loop, Loop->end(), DL, TII.get(TargetOpcode::PHI), ShiftPhi)
+      .addReg(Source)
+      .addMBB(MBB)
+      .addReg(ShiftNext)
+      .addMBB(Loop);
+  BuildMI(*Loop, Loop->end(), DL, TII.get(TargetOpcode::PHI), AmountPhi)
+      .addReg(Amount)
+      .addMBB(MBB)
+      .addReg(AmountNext)
+      .addMBB(Loop);
+  const unsigned Opcode = MI.getOpcode() == RISCC::PseudoSHL   ? RISCC::SHLI
+                          : MI.getOpcode() == RISCC::PseudoSRL ? RISCC::SHRI
+                                                              : RISCC::SARI;
+  BuildMI(*Loop, Loop->end(), DL, TII.get(Opcode), ShiftNext)
+      .addReg(ShiftPhi)
+      .addImm(1);
+  BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::ADDI), AmountNext)
+      .addReg(AmountPhi)
+      .addImm(-1);
+  BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::MOV), RISCC::R0)
+      .addReg(AmountNext);
+  BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::BNEZ)).addMBB(Loop);
+  BuildMI(*Remainder, Remainder->begin(), DL, TII.get(TargetOpcode::PHI),
+          Destination)
+      .addReg(Source)
+      .addMBB(MBB)
+      .addReg(ShiftNext)
+      .addMBB(Loop);
+  MI.eraseFromParent();
+  return Remainder;
+}
+
+static MachineBasicBlock *emitComparisonValue(MachineInstr &MI,
+                                              MachineBasicBlock *MBB,
+                                              const RISCCInstrInfo &TII) {
+  DebugLoc DL = MI.getDebugLoc();
+  MachineFunction *MF = MBB->getParent();
+  const BasicBlock *IRBlock = MBB->getBasicBlock();
+  auto InsertAt = std::next(MBB->getIterator());
+  MachineBasicBlock *True = MF->CreateMachineBasicBlock(IRBlock);
+  MachineBasicBlock *Sink = MF->CreateMachineBasicBlock(IRBlock);
+  MF->insert(InsertAt, True);
+  MF->insert(InsertAt, Sink);
+  Sink->splice(Sink->begin(), MBB, std::next(MI.getIterator()), MBB->end());
+  Sink->transferSuccessorsAndUpdatePHIs(MBB);
+  MBB->addSuccessor(True);
+  MBB->addSuccessor(Sink);
+  True->addSuccessor(Sink);
+
+  Register Destination = MI.getOperand(0).getReg();
+  Register LHS = MI.getOperand(1).getReg();
+  Register RHS = MI.getOperand(2).getReg();
+  const unsigned ConditionOperand =
+      MI.getOpcode() == RISCC::PseudoSETCC ? 3 : 5;
+
+  Register FalseValue, TrueValue;
+  if (MI.getOpcode() == RISCC::PseudoSETCC) {
+    FalseValue = MF->getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
+    TrueValue = MF->getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
+    // This must precede the compare and terminators in the original block.
+    BuildMI(*MBB, MI, DL, TII.get(RISCC::LDI), FalseValue).addImm(0);
+    BuildMI(*True, True->end(), DL, TII.get(RISCC::LDI), TrueValue).addImm(1);
+  } else {
+    TrueValue = MI.getOperand(3).getReg();
+    FalseValue = MI.getOperand(4).getReg();
+  }
+  emitComparisonBranch(*MBB, MI, DL, TII, LHS, RHS,
+                       ISD::CondCode(MI.getOperand(ConditionOperand).getImm()),
+                       True);
+  BuildMI(*MBB, MI, DL, TII.get(RISCC::JMP8)).addMBB(Sink);
+  BuildMI(*Sink, Sink->begin(), DL, TII.get(TargetOpcode::PHI), Destination)
+      .addReg(FalseValue)
+      .addMBB(MBB)
+      .addReg(TrueValue)
+      .addMBB(True);
+  MI.eraseFromParent();
+  return Sink;
+}
+
 MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
     MachineInstr &MI, MachineBasicBlock *MBB) const {
   const auto &TII = *STI.getInstrInfo();
-  DebugLoc DL = MI.getDebugLoc();
-  if (MI.getOpcode() == RISCC::PseudoSHL ||
-      MI.getOpcode() == RISCC::PseudoSRL ||
-      MI.getOpcode() == RISCC::PseudoSRA) {
-    MachineFunction *MF = MBB->getParent();
-    const BasicBlock *BB = MBB->getBasicBlock();
-    auto InsertAt = std::next(MBB->getIterator());
-    MachineBasicBlock *LoopBB = MF->CreateMachineBasicBlock(BB);
-    MachineBasicBlock *RemBB = MF->CreateMachineBasicBlock(BB);
-    MF->insert(InsertAt, LoopBB);
-    MF->insert(InsertAt, RemBB);
-    RemBB->splice(RemBB->begin(), MBB, std::next(MI.getIterator()), MBB->end());
-    RemBB->transferSuccessorsAndUpdatePHIs(MBB);
-    MBB->addSuccessor(LoopBB);
-    MBB->addSuccessor(RemBB);
-    LoopBB->addSuccessor(LoopBB);
-    LoopBB->addSuccessor(RemBB);
-
-    MachineRegisterInfo &MRI = MF->getRegInfo();
-    Register ShiftPhi = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    Register ShiftNext = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    Register AmtPhi = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    Register AmtNext = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    Register Dst = MI.getOperand(0).getReg();
-    Register Src = MI.getOperand(1).getReg();
-    Register Amt = MI.getOperand(2).getReg();
-
-    BuildMI(*MBB, MI, DL, TII.get(RISCC::MOV), RISCC::R0).addReg(Amt);
-    BuildMI(*MBB, MI, DL, TII.get(RISCC::BEQZ)).addMBB(RemBB);
-
-    BuildMI(*LoopBB, LoopBB->end(), DL, TII.get(TargetOpcode::PHI), ShiftPhi)
-        .addReg(Src).addMBB(MBB).addReg(ShiftNext).addMBB(LoopBB);
-    BuildMI(*LoopBB, LoopBB->end(), DL, TII.get(TargetOpcode::PHI), AmtPhi)
-        .addReg(Amt).addMBB(MBB).addReg(AmtNext).addMBB(LoopBB);
-    unsigned RealOpc = MI.getOpcode() == RISCC::PseudoSHL ? RISCC::SHLI
-                       : MI.getOpcode() == RISCC::PseudoSRL ? RISCC::SHRI
-                                                            : RISCC::SARI;
-    BuildMI(*LoopBB, LoopBB->end(), DL, TII.get(RealOpc), ShiftNext)
-        .addReg(ShiftPhi).addImm(1);
-    BuildMI(*LoopBB, LoopBB->end(), DL, TII.get(RISCC::ADDI), AmtNext)
-        .addReg(AmtPhi).addImm(-1);
-    BuildMI(*LoopBB, LoopBB->end(), DL, TII.get(RISCC::MOV), RISCC::R0)
-        .addReg(AmtNext);
-    BuildMI(*LoopBB, LoopBB->end(), DL, TII.get(RISCC::BNEZ)).addMBB(LoopBB);
-    BuildMI(*RemBB, RemBB->begin(), DL, TII.get(TargetOpcode::PHI), Dst)
-        .addReg(Src).addMBB(MBB).addReg(ShiftNext).addMBB(LoopBB);
-    MI.eraseFromParent();
-    return RemBB;
-  }
-  if (MI.getOpcode() == RISCC::PseudoBRCC) {
-    emitComparisonBranch(*MBB, MI, DL, TII, MI.getOperand(0).getReg(),
-                         MI.getOperand(1).getReg(),
+  switch (MI.getOpcode()) {
+  case RISCC::PseudoSHL:
+  case RISCC::PseudoSRL:
+  case RISCC::PseudoSRA:
+    return emitVariableShift(MI, MBB, TII);
+  case RISCC::PseudoBRCC:
+    emitComparisonBranch(*MBB, MI, MI.getDebugLoc(), TII,
+                         MI.getOperand(0).getReg(), MI.getOperand(1).getReg(),
                          ISD::CondCode(MI.getOperand(2).getImm()),
                          MI.getOperand(3).getMBB());
     MI.eraseFromParent();
     return MBB;
+  case RISCC::PseudoSETCC:
+  case RISCC::PseudoSELECTCC:
+    return emitComparisonValue(MI, MBB, TII);
+  default:
+    llvm_unreachable("unexpected custom inserter opcode");
   }
-
-  assert((MI.getOpcode() == RISCC::PseudoSETCC ||
-          MI.getOpcode() == RISCC::PseudoSELECTCC) &&
-         "unexpected custom inserter opcode");
-  MachineFunction *MF = MBB->getParent();
-  const BasicBlock *BB = MBB->getBasicBlock();
-  auto InsertAt = std::next(MBB->getIterator());
-  MachineBasicBlock *TrueBB = MF->CreateMachineBasicBlock(BB);
-  MachineBasicBlock *SinkBB = MF->CreateMachineBasicBlock(BB);
-  MF->insert(InsertAt, TrueBB);
-  MF->insert(InsertAt, SinkBB);
-  SinkBB->splice(SinkBB->begin(), MBB, std::next(MI.getIterator()), MBB->end());
-  SinkBB->transferSuccessorsAndUpdatePHIs(MBB);
-  MBB->addSuccessor(TrueBB);
-  MBB->addSuccessor(SinkBB);
-  TrueBB->addSuccessor(SinkBB);
-
-  Register Dst = MI.getOperand(0).getReg();
-  Register LHS = MI.getOperand(1).getReg(), RHS = MI.getOperand(2).getReg();
-  unsigned CCOp = MI.getOpcode() == RISCC::PseudoSETCC ? 3 : 5;
-
-  Register FalseV, TrueV;
-  if (MI.getOpcode() == RISCC::PseudoSETCC) {
-    FalseV = MF->getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
-    TrueV = MF->getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
-    // This must precede the compare and terminators in the original block.
-    BuildMI(*MBB, MI, DL, TII.get(RISCC::LDI), FalseV).addImm(0);
-    BuildMI(*TrueBB, TrueBB->end(), DL, TII.get(RISCC::LDI), TrueV).addImm(1);
-  } else {
-    TrueV = MI.getOperand(3).getReg();
-    FalseV = MI.getOperand(4).getReg();
-  }
-  emitComparisonBranch(*MBB, MI, DL, TII, LHS, RHS,
-                       ISD::CondCode(MI.getOperand(CCOp).getImm()), TrueBB);
-  BuildMI(*MBB, MI, DL, TII.get(RISCC::JMP8)).addMBB(SinkBB);
-  BuildMI(*SinkBB, SinkBB->begin(), DL, TII.get(TargetOpcode::PHI), Dst)
-      .addReg(FalseV).addMBB(MBB).addReg(TrueV).addMBB(TrueBB);
-  MI.eraseFromParent();
-  return SinkBB;
 }
 
 TargetLowering::ConstraintType
 RISCCTargetLowering::getConstraintType(StringRef C) const {
-  if (C == "r") return C_RegisterClass;
+  if (C == "r")
+    return C_RegisterClass;
   return TargetLowering::getConstraintType(C);
 }
 
 std::pair<unsigned, const TargetRegisterClass *>
 RISCCTargetLowering::getRegForInlineAsmConstraint(
     const TargetRegisterInfo *TRI, StringRef C, MVT VT) const {
-  if (C == "r" && VT.isInteger()) return {0, &RISCC::GPRRegClass};
+  if (C == "r" && VT.isInteger())
+    return {0, &RISCC::GPRRegClass};
   return TargetLowering::getRegForInlineAsmConstraint(TRI, C, VT);
 }

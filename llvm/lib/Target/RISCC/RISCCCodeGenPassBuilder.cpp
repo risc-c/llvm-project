@@ -14,12 +14,14 @@ namespace {
 class RISCCCodeGenPassBuilder
     : public CodeGenPassBuilder<RISCCCodeGenPassBuilder, RISCCTargetMachine> {
   using Base = CodeGenPassBuilder<RISCCCodeGenPassBuilder, RISCCTargetMachine>;
+
 public:
   RISCCCodeGenPassBuilder(RISCCTargetMachine &TM, const CGPassBuilderOption &O,
                           PassInstrumentationCallbacks *PIC)
       : CodeGenPassBuilder(TM, O, PIC) {}
   void addIRPasses(PassManagerWrapper &PMW) const {
-    addFunctionPass(AtomicExpandPass(TM), PMW); Base::addIRPasses(PMW);
+    addFunctionPass(AtomicExpandPass(TM), PMW);
+    Base::addIRPasses(PMW);
   }
   Error addInstSelector(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(RISCCISelDAGToDAGPass(TM, getOptLevel()), PMW);

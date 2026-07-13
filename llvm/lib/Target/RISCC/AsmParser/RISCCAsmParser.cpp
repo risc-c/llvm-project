@@ -1,6 +1,7 @@
 #include "MCTargetDesc/RISCCMCExpr.h"
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "TargetInfo/RISCCTargetInfo.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
@@ -13,13 +14,14 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Casting.h"
+#include <optional>
 
 using namespace llvm;
 
 namespace {
 class RISCCOperand final : public MCParsedAsmOperand {
   enum KindTy { Token, Reg, Imm } Kind;
-  StringRef Tok;
+  std::string Tok;
   MCRegister RegNo;
   const MCExpr *Expr = nullptr;
   bool KeepExpr = false;
@@ -56,9 +58,11 @@ public:
   bool isU16Imm() const { return isIntInRange(0, 65535); }
 
   bool isIntInRange(int64_t Min, int64_t Max) const {
-    if (!isImm()) return false;
+    if (!isImm())
+      return false;
     int64_t V;
-    if (isa<RISCCMCExpr>(Expr)) return true;
+    if (isa<RISCCMCExpr>(Expr))
+      return true;
     return !Expr->evaluateAsAbsolute(V) || (V >= Min && V <= Max);
   }
 
@@ -84,9 +88,14 @@ public:
   }
 
   void print(raw_ostream &OS, const MCAsmInfo &MAI) const override {
-    if (isToken()) OS << "Token " << Tok;
-    else if (isReg()) OS << "Reg " << RegNo;
-    else { OS << "Imm "; MAI.printExpr(OS, *Expr); }
+    if (isToken()) {
+      OS << "Token " << Tok;
+    } else if (isReg()) {
+      OS << "Reg " << RegNo;
+    } else {
+      OS << "Imm ";
+      MAI.printExpr(OS, *Expr);
+    }
   }
 };
 
@@ -99,7 +108,6 @@ class RISCCAsmParser final : public MCTargetAsmParser {
 
   bool parseOperand(OperandVector &Operands);
   bool parseMemory(OperandVector &Operands);
-  bool parseModifiedExpr(OperandVector &Operands);
 
 public:
   enum RISCCMatchResultTy {
@@ -129,20 +137,26 @@ public:
 }
 
 static MCRegister MatchRegisterName(StringRef Name);
-static MCRegister MatchRegisterAltName(StringRef Name);
+
+static std::optional<RISCCMCExpr::VariantKind>
+getVariantKind(StringRef Name) {
+  return StringSwitch<std::optional<RISCCMCExpr::VariantKind>>(Name.lower())
+      .Case("lo8", RISCCMCExpr::VK_LO8)
+      .Case("hi8", RISCCMCExpr::VK_HI8)
+      .Case("code", RISCCMCExpr::VK_CODE)
+      .Case("code_lo8", RISCCMCExpr::VK_CODE_LO8)
+      .Case("code_hi8", RISCCMCExpr::VK_CODE_HI8)
+      .Case("tpoff", RISCCMCExpr::VK_TPOFF)
+      .Default(std::nullopt);
+}
 
 bool RISCCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
   if (Parser.getTok().is(AsmToken::Identifier) &&
       Parser.getLexer().peekTok().is(AsmToken::LParen)) {
-    StringRef Name = Parser.getTok().getIdentifier().lower();
-    RISCCMCExpr::VariantKind Kind;
-    if (Name == "lo8") Kind = RISCCMCExpr::VK_LO8;
-    else if (Name == "hi8") Kind = RISCCMCExpr::VK_HI8;
-    else if (Name == "code") Kind = RISCCMCExpr::VK_CODE;
-    else if (Name == "code_lo8") Kind = RISCCMCExpr::VK_CODE_LO8;
-    else if (Name == "code_hi8") Kind = RISCCMCExpr::VK_CODE_HI8;
-    else if (Name == "tpoff") Kind = RISCCMCExpr::VK_TPOFF;
-    else return Parser.parsePrimaryExpr(Res, EndLoc, nullptr);
+    std::optional<RISCCMCExpr::VariantKind> Kind =
+        getVariantKind(Parser.getTok().getIdentifier());
+    if (!Kind)
+      return Parser.parsePrimaryExpr(Res, EndLoc, nullptr);
     Parser.Lex();
     if (Parser.parseToken(AsmToken::LParen, "expected '('") ||
         Parser.parseExpression(Res))
@@ -150,7 +164,7 @@ bool RISCCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
     EndLoc = Parser.getTok().getEndLoc();
     if (Parser.parseToken(AsmToken::RParen, "expected ')'"))
       return true;
-    Res = RISCCMCExpr::create(Kind, Res, getContext());
+    Res = RISCCMCExpr::create(*Kind, Res, getContext());
     return false;
   }
   return Parser.parsePrimaryExpr(Res, EndLoc, nullptr);
@@ -163,8 +177,6 @@ ParseStatus RISCCAsmParser::tryParseRegister(MCRegister &Reg, SMLoc &S,
   StringRef Name = Parser.getTok().getIdentifier();
   Reg = MatchRegisterName(Name.lower());
   if (!Reg)
-    Reg = MatchRegisterAltName(Name.lower());
-  if (!Reg)
     return ParseStatus::NoMatch;
   S = Parser.getTok().getLoc();
   E = Parser.getTok().getEndLoc();
@@ -174,42 +186,20 @@ ParseStatus RISCCAsmParser::tryParseRegister(MCRegister &Reg, SMLoc &S,
 
 bool RISCCAsmParser::parseRegister(MCRegister &Reg, SMLoc &S, SMLoc &E) {
   ParseStatus Status = tryParseRegister(Reg, S, E);
-  if (Status.isSuccess()) return false;
+  if (Status.isSuccess())
+    return false;
   return Error(Parser.getTok().getLoc(), "expected RISC-C register");
-}
-
-bool RISCCAsmParser::parseModifiedExpr(OperandVector &Operands) {
-  StringRef Name = Parser.getTok().getIdentifier().lower();
-  RISCCMCExpr::VariantKind Kind;
-  if (Name == "lo8") Kind = RISCCMCExpr::VK_LO8;
-  else if (Name == "hi8") Kind = RISCCMCExpr::VK_HI8;
-  else if (Name == "code") Kind = RISCCMCExpr::VK_CODE;
-  else if (Name == "code_lo8") Kind = RISCCMCExpr::VK_CODE_LO8;
-  else if (Name == "code_hi8") Kind = RISCCMCExpr::VK_CODE_HI8;
-  else if (Name == "tpoff") Kind = RISCCMCExpr::VK_TPOFF;
-  else return true;
-
-  SMLoc S = Parser.getTok().getLoc();
-  Parser.Lex();
-  if (Parser.parseToken(AsmToken::LParen, "expected '(' after modifier"))
-    return true;
-  const MCExpr *Expr;
-  if (Parser.parseExpression(Expr)) return true;
-  SMLoc E = Parser.getTok().getEndLoc();
-  if (Parser.parseToken(AsmToken::RParen, "expected ')' after expression"))
-    return true;
-  Operands.push_back(RISCCOperand::imm(
-      RISCCMCExpr::create(Kind, Expr, getContext()), S, E));
-  return false;
 }
 
 bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
   SMLoc LBracLoc = Parser.getTok().getLoc();
-  if (Parser.parseToken(AsmToken::LBrac, "expected '['")) return true;
+  if (Parser.parseToken(AsmToken::LBrac, "expected '['"))
+    return true;
   Operands.push_back(RISCCOperand::token("[", LBracLoc));
   MCRegister Base;
   SMLoc S, E;
-  if (parseRegister(Base, S, E)) return true;
+  if (parseRegister(Base, S, E))
+    return true;
   Operands.push_back(RISCCOperand::reg(Base, S, E));
 
   if (Parser.getTok().is(AsmToken::RBrac)) {
@@ -233,10 +223,12 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
         return Error(ES, "indexed address requires '+' and a register");
       MCRegister Index;
       SMLoc IS, IE;
-      if (parseRegister(Index, IS, IE)) return true;
+      if (parseRegister(Index, IS, IE))
+        return true;
       Operands.push_back(RISCCOperand::reg(Index, IS, IE));
       SMLoc RBracLoc = Parser.getTok().getLoc();
-      if (Parser.parseToken(AsmToken::RBrac, "expected ']'")) return true;
+      if (Parser.parseToken(AsmToken::RBrac, "expected ']'"))
+        return true;
       Operands.push_back(RISCCOperand::token("]", RBracLoc));
       return false;
     }
@@ -244,13 +236,15 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
         MatchRegisterName(Parser.getTok().getIdentifier().lower()))
       return Error(ES, "register-indexed word loads use LDWX");
     const MCExpr *Expr;
-    if (Parser.parseExpression(Expr)) return true;
+    if (Parser.parseExpression(Expr))
+      return true;
     if (Negative)
       Expr = MCUnaryExpr::createMinus(Expr, getContext());
     Operands.push_back(RISCCOperand::imm(Expr, ES, Parser.getTok().getEndLoc()));
   }
   SMLoc RBracLoc = Parser.getTok().getLoc();
-  if (Parser.parseToken(AsmToken::RBrac, "expected ']'")) return true;
+  if (Parser.parseToken(AsmToken::RBrac, "expected ']'"))
+    return true;
   Operands.push_back(RISCCOperand::token("]", RBracLoc));
   return false;
 }
@@ -260,13 +254,6 @@ bool RISCCAsmParser::parseOperand(OperandVector &Operands) {
     return parseMemory(Operands);
 
   if (Parser.getTok().is(AsmToken::Identifier)) {
-    AsmToken Next = Parser.getLexer().peekTok();
-    if (Next.is(AsmToken::LParen)) {
-      StringRef N = Parser.getTok().getIdentifier().lower();
-      if (N == "lo8" || N == "hi8" || N == "code" || N == "code_lo8" ||
-          N == "code_hi8" || N == "tpoff")
-        return parseModifiedExpr(Operands);
-    }
     MCRegister R;
     SMLoc S, E;
     if (tryParseRegister(R, S, E).isSuccess()) {
@@ -291,22 +278,26 @@ bool RISCCAsmParser::parseInstruction(ParseInstructionInfo &, StringRef Name,
                                       SMLoc NameLoc,
                                       OperandVector &Operands) {
   std::string Lower = Name.lower();
-  if (Lower == "ldi16") Lower = "li";
-  if (Lower == "ldi8") Lower = "ldi";
-  if (Lower == "lui8") Lower = "lui";
-  if (Lower == "addi8") Lower = "addi";
-  if (Lower == "cmpi8") Lower = "cmpi";
-  if (Lower == "andi8") Lower = "andi";
-  if (Lower == "ori8") Lower = "ori";
-  if (Lower == "xori8") Lower = "xori";
+  Lower = StringSwitch<std::string>(Lower)
+              .Case("ldi16", "li")
+              .Case("ldi8", "ldi")
+              .Case("lui8", "lui")
+              .Case("addi8", "addi")
+              .Case("cmpi8", "cmpi")
+              .Case("andi8", "andi")
+              .Case("ori8", "ori")
+              .Case("xori8", "xori")
+              .Default(Lower);
   CurrentMnemonic = Lower;
   Operands.push_back(RISCCOperand::token(Lower, NameLoc));
 
   if (Parser.getTok().is(AsmToken::EndOfStatement))
     return false;
   while (true) {
-    if (parseOperand(Operands)) return true;
-    if (!Parser.getTok().is(AsmToken::Comma)) break;
+    if (parseOperand(Operands))
+      return true;
+    if (!Parser.getTok().is(AsmToken::Comma))
+      break;
     Parser.Lex();
   }
   if (!Parser.getTok().is(AsmToken::EndOfStatement))
@@ -327,7 +318,8 @@ bool RISCCAsmParser::matchAndEmitInstruction(
         ((Inst.getOpcode() == RISCC::SHRI || Inst.getOpcode() == RISCC::SARI) &&
          Inst.getOperand(2).isImm() && Inst.getOperand(2).getImm() != 1 &&
          !STI->hasFeature(RISCC::FeatureWideShift)))
-      return Error(Loc, "instruction or shift count is unavailable in this profile");
+      return Error(
+          Loc, "instruction or shift count is unavailable in this profile");
     Inst.setLoc(Loc);
     Out.emitInstruction(Inst, *STI);
     return false;

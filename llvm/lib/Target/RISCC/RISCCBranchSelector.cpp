@@ -26,9 +26,9 @@ public:
 
 char RISCCBranchSelectorLegacy::ID = 0;
 
-static bool shortConditional(unsigned O) {
-  return O == RISCC::BEQZ || O == RISCC::BNEZ || O == RISCC::BLTZ ||
-         O == RISCC::BGEZ;
+static bool isShortConditional(unsigned Opcode) {
+  return Opcode == RISCC::BEQZ || Opcode == RISCC::BNEZ ||
+         Opcode == RISCC::BLTZ || Opcode == RISCC::BGEZ;
 }
 
 static bool runBranchSelector(MachineFunction &MF) {
@@ -49,26 +49,31 @@ static bool runBranchSelector(MachineFunction &MF) {
     bool Expanded = false;
     for (MachineBasicBlock &MBB : MF) {
       for (MachineInstr &MI : make_early_inc_range(MBB)) {
-        unsigned O = MI.getOpcode();
-        if (O != RISCC::JMP8 && !shortConditional(O)) continue;
-        if (!MI.getOperand(0).isMBB()) continue;
+        const unsigned Opcode = MI.getOpcode();
+        if (Opcode != RISCC::JMP8 && !isShortConditional(Opcode))
+          continue;
+        if (!MI.getOperand(0).isMBB())
+          continue;
         int64_t Delta = int64_t(BlockOffset[MI.getOperand(0).getMBB()]) -
                         int64_t(InstOffset[&MI] + 2);
-        if ((Delta & 1) == 0 && isInt<8>(Delta / 2)) continue;
-        if (O == RISCC::JMP8) {
+        if ((Delta & 1) == 0 && isInt<8>(Delta / 2))
+          continue;
+        if (Opcode == RISCC::JMP8) {
           MI.setDesc(TII.get(RISCC::JMP16));
         } else {
-          MachineBasicBlock *Dest = MI.getOperand(0).getMBB();
+          MachineBasicBlock *Destination = MI.getOperand(0).getMBB();
           MI.setDesc(TII.get(RISCC::LONG_BR));
-          MI.getOperand(0).ChangeToImmediate(O);
-          MI.addOperand(MachineOperand::CreateMBB(Dest));
+          MI.getOperand(0).ChangeToImmediate(Opcode);
+          MI.addOperand(MachineOperand::CreateMBB(Destination));
         }
         Expanded = Changed = true;
         break;
       }
-      if (Expanded) break;
+      if (Expanded)
+        break;
     }
-    if (!Expanded) break;
+    if (!Expanded)
+      break;
   }
   return Changed;
 }
