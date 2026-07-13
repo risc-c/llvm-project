@@ -190,7 +190,7 @@ void RISCCMCCodeEmitter::encodeInstruction(
     break;
   }
   case RISCC::RET: case RISCC::RETI:
-    W = rr(0, reg(MI.getOperand(0)), 0x1f, O == RISCC::RET ? 0 : 4);
+    W = rr(O == RISCC::RETI ? 7 : 0, reg(MI.getOperand(0)), 0x1f, 0);
     break;
   case RISCC::JAL:
     W = rr(reg(MI.getOperand(0)), reg(MI.getOperand(1)), 0x1f, 1);
@@ -200,7 +200,7 @@ void RISCCMCCodeEmitter::encodeInstruction(
            O == RISCC::MFS ? 2 : 3);
     break;
   case RISCC::CLI: case RISCC::STI:
-    W = rr(0, 0, 0x1f, O == RISCC::CLI ? 6 : 7);
+    W = rr(O == RISCC::STI ? 7 : 0, 0, 0x1f, 6);
     break;
   case RISCC::JAL16:
     W = rr(reg(MI.getOperand(0)), 0, 0x1f, 5);

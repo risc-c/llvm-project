@@ -71,7 +71,7 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SELECT, MVT::i16, Expand);
   setOperationAction(ISD::BR_JT, MVT::Other, Expand);
   setOperationAction(ISD::JumpTable, MVT::i16, Expand);
-  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i16, Expand);
+  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i16, Custom);
   setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
   setOperationAction(ISD::STACKRESTORE, MVT::Other, Expand);
 
@@ -96,6 +96,15 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerShift(Op, DAG);
   case ISD::UMUL_LOHI: return lowerMULLOHI(Op, DAG, false);
   case ISD::SMUL_LOHI: return lowerMULLOHI(Op, DAG, true);
+  case ISD::DYNAMIC_STACKALLOC: {
+    const Function &Fn = DAG.getMachineFunction().getFunction();
+    DAG.getContext()->diagnose(DiagnosticInfoUnsupported(
+        Fn, "RISC-C does not support dynamic stack allocation",
+        SDLoc(Op).getDebugLoc()));
+    SDValue Results[] = {
+        DAG.getConstant(0, SDLoc(Op), Op.getValueType()), Op.getOperand(0)};
+    return DAG.getMergeValues(Results, SDLoc(Op));
+  }
   default: llvm_unreachable("unexpected custom RISC-C lowering");
   }
 }

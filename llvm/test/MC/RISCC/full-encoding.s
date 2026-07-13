@@ -65,13 +65,13 @@ mfs r4, s3
 mts s2, r1
 # ENC: mts	s2, r1{{ *}}; encoding: [0xfb,0xd1]
 reti s0
-# ENC: reti	s0{{ *}}; encoding: [0xfc,0xc0]
+# ENC: reti	s0{{ *}}; encoding: [0xf8,0xf8]
 jal16 s7, 4660
 # ENC: jal16	s7, 4660{{ *}}; encoding: [0xfd,0xf8,0x1a,0x09]
 cli
 # ENC: cli{{ *}}; encoding: [0xfe,0xc0]
 sti
-# ENC: sti{{ *}}; encoding: [0xff,0xc0]
+# ENC: sti{{ *}}; encoding: [0xfe,0xf8]
 
 li r0, 4660
 # ENC: li	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
@@ -94,7 +94,10 @@ halt
 # JAL16 format.  Pseudos intentionally disassemble to canonical instructions.
 # DIS: ldw	r1, [r2 + 127]
 # DIS: mul	r7, r0, r1
+# DIS: reti	s0
 # DIS: jal16	s7, 4660
+# DIS: cli
+# DIS: sti
 # DIS: lui	r0, 18
 # DIS-NEXT: ori	r0, 52
 # DIS: jal16	s7, 4660

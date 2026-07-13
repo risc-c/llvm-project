@@ -195,6 +195,11 @@ void RISCC::scanSection(InputSectionBase &sec) {
 }
 
 void RISCC::validateOutput() const {
+  if (ctx.arg.isPic) {
+    ErrAlways(ctx) << "RISC-C ABI v1 does not support shared objects or "
+                      "position-independent executables";
+    return;
+  }
   if (ctx.arg.relocatable)
     return;
 

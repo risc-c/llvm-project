@@ -27,6 +27,7 @@ public:
     // Static, local-exec TLS uses S2 as the thread pointer.  The backend
     // rejects every dynamic TLS model.
     TLSSupported = true;
+    VLASupported = false;
 
     ShortWidth = ShortAlign = 16;
     IntWidth = IntAlign = 16;

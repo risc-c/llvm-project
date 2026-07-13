@@ -72,8 +72,13 @@ MCDisassembler::DecodeStatus RISCCDisassembler::getInstruction(
   if (F == 0x1f) {
     switch (B) {
     case 0:
-      if (D) return Fail;
-      MI.setOpcode(RISCC::RET); addReg(MI, sreg(A)); return Success;
+      if (D == 0)
+        MI.setOpcode(RISCC::RET);
+      else if (D == 7 && STI.hasFeature(RISCC::FeatureSys))
+        MI.setOpcode(RISCC::RETI);
+      else
+        return Fail;
+      addReg(MI, sreg(A)); return Success;
     case 1:
       MI.setOpcode(RISCC::JAL); addReg(MI, sreg(D)); addReg(MI, gpr(A));
       return Success;
@@ -83,10 +88,6 @@ MCDisassembler::DecodeStatus RISCCDisassembler::getInstruction(
     case 3:
       MI.setOpcode(RISCC::MTS); addReg(MI, sreg(D)); addReg(MI, gpr(A));
       return Success;
-    case 4:
-      if (!STI.hasFeature(RISCC::FeatureSys)) return Fail;
-      if (D) return Fail;
-      MI.setOpcode(RISCC::RETI); addReg(MI, sreg(A)); return Success;
     case 5:
       if (!STI.hasFeature(RISCC::FeatureSys) || A || Bytes.size() < 4)
         return Fail;
@@ -94,9 +95,10 @@ MCDisassembler::DecodeStatus RISCCDisassembler::getInstruction(
       MI.setOpcode(RISCC::JAL16); addReg(MI, sreg(D));
       addImm(MI, uint64_t(support::endian::read16le(Bytes.data() + 2)) * 2);
       Size = 4; return Success;
-    case 6: case 7:
-      if (!STI.hasFeature(RISCC::FeatureSys) || D || A) return Fail;
-      MI.setOpcode(B == 6 ? RISCC::CLI : RISCC::STI); return Success;
+    case 6:
+      if (!STI.hasFeature(RISCC::FeatureSys) || A || (D != 0 && D != 7))
+        return Fail;
+      MI.setOpcode(D == 0 ? RISCC::CLI : RISCC::STI); return Success;
     }
   }
 

@@ -183,7 +183,7 @@ def JAL : SYS<1, (outs SREG:$sd), (ins GPR:$ra), "jal\t$sd, $ra">;
 def MFS : SYS<2, (outs GPR:$sd), (ins SREG:$ra), "mfs\t$sd, $ra">;
 def MTS : SYS<3, (outs SREG:$sd), (ins GPR:$ra), "mts\t$sd, $ra">;
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
-def RETI : SYS<4, (outs), (ins SREG:$ra), "reti\t$ra">;
+def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 7; }
 
 let Predicates = [HasSysPred] in
 def JAL16 : SYS<5, (outs SREG:$sd), (ins codeaddr:$target),
@@ -193,7 +193,7 @@ def JAL16 : SYS<5, (outs SREG:$sd), (ins codeaddr:$target),
 }
 let Predicates = [HasSysPred] in {
 def CLI : SYS<6, (outs), (ins), "cli"> { let sd = 0; let ra = 0; }
-def STI : SYS<7, (outs), (ins), "sti"> { let sd = 0; let ra = 0; }
+def STI : SYS<6, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
 }
 
 // Multi-instruction assembler aliases are represented as concrete MC opcodes.

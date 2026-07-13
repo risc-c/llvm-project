@@ -5,6 +5,10 @@
 # RUN: yaml2obj full.yaml -o full.o
 # RUN: yaml2obj sys.yaml -o sys.o
 # RUN: yaml2obj min.yaml -o min.o
+# RUN: not ld.lld -shared -m elf32lriscc full.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=ET-DYN
+# RUN: not ld.lld -pie -m elf32lriscc -e 0 full.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=ET-DYN
 # RUN: ld.lld -m elf32lriscc -e 0 full.o sys.o -o full-sys
 # RUN: llvm-readobj --file-headers full-sys | \
 # RUN:   FileCheck %s --check-prefix=MERGED-FULL
@@ -52,6 +56,9 @@
 # RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_CODE16: 0x101 is not aligned to 2 bytes
 # RELOCS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD out of range: {{.*}} is not in [-128, 127]
 # RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_PCREL8_WORD: 0x101 is not aligned to 2 bytes
+
+# ET-DYN: error: RISC-C ABI v1 does not support shared objects or
+# ET-DYN-SAME: position-independent executables
 
 # MERGED-FULL: Flags [ (0x11)
 # MERGED-FULL: EF_RISCC_ABI_V1 (0x1)
