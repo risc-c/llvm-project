@@ -100,8 +100,7 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
         if (!Scratch)
           Scratch = RS->scavengeRegisterBackwards(RISCC::GPRRegClass, II,
                                                    false, SPAdj);
-        BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::LI), Scratch)
-            .addImm(Offset);
+        TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
         BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Dst)
             .addReg(Dst).addReg(Scratch, RegState::Kill);
       }
@@ -127,7 +126,7 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
   assert(Scratch && "unable to scavenge frame-address register");
   const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
-  BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::LI), Scratch).addImm(Offset);
+  TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
   BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Scratch)
       .addReg(RISCC::R7).addReg(Scratch, RegState::Kill);
   MI.getOperand(FIOperandNum).ChangeToRegister(Scratch, false);

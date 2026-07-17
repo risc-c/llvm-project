@@ -6,6 +6,8 @@
 target datalayout = "e-m:e-P1-p:16:16-p1:16:16-i8:8-i16:16-i32:16-i64:16-f32:16-f64:16-a:8:16-n8:16-S16"
 target triple = "riscc-none-elf"
 
+declare void @use(ptr)
+
 define i16 @constant_5() {
 ; COMMON-LABEL: constant_5:
 ; COMMON:       ldi r1, 5
@@ -48,6 +50,53 @@ define i16 @unsigned_at_least(i16 %a, i16 %b) {
 ; COMMON-NEXT:  xori {{.*}}, 1
 ; COMMON-NOT:   jmp
   %cmp = icmp uge i16 %a, %b
+  %result = zext i1 %cmp to i16
+  ret i16 %result
+}
+
+define i16 @equal_registers(i16 %a, i16 %b) {
+; COMMON-LABEL: equal_registers:
+; COMMON:       xor
+; COMMON-NEXT:  ldi {{.*}}, 0
+; COMMON-NEXT:  sltu
+; COMMON-NEXT:  xori {{.*}}, 1
+; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
+  %cmp = icmp eq i16 %a, %b
+  %result = zext i1 %cmp to i16
+  ret i16 %result
+}
+
+define i16 @not_equal_registers(i16 %a, i16 %b) {
+; COMMON-LABEL: not_equal_registers:
+; COMMON:       xor
+; COMMON-NEXT:  ldi {{.*}}, 0
+; COMMON-NEXT:  sltu
+; COMMON-NOT:   xori
+; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
+  %cmp = icmp ne i16 %a, %b
+  %result = zext i1 %cmp to i16
+  ret i16 %result
+}
+
+define i16 @equal_zero(i16 %value) {
+; COMMON-LABEL: equal_zero:
+; COMMON-NOT:   xor
+; COMMON:       ldi {{.*}}, 0
+; COMMON-NEXT:  sltu
+; COMMON-NEXT:  xori {{.*}}, 1
+; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
+  %cmp = icmp eq i16 %value, 0
+  %result = zext i1 %cmp to i16
+  ret i16 %result
+}
+
+define i16 @not_equal_5(i16 %value) {
+; COMMON-LABEL: not_equal_5:
+; COMMON:       xori {{.*}}, 5
+; COMMON-NEXT:  ldi {{.*}}, 0
+; COMMON-NEXT:  sltu
+; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
+  %cmp = icmp ne i16 %value, 5
   %result = zext i1 %cmp to i16
   ret i16 %result
 }
@@ -132,4 +181,13 @@ define i16 @load_signed_byte(ptr %address) {
   %value = load i8, ptr %address
   %result = sext i8 %value to i16
   ret i16 %result
+}
+
+define void @small_large_frame() {
+; COMMON-LABEL: small_large_frame:
+; COMMON:       ldi r0, 20{{[0-9]}}
+; COMMON-NEXT:  sub r7, r7, r0
+  %buffer = alloca [200 x i8], align 2
+  call void @use(ptr %buffer)
+  ret void
 }

@@ -33,9 +33,7 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
         .setMIFlag(Flag);
     return;
   }
-  BuildMI(MBB, I, DL, TII.get(RISCC::LI), Scratch)
-      .addImm(std::abs(Amount))
-      .setMIFlag(Flag);
+  TII.materializeImmediate(MBB, I, DL, Scratch, std::abs(Amount), Flag);
   BuildMI(MBB, I, DL, TII.get(Amount < 0 ? RISCC::SUB : RISCC::ADD), RISCC::R7)
       .addReg(RISCC::R7)
       .addReg(Scratch, RegState::Kill)

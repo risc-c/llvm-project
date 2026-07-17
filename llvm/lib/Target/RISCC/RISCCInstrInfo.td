@@ -52,6 +52,7 @@ def RISCCbrcc : SDNode<"RISCCISD::BR_CC", SDT_RISCCBrCC, [SDNPHasChain]>;
 def RISCCbrccimm : SDNode<"RISCCISD::BR_CC_IMM", SDT_RISCCBrCC,
   [SDNPHasChain]>;
 def RISCCsetcc : SDNode<"RISCCISD::SET_CC", SDT_RISCCSetCC>;
+def RISCCsetccimm : SDNode<"RISCCISD::SET_CC_IMM", SDT_RISCCSetCC>;
 def RISCCselectcc : SDNode<"RISCCISD::SELECT_CC", SDT_RISCCSelectCC>;
 def RISCCshl : SDNode<"RISCCISD::SHL", SDT_RISCCShift>;
 def RISCCsrl : SDNode<"RISCCISD::SRL", SDT_RISCCShift>;
@@ -331,6 +332,10 @@ let usesCustomInserter = 1 in
 def PseudoSETCC : Pseudo<(outs GPR:$dst),
   (ins GPR:$lhs, GPR:$rhs, condcode:$cc),
   [(set i16:$dst, (RISCCsetcc GPR:$lhs, GPR:$rhs, imm:$cc))]>;
+let usesCustomInserter = 1 in
+def PseudoSETCCImm : Pseudo<(outs GPR:$dst),
+  (ins GPR:$lhs, u8imm:$rhs, condcode:$cc),
+  [(set i16:$dst, (RISCCsetccimm GPR:$lhs, u8imm:$rhs, imm:$cc))]>;
 let usesCustomInserter = 1 in
 def PseudoSELECTCC : Pseudo<(outs GPR:$dst),
   (ins GPR:$lhs, GPR:$rhs, GPR:$truev, GPR:$falsev, condcode:$cc),

@@ -359,10 +359,25 @@ SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
 
 SDValue RISCCTargetLowering::lowerSETCC(SDValue Op, SelectionDAG &DAG) const {
   SDLoc DL(Op);
+  SDValue LHS = Op.getOperand(0);
+  SDValue RHS = Op.getOperand(1);
+  ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(2))->get();
+  bool IsEquality = CC == ISD::SETEQ || CC == ISD::SETNE;
+  if (IsEquality && isa<ConstantSDNode>(LHS) &&
+      !isa<ConstantSDNode>(RHS))
+    std::swap(LHS, RHS);
+  if (IsEquality) {
+    if (auto *C = dyn_cast<ConstantSDNode>(RHS);
+        C && isUInt<8>(C->getZExtValue())) {
+      return DAG.getNode(
+          RISCCISD::SET_CC_IMM, DL, MVT::i16, LHS,
+          DAG.getConstant(C->getZExtValue(), DL, MVT::i16),
+          DAG.getConstant(CC, DL, MVT::i16));
+    }
+  }
   return DAG.getNode(
-      RISCCISD::SET_CC, DL, MVT::i16, Op.getOperand(0), Op.getOperand(1),
-      DAG.getConstant(cast<CondCodeSDNode>(Op.getOperand(2))->get(), DL,
-                      MVT::i16));
+      RISCCISD::SET_CC, DL, MVT::i16, LHS, RHS,
+      DAG.getConstant(CC, DL, MVT::i16));
 }
 
 SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
@@ -622,16 +637,35 @@ SDValue RISCCTargetLowering::LowerReturn(
 // Custom machine-instruction insertion
 //===----------------------------------------------------------------------===//
 
+static Register createVirtualGPR(MachineBasicBlock &MBB) {
+  return MBB.getParent()->getRegInfo().createVirtualRegister(
+      &RISCC::GPRRegClass);
+}
+
+static bool isSignedRelationalComparison(ISD::CondCode CC) {
+  return CC == ISD::SETLT || CC == ISD::SETGT || CC == ISD::SETLE ||
+         CC == ISD::SETGE;
+}
+
+static bool swapsComparisonOperands(ISD::CondCode CC) {
+  return CC == ISD::SETGT || CC == ISD::SETLE || CC == ISD::SETUGT ||
+         CC == ISD::SETULE;
+}
+
+static bool invertsLessThanResult(ISD::CondCode CC) {
+  return CC == ISD::SETGE || CC == ISD::SETLE || CC == ISD::SETUGE ||
+         CC == ISD::SETULE;
+}
+
 static void biasSignedComparisonOperands(MachineBasicBlock &MBB,
                                          MachineBasicBlock::iterator I,
                                          const DebugLoc &DL,
                                          const RISCCInstrInfo &TII,
                                          Register &LHS, Register &RHS) {
-  MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
-  Register SignMask = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-  Register BiasedLHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-  Register BiasedRHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-  BuildMI(MBB, I, DL, TII.get(RISCC::LUI), SignMask).addImm(0x80);
+  Register SignMask = createVirtualGPR(MBB);
+  Register BiasedLHS = createVirtualGPR(MBB);
+  Register BiasedRHS = createVirtualGPR(MBB);
+  TII.materializeImmediate(MBB, I, DL, SignMask, 0x8000);
   BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedLHS)
       .addReg(LHS)
       .addReg(SignMask);
@@ -647,9 +681,7 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
                                  const DebugLoc &DL, const RISCCInstrInfo &TII,
                                  Register LHS, Register RHS, ISD::CondCode CC,
                                  MachineBasicBlock *Target, bool IsNano) {
-  bool Swap = CC == ISD::SETGT || CC == ISD::SETLE ||
-              CC == ISD::SETUGT || CC == ISD::SETULE;
-  if (Swap)
+  if (swapsComparisonOperands(CC))
     std::swap(LHS, RHS);
   unsigned Cmp, Br;
   switch (CC) {
@@ -684,8 +716,7 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
   default:
     llvm_unreachable("unsupported integer condition");
   }
-  if (IsNano && (CC == ISD::SETLT || CC == ISD::SETGT ||
-                 CC == ISD::SETGE || CC == ISD::SETLE))
+  if (IsNano && isSignedRelationalComparison(CC))
     biasSignedComparisonOperands(MBB, I, DL, TII, LHS, RHS);
   BuildMI(MBB, I, DL, TII.get(Cmp), RISCC::R0).addReg(LHS).addReg(RHS);
   BuildMI(MBB, I, DL, TII.get(Br)).addMBB(Target);
@@ -732,32 +763,53 @@ static void emitImmediateComparisonBranch(
       .addMBB(MI.getOperand(3).getMBB());
 }
 
-static bool emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
+static void emitNonZeroResult(MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator I,
+                              const DebugLoc &DL,
+                              const RISCCInstrInfo &TII, Register Destination,
+                              Register Value, bool Invert) {
+  Register Zero = createVirtualGPR(MBB);
+  Register NonZero = Invert ? createVirtualGPR(MBB) : Destination;
+  TII.materializeImmediate(MBB, I, DL, Zero, 0);
+  BuildMI(MBB, I, DL, TII.get(RISCC::SLTU), NonZero)
+      .addReg(Zero)
+      .addReg(Value);
+  if (Invert)
+    BuildMI(MBB, I, DL, TII.get(RISCC::XORI), Destination)
+        .addReg(NonZero)
+        .addImm(1);
+}
+
+static void emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
                                  const RISCCInstrInfo &TII, bool IsNano) {
   ISD::CondCode CC = ISD::CondCode(MI.getOperand(3).getImm());
-  bool IsSigned = CC == ISD::SETLT || CC == ISD::SETGT ||
-                  CC == ISD::SETLE || CC == ISD::SETGE;
-  bool IsUnsigned = CC == ISD::SETULT || CC == ISD::SETUGT ||
-                    CC == ISD::SETULE || CC == ISD::SETUGE;
-  if (!IsSigned && !IsUnsigned)
-    return false;
-
   Register Destination = MI.getOperand(0).getReg();
   Register LHS = MI.getOperand(1).getReg();
   Register RHS = MI.getOperand(2).getReg();
-  bool Swap = CC == ISD::SETGT || CC == ISD::SETLE ||
-              CC == ISD::SETUGT || CC == ISD::SETULE;
-  bool Invert = CC == ISD::SETGE || CC == ISD::SETLE ||
-                CC == ISD::SETUGE || CC == ISD::SETULE;
-  if (Swap)
+  if (CC == ISD::SETEQ || CC == ISD::SETNE) {
+    Register Difference = createVirtualGPR(MBB);
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::XOR), Difference)
+        .addReg(LHS)
+        .addReg(RHS);
+    emitNonZeroResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
+                      CC == ISD::SETEQ);
+    MI.eraseFromParent();
+    return;
+  }
+
+  bool IsSigned = isSignedRelationalComparison(CC);
+  assert((IsSigned || CC == ISD::SETULT || CC == ISD::SETUGT ||
+          CC == ISD::SETULE || CC == ISD::SETUGE) &&
+         "unsupported comparison");
+  if (swapsComparisonOperands(CC))
     std::swap(LHS, RHS);
   if (IsNano && IsSigned)
     biasSignedComparisonOperands(MBB, MI, MI.getDebugLoc(), TII, LHS, RHS);
 
   Register Less = Destination;
+  bool Invert = invertsLessThanResult(CC);
   if (Invert)
-    Less = MBB.getParent()->getRegInfo().createVirtualRegister(
-        &RISCC::GPRRegClass);
+    Less = createVirtualGPR(MBB);
   unsigned Compare = IsSigned && !IsNano ? RISCC::SLT : RISCC::SLTU;
   BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Compare), Less)
       .addReg(LHS)
@@ -767,7 +819,28 @@ static bool emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
         .addReg(Less)
         .addImm(1);
   MI.eraseFromParent();
-  return true;
+}
+
+static void emitImmediateEqualityResult(MachineInstr &MI,
+                                        MachineBasicBlock &MBB,
+                                        const RISCCInstrInfo &TII) {
+  Register Destination = MI.getOperand(0).getReg();
+  Register LHS = MI.getOperand(1).getReg();
+  uint64_t RHS = MI.getOperand(2).getImm();
+  ISD::CondCode CC = ISD::CondCode(MI.getOperand(3).getImm());
+  assert((CC == ISD::SETEQ || CC == ISD::SETNE) &&
+         "immediate setcc only supports equality");
+
+  Register Difference = LHS;
+  if (RHS != 0) {
+    Difference = createVirtualGPR(MBB);
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::XORI), Difference)
+        .addReg(LHS)
+        .addImm(RHS);
+  }
+  emitNonZeroResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
+                    CC == ISD::SETEQ);
+  MI.eraseFromParent();
 }
 
 static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
@@ -840,10 +913,9 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
   return Remainder;
 }
 
-static MachineBasicBlock *emitComparisonValue(MachineInstr &MI,
-                                              MachineBasicBlock *MBB,
-                                              const RISCCInstrInfo &TII,
-                                              bool IsNano) {
+static MachineBasicBlock *emitSelect(MachineInstr &MI,
+                                     MachineBasicBlock *MBB,
+                                     const RISCCInstrInfo &TII, bool IsNano) {
   DebugLoc DL = MI.getDebugLoc();
   MachineFunction *MF = MBB->getParent();
   const BasicBlock *IRBlock = MBB->getBasicBlock();
@@ -861,23 +933,10 @@ static MachineBasicBlock *emitComparisonValue(MachineInstr &MI,
   Register Destination = MI.getOperand(0).getReg();
   Register LHS = MI.getOperand(1).getReg();
   Register RHS = MI.getOperand(2).getReg();
-  const unsigned ConditionOperand =
-      MI.getOpcode() == RISCC::PseudoSETCC ? 3 : 5;
-
-  Register FalseValue, TrueValue;
-  if (MI.getOpcode() == RISCC::PseudoSETCC) {
-    FalseValue = MF->getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
-    TrueValue = MF->getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
-    // This must precede the compare and terminators in the original block.
-    BuildMI(*MBB, MI, DL, TII.get(RISCC::LDI), FalseValue).addImm(0);
-    BuildMI(*True, True->end(), DL, TII.get(RISCC::LDI), TrueValue).addImm(1);
-  } else {
-    TrueValue = MI.getOperand(3).getReg();
-    FalseValue = MI.getOperand(4).getReg();
-  }
+  Register TrueValue = MI.getOperand(3).getReg();
+  Register FalseValue = MI.getOperand(4).getReg();
   emitComparisonBranch(*MBB, MI, DL, TII, LHS, RHS,
-                       ISD::CondCode(MI.getOperand(ConditionOperand).getImm()),
-                       True, IsNano);
+                       ISD::CondCode(MI.getOperand(5).getImm()), True, IsNano);
   BuildMI(*MBB, MI, DL, TII.get(RISCC::JMP8)).addMBB(Sink);
   BuildMI(*Sink, Sink->begin(), DL, TII.get(TargetOpcode::PHI), Destination)
       .addReg(FalseValue)
@@ -908,11 +967,13 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
     MI.eraseFromParent();
     return MBB;
   case RISCC::PseudoSETCC:
-    if (emitComparisonResult(MI, *MBB, TII, STI.isNano()))
-      return MBB;
-    return emitComparisonValue(MI, MBB, TII, STI.isNano());
+    emitComparisonResult(MI, *MBB, TII, STI.isNano());
+    return MBB;
+  case RISCC::PseudoSETCCImm:
+    emitImmediateEqualityResult(MI, *MBB, TII);
+    return MBB;
   case RISCC::PseudoSELECTCC:
-    return emitComparisonValue(MI, MBB, TII, STI.isNano());
+    return emitSelect(MI, MBB, TII, STI.isNano());
   default:
     llvm_unreachable("unexpected custom inserter opcode");
   }

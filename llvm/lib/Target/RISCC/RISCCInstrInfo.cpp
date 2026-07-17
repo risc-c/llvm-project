@@ -28,6 +28,27 @@ RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
                         RISCC::ADJCALLSTACKUP),
       RI(STI), STI(STI) {}
 
+void RISCCInstrInfo::materializeImmediate(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator I, const DebugLoc &DL,
+    Register Destination, int64_t Value, MachineInstr::MIFlag Flag) const {
+  uint64_t Encoded = static_cast<uint16_t>(Value);
+  if (isUInt<8>(Encoded)) {
+    BuildMI(MBB, I, DL, get(RISCC::LDI), Destination)
+        .addImm(Encoded)
+        .setMIFlag(Flag);
+    return;
+  }
+  if ((Encoded & 0xff) == 0) {
+    BuildMI(MBB, I, DL, get(RISCC::LUI), Destination)
+        .addImm(Encoded >> 8)
+        .setMIFlag(Flag);
+    return;
+  }
+  BuildMI(MBB, I, DL, get(RISCC::LI), Destination)
+      .addImm(Value)
+      .setMIFlag(Flag);
+}
+
 bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   if (MI.getOpcode() != RISCC::SEXT8_NANO)
     return false;

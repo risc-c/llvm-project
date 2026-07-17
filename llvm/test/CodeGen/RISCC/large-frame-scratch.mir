@@ -6,10 +6,10 @@
 # It must nevertheless be excluded from the address scratch chosen for code
 # inserted before the store.  Check the corresponding load while here too.
 # CHECK-LABEL: name: large_frame_spill
-# CHECK:       $r0 = LI 202
+# CHECK:       $r0 = LDI 202
 # CHECK-NEXT:  $r0 = ADD $r7, killed $r0
 # CHECK-NEXT:  STW killed $r1, $r0, 0
-# CHECK-NEXT:  $r0 = LI 202
+# CHECK-NEXT:  $r0 = LDI 202
 # CHECK-NEXT:  $r0 = ADD $r7, killed $r0
 # CHECK-NEXT:  $r1 = LDW $r0, 0
 

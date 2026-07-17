@@ -24,6 +24,7 @@ enum NodeType {
   BR_CC,
   BR_CC_IMM,
   SET_CC,
+  SET_CC_IMM,
   SELECT_CC,
   SHL,
   SRL,

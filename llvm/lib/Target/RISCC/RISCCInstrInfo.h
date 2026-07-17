@@ -27,6 +27,9 @@ public:
   const RISCCRegisterInfo &getRegisterInfo() const { return RI; }
   static bool isConditionalBranchOpcode(unsigned Opcode);
   static unsigned getOppositeBranchOpcode(unsigned Opcode);
+  void materializeImmediate(MachineBasicBlock &, MachineBasicBlock::iterator,
+                            const DebugLoc &, Register, int64_t,
+                            MachineInstr::MIFlag = MachineInstr::NoFlags) const;
 
   void copyPhysReg(MachineBasicBlock &, MachineBasicBlock::iterator,
                    const DebugLoc &, Register, Register, bool,
