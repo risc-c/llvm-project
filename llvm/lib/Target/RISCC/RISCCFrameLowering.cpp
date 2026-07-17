@@ -110,38 +110,9 @@ MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
 
 static bool needsFrameScavengerSlot(const MachineFunction &MF) {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  uint64_t EstimatedSize = MFI.estimateStackSize(MF);
-
-  if (EstimatedSize > 127)
-    return true;
-
-  // Local object bases fit when the complete frame fits. Fixed incoming
-  // objects already have ABI offsets, so check their exact estimated
-  // SP-relative address. Account for any extra target-instruction displacement
-  // in both cases.
-  for (const MachineBasicBlock &MBB : MF) {
-    for (const MachineInstr &MI : MBB) {
-      for (unsigned I = 0, E = MI.getNumOperands(); I != E; ++I) {
-        if (!MI.getOperand(I).isFI())
-          continue;
-        if (I + 1 == E || !MI.getOperand(I + 1).isImm())
-          return true;
-        int64_t Extra = MI.getOperand(I + 1).getImm();
-        int FI = MI.getOperand(I).getIndex();
-        if (MFI.isFixedObjectIndex(FI)) {
-          int64_t Offset =
-              MFI.getObjectOffset(FI) + int64_t(EstimatedSize) + Extra;
-          if (!isInt<8>(Offset))
-            return true;
-          continue;
-        }
-        if (Extra < -128 ||
-            (Extra > 0 && EstimatedSize + uint64_t(Extra) > 127))
-          return true;
-      }
-    }
-  }
-  return false;
+  // Fixed incoming objects also carry a caller-frame offset. Keep their
+  // handling conservative instead of duplicating frame-layout calculations.
+  return MFI.getNumFixedObjects() || MFI.estimateStackSize(MF) > 127;
 }
 
 void RISCCFrameLowering::processFunctionBeforeFrameFinalized(

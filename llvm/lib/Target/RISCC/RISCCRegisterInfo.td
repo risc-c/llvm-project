@@ -32,10 +32,6 @@ def S7 : RISCCReg<15, "s7">;
 
 def GPR : RegisterClass<"RISCC", [i16], 16,
   (add R0, R1, R2, R3, R4, R5, R6, R7)>;
-// A tail-call target must survive callee-saved restoration and leave one of
-// the five caller-clobbered registers available for frame teardown.
-def GPRTail : RegisterClass<"RISCC", [i16], 16,
-  (add R0, R1, R2, R3, R4)>;
 // Keep Nano's incoming link in caller-saved registers or a normal spill slot.
 // This avoids conflating the copied link with a callee-saved register's own
 // incoming value when the prologue/epilogue pass saves that register.

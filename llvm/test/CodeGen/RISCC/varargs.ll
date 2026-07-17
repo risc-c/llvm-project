@@ -10,12 +10,12 @@ declare void @llvm.va_start(ptr)
 ; parameter remains in r1 and is not spilled to create a va_list home area.
 define i16 @take_one(i16 %fixed, ...) {
 ; CHECK-LABEL: take_one:
-; CHECK:       addi r7, -2
+; CHECK:       addi r7, -4
 ; CHECK:       mov [[AP:r[0-6]]], r7
-; CHECK-NEXT:  addi [[AP]], 2
-; CHECK-NEXT:  stw [[AP]], [r7 + 0]
-; CHECK-NEXT:  ldw r1, [r7 + 2]
-; CHECK:       addi r7, 2
+; CHECK-NEXT:  addi [[AP]], 4
+; CHECK-NEXT:  stw [[AP]], [r7 + 2]
+; CHECK-NEXT:  ldw r1, [r7 + 4]
+; CHECK:       addi r7, 4
 ; CHECK:       rets
   %ap = alloca ptr, align 2
   call void @llvm.va_start(ptr %ap)

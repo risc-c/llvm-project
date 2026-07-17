@@ -568,9 +568,10 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
 
 static bool isEligibleForSiblingCall(
     const TargetLowering::CallLoweringInfo &CLI, const MachineFunction &MF,
-    ArrayRef<CCValAssign> ArgLocs, unsigned StackBytes, bool IsDirect) {
+    unsigned StackBytes) {
   const Function &Caller = MF.getFunction();
-  if (CLI.IsVarArg || Caller.isVarArg() || StackBytes != 0)
+  if (!isa<GlobalAddressSDNode, ExternalSymbolSDNode>(CLI.Callee) ||
+      CLI.IsVarArg || Caller.isVarArg() || StackBytes != 0)
     return false;
   if (CLI.CallConv != Caller.getCallingConv() ||
       CLI.RetTy != Caller.getReturnType() ||
@@ -582,9 +583,7 @@ static bool isEligibleForSiblingCall(
       }))
     return false;
 
-  // An indirect target consumes another caller-clobbered GPR. Keep one of
-  // R0-R4 free so a large frame can be torn down after register allocation.
-  return IsDirect || ArgLocs.size() < 4;
+  return true;
 }
 
 SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
@@ -602,11 +601,8 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
     report_fatal_error(
         "RISC-C outgoing call frame exceeds the 16-bit address space");
 
-  const bool IsDirect =
-      isa<GlobalAddressSDNode, ExternalSymbolSDNode>(CLI.Callee);
   if (CLI.IsTailCall)
-    CLI.IsTailCall =
-        isEligibleForSiblingCall(CLI, MF, Locs, NumBytes, IsDirect);
+    CLI.IsTailCall = isEligibleForSiblingCall(CLI, MF, NumBytes);
   if (!CLI.IsTailCall && CLI.CB && CLI.CB->isMustTailCall())
     report_fatal_error("failed to lower a mandatory RISC-C tail call");
 

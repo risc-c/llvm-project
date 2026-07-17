@@ -299,16 +299,14 @@ let Predicates = [IsNanoPred], Uses = [R6], isCodeGenOnly = 1 in
 def TAIL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
+// Register-tail aliases remain available to assembly, but code generation
+// deliberately limits sibling calls to direct targets.
 let Predicates = [NoNanoPred], Uses = [S7] in
-def TAIL_REG : MCPseudo<(outs), (ins GPRTail:$target),
-                        "tail\t$target", 2> {
-  let Pattern = [(RISCCTail GPRTail:$target)];
-}
+def TAIL_REG : MCPseudo<(outs), (ins GPR:$target),
+                        "tail\t$target", 2>;
 let Predicates = [IsNanoPred], Uses = [R6] in
-def TAIL_NANO_REG : MCPseudo<(outs), (ins GPRTail:$target),
-                             "tail\t$target", 2> {
-  let Pattern = [(RISCCTail GPRTail:$target)];
-}
+def TAIL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
+                             "tail\t$target", 2>;
 }
 let Predicates = [HasSysPred], isBranch = 1, isTerminator = 1,
     isBarrier = 1 in
