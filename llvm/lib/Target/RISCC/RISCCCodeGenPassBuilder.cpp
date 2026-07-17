@@ -1,7 +1,16 @@
+//===-- RISCCCodeGenPassBuilder.cpp - RISCC CodeGen Pass Builder ----------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCC.h"
 #include "RISCCAsmPrinter.h"
 #include "RISCCTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
+#include "llvm/CodeGen/BranchRelaxation.h"
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/Passes/CodeGenPassBuilder.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -28,7 +37,7 @@ public:
     return Error::success();
   }
   void addPreEmitPass(PassManagerWrapper &PMW) const {
-    addMachineFunctionPass(RISCCBranchSelectorPass(), PMW);
+    addMachineFunctionPass(BranchRelaxationPass(), PMW);
   }
   void addAsmPrinterBegin(PassManagerWrapper &PMW) const {
     addModulePass(RISCCAsmPrinterBeginPass(), PMW, true);

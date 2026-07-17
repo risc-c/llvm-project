@@ -1,9 +1,27 @@
+//===-- RISCCInstrInfo.td - RISCC Instructions -------------*- tablegen -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 include "RISCCInstrFormats.td"
+
+def : MnemonicAlias<"ldi16", "li">;
+def : MnemonicAlias<"ldi8", "ldi">;
+def : MnemonicAlias<"lui8", "lui">;
+def : MnemonicAlias<"addi8", "addi">;
+def : MnemonicAlias<"cmpi8", "cmpi">;
+def : MnemonicAlias<"andi8", "andi">;
+def : MnemonicAlias<"ori8", "ori">;
+def : MnemonicAlias<"xori8", "xori">;
 
 def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
 def HasMulPred : Predicate<"Subtarget->hasMul()">,
                  AssemblerPredicate<(all_of FeatureMul)>;
+def NoSysPred : Predicate<"!Subtarget->hasSys()">;
 
 def SDT_RISCCCall : SDTypeProfile<0, -1, [SDTCisVT<0, iPTR>] >;
 def SDT_RISCCWrapper : SDTypeProfile<1, 1,
@@ -66,18 +84,26 @@ def u8imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<8>(Imm); }]> {
 }
 def s8imm : Operand<i16>, ImmLeaf<i16, [{ return isInt<8>(Imm); }]> {
   let ParserMatchClass = S8AsmOperand;
+  let DecoderMethod = "decodeSigned8";
 }
 def shiftimm : Operand<i16>, ImmLeaf<i16,
   [{ return Imm >= 1 && Imm <= 8; }]> {
   let ParserMatchClass = ShiftAsmOperand;
+  let EncoderMethod = "getShiftAmountEncoding";
+  let DecoderMethod = "decodeShiftAmount";
 }
 def u16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
   let ParserMatchClass = U16AsmOperand;
 }
 def brtarget : Operand<OtherVT> {
   let PrintMethod = "printBranchOperand";
+  let EncoderMethod = "getBranchTargetEncoding";
+  let DecoderMethod = "decodeBranchTarget";
 }
-def codeaddr : Operand<i16>;
+def codeaddr : Operand<i16> {
+  let EncoderMethod = "getCodeTargetEncoding";
+  let DecoderMethod = "decodeCodeTarget";
+}
 def condcode : Operand<i16>;
 
 // Loads and stores.  Word displacements are signed bytes.
@@ -156,19 +182,28 @@ def STB : RR<0x0b, (outs), (ins GPR:$rd, GPR:$ra),
 
 def SHRI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "shri\t$rd, $ra, $amount",
-              [(set i16:$rd, (RISCCsrl GPR:$ra, shiftimm:$amount))]>;
+              [(set i16:$rd, (RISCCsrl GPR:$ra, shiftimm:$amount))]> {
+  bits<3> amount;
+  let rb = amount;
+}
 def SARI : RR<0x0d, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "sari\t$rd, $ra, $amount",
-              [(set i16:$rd, (RISCCsra GPR:$ra, shiftimm:$amount))]>;
+              [(set i16:$rd, (RISCCsra GPR:$ra, shiftimm:$amount))]> {
+  bits<3> amount;
+  let rb = amount;
+}
 def SHLI : RR<0x0f, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "shli\t$rd, $ra, $amount",
-              [(set i16:$rd, (RISCCshl GPR:$ra, shiftimm:$amount))]>;
+              [(set i16:$rd, (RISCCshl GPR:$ra, shiftimm:$amount))]> {
+  bits<3> amount;
+  let rb = amount;
+}
 
 // S-register and control instructions.
 class SYS<bits<3> sub, dag outs, dag ins, string asm>
-  : RISCCInst<outs, ins, asm> {
-  bits<3> sd = 0;
-  bits<3> ra = 0;
+  : RISCCInst16<outs, ins, asm> {
+  bits<3> sd;
+  bits<3> ra;
   let Inst{15-14} = 0b11;
   let Inst{13-11} = sd;
   let Inst{10-8} = ra;
@@ -177,8 +212,8 @@ class SYS<bits<3> sub, dag outs, dag ins, string asm>
 }
 
 let isReturn = 1, isTerminator = 1, isBarrier = 1 in
-def RET : SYS<0, (outs), (ins SREG:$ra), "ret\t$ra">;
-let isBranch = 1, isTerminator = 1, isBarrier = 1 in
+def RET : SYS<0, (outs), (ins SREG:$ra), "ret\t$ra"> { let sd = 0; }
+let isBranch = 1, isIndirectBranch = 1, isTerminator = 1, isBarrier = 1 in
 def JAL : SYS<1, (outs SREG:$sd), (ins GPR:$ra), "jal\t$sd, $ra">;
 def MFS : SYS<2, (outs GPR:$sd), (ins SREG:$ra), "mfs\t$sd, $ra">;
 def MTS : SYS<3, (outs SREG:$sd), (ins GPR:$ra), "mts\t$sd, $ra">;
@@ -186,40 +221,48 @@ let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
 def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 7; }
 
 let Predicates = [HasSysPred] in
-def JAL16 : SYS<5, (outs SREG:$sd), (ins codeaddr:$target),
-                "jal16\t$sd, $target"> {
-  let Size = 4;
-  let ra = 0;
+def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
+                        "jal16\t$sd, $target"> {
+  bits<3> sd;
+  bits<15> target;
+  let Inst{15-14} = 0b11;
+  let Inst{13-11} = sd;
+  let Inst{10-8} = 0;
+  let Inst{7-3} = 0x1f;
+  let Inst{2-0} = 5;
+  let Inst{30-16} = target;
+  let Inst{31} = 0;
 }
 let Predicates = [HasSysPred] in {
 def CLI : SYS<6, (outs), (ins), "cli"> { let sd = 0; let ra = 0; }
 def STI : SYS<6, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
 }
 
-// Multi-instruction assembler aliases are represented as concrete MC opcodes.
-def LI : RISCCInst<(outs GPR:$rd), (ins u16imm:$imm), "li\t$rd, $imm"> {
-  let Size = 4;
-}
+// Assembler and code-generation aliases are expanded by the MC emitter.
+def LI : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm), "li\t$rd, $imm", 4>;
 let Predicates = [HasSysPred], isCall = 1,
     Defs = [S7, R0, R1, R2, R3, R4] in
-def CALL16 : RISCCInst<(outs), (ins codeaddr:$target), "call16\t$target",
-                       []> {
-  let Size = 4;
+def CALL16 : MCPseudo<(outs), (ins codeaddr:$target), "call16\t$target", 4>;
+let Predicates = [NoSysPred], isCall = 1, isCodeGenOnly = 1,
+    Defs = [S7, R0, R1, R2, R3, R4] in
+def CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
+  let Size = 6;
 }
 let isCall = 1, Defs = [S7, R0, R1, R2, R3, R4] in
-def CALL : RISCCInst<(outs), (ins GPR:$target), "call\t$target",
-                     [(RISCCcall GPR:$target)]>;
+def CALL : MCPseudo<(outs), (ins GPR:$target), "call\t$target", 2> {
+  let Pattern = [(RISCCcall GPR:$target)];
+}
 let Predicates = [HasSysPred], isBranch = 1, isTerminator = 1,
     isBarrier = 1 in
-def JMP16 : RISCCInst<(outs), (ins codeaddr:$target), "jmp16\t$target"> {
-  let Size = 4;
-}
+def JMP16 : MCPseudo<(outs), (ins codeaddr:$target), "jmp16\t$target", 4>;
 let isReturn = 1, isTerminator = 1, isBarrier = 1, Uses = [S7] in
-def RETS : RISCCInst<(outs), (ins), "rets", [(RISCCret)]>;
-def MOV : RISCCInst<(outs GPR:$rd), (ins GPR:$rs), "mov\t$rd, $rs">;
-def NOP : RISCCInst<(outs), (ins), "nop">;
+def RETS : MCPseudo<(outs), (ins), "rets", 2> {
+  let Pattern = [(RISCCret)];
+}
+def MOV : MCPseudo<(outs GPR:$rd), (ins GPR:$rs), "mov\t$rd, $rs", 2>;
+def NOP : MCPseudo<(outs), (ins), "nop", 2>;
 let isTerminator = 1, isBarrier = 1 in
-def HALT : RISCCInst<(outs), (ins), "halt">;
+def HALT : MCPseudo<(outs), (ins), "halt", 2>;
 
 // Code-generation pseudos.
 let Defs = [R0, R7], Uses = [R7], hasSideEffects = 1 in {
@@ -229,11 +272,6 @@ def ADJCALLSTACKUP : Pseudo<(outs), (ins i16imm:$amt1, i16imm:$amt2),
   [(callseq_end timm:$amt1, timm:$amt2)]>;
 }
 def FRAMEADDR : Pseudo<(outs GPR:$dst), (ins i16imm:$fi, i16imm:$offset)>;
-let Predicates = [HasSysPred], Uses = [R0], isBranch = 1,
-    isTerminator = 1, isCodeGenOnly = 1 in
-def LONG_BR : RISCCInst<(outs), (ins condcode:$cc, brtarget:$target), ""> {
-  let Size = 6;
-}
 
 let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
 def PseudoBRCC : Pseudo<(outs),
@@ -262,7 +300,15 @@ def : Pat<(i16 (RISCCWrapper tglobaltlsaddr:$addr)),
           (LI tglobaltlsaddr:$addr)>;
 def : Pat<(i16 (RISCCWrapper texternalsym:$addr)), (LI texternalsym:$addr)>;
 def : Pat<(i16 imm:$imm), (LI imm:$imm)>;
+let Predicates = [HasSysPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL16 tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
           (CALL16 texternalsym:$target)>;
+}
+let Predicates = [NoSysPred] in {
+def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
+          (CALL_MIN tglobaladdr:$target)>;
+def : Pat<(RISCCcall (i16 texternalsym:$target)),
+          (CALL_MIN texternalsym:$target)>;
+}

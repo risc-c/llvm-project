@@ -1,7 +1,18 @@
+//===-- RISCCInstrInfo.cpp - RISCC Instruction Information ----------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCInstrInfo.h"
+#include "RISCC.h"
+#include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 
@@ -14,7 +25,8 @@ void RISCCInstrInfo::anchor() {}
 
 RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
     : RISCCGenInstrInfo(STI, RI, RISCC::ADJCALLSTACKDOWN,
-                        RISCC::ADJCALLSTACKUP) {}
+                        RISCC::ADJCALLSTACKUP),
+      STI(STI) {}
 
 void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
@@ -67,30 +79,33 @@ void RISCCInstrInfo::loadRegFromStackSlot(
       .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
 }
 
-static bool isCondBranch(unsigned Opcode) {
+bool RISCCInstrInfo::isConditionalBranchOpcode(unsigned Opcode) {
   return Opcode == RISCC::BEQZ || Opcode == RISCC::BNEZ ||
          Opcode == RISCC::BLTZ || Opcode == RISCC::BGEZ;
+}
+
+unsigned RISCCInstrInfo::getOppositeBranchOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case RISCC::BEQZ:
+    return RISCC::BNEZ;
+  case RISCC::BNEZ:
+    return RISCC::BEQZ;
+  case RISCC::BLTZ:
+    return RISCC::BGEZ;
+  case RISCC::BGEZ:
+    return RISCC::BLTZ;
+  default:
+    llvm_unreachable("unexpected RISC-C conditional branch");
+  }
 }
 
 bool RISCCInstrInfo::reverseBranchCondition(
     SmallVectorImpl<MachineOperand> &Cond) const {
   assert(Cond.size() == 1 && Cond[0].isImm());
-  switch (Cond[0].getImm()) {
-  case RISCC::BEQZ:
-    Cond[0].setImm(RISCC::BNEZ);
-    return false;
-  case RISCC::BNEZ:
-    Cond[0].setImm(RISCC::BEQZ);
-    return false;
-  case RISCC::BLTZ:
-    Cond[0].setImm(RISCC::BGEZ);
-    return false;
-  case RISCC::BGEZ:
-    Cond[0].setImm(RISCC::BLTZ);
-    return false;
-  default:
+  if (!isConditionalBranchOpcode(Cond[0].getImm()))
     return true;
-  }
+  Cond[0].setImm(getOppositeBranchOpcode(Cond[0].getImm()));
+  return false;
 }
 
 bool RISCCInstrInfo::analyzeBranch(
@@ -108,14 +123,16 @@ bool RISCCInstrInfo::analyzeBranch(
     --I;
     while (I->isDebugInstr() && I != MBB.begin())
       --I;
-    if (isCondBranch(I->getOpcode()) && I->getOperand(0).isMBB()) {
+    if (isConditionalBranchOpcode(I->getOpcode()) &&
+        I->getOperand(0).isMBB()) {
       FBB = TBB;
       TBB = I->getOperand(0).getMBB();
       Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
     }
     return false;
   }
-  if (isCondBranch(I->getOpcode()) && I->getOperand(0).isMBB()) {
+  if (isConditionalBranchOpcode(I->getOpcode()) &&
+      I->getOperand(0).isMBB()) {
     TBB = I->getOperand(0).getMBB();
     Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
     return false;
@@ -128,7 +145,7 @@ unsigned RISCCInstrInfo::removeBranch(MachineBasicBlock &MBB,
   unsigned Count = 0, Bytes = 0;
   while (!MBB.empty()) {
     auto I = MBB.getLastNonDebugInstr();
-    if (I == MBB.end() || (!isCondBranch(I->getOpcode()) &&
+    if (I == MBB.end() || (!isConditionalBranchOpcode(I->getOpcode()) &&
                            I->getOpcode() != RISCC::JMP8 &&
                            I->getOpcode() != RISCC::JMP16))
       break;
@@ -163,6 +180,79 @@ unsigned RISCCInstrInfo::insertBranch(
   if (BytesAdded)
     *BytesAdded = Bytes;
   return Count;
+}
+
+bool RISCCInstrInfo::isBranchOffsetInRange(unsigned Opcode,
+                                           int64_t BrOffset) const {
+  if (Opcode == RISCC::JMP16)
+    return true;
+  if (Opcode != RISCC::JMP8 && !isConditionalBranchOpcode(Opcode))
+    return true;
+  // Short branches encode a signed word displacement from the following
+  // instruction.
+  int64_t Displacement = BrOffset - 2;
+  return (Displacement & 1) == 0 && isInt<8>(Displacement / 2);
+}
+
+MachineBasicBlock *
+RISCCInstrInfo::getBranchDestBlock(const MachineInstr &MI) const {
+  unsigned Opcode = MI.getOpcode();
+  if (Opcode != RISCC::JMP8 && Opcode != RISCC::JMP16 &&
+      !isConditionalBranchOpcode(Opcode))
+    return nullptr;
+  return MI.getOperand(0).isMBB() ? MI.getOperand(0).getMBB() : nullptr;
+}
+
+void RISCCInstrInfo::insertIndirectBranch(
+    MachineBasicBlock &MBB, MachineBasicBlock &DestBB,
+    MachineBasicBlock &RestoreBB, const DebugLoc &DL, int64_t,
+    RegScavenger *RS) const {
+  assert(MBB.empty() && MBB.pred_size() == 1 &&
+         "expected a fresh long-branch block");
+  assert(RestoreBB.empty() && "expected an empty restore block");
+  if (STI.hasSys()) {
+    BuildMI(MBB, MBB.end(), DL, get(RISCC::JMP16)).addMBB(&DestBB);
+    return;
+  }
+
+  assert(RS && "register scavenger required for a min-profile long branch");
+  MachineFunction &MF = *MBB.getParent();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  Register VirtualScratch = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  MachineInstr &Address =
+      *BuildMI(MBB, MBB.end(), DL, get(RISCC::LI), VirtualScratch)
+           .addMBB(&DestBB, RISCCII::MO_CODE);
+  BuildMI(MBB, MBB.end(), DL, get(RISCC::JAL), RISCC::S0)
+      .addReg(VirtualScratch, RegState::Kill);
+
+  RS->enterBasicBlockEnd(MBB);
+  Register Scratch = RS->scavengeRegisterBackwards(
+      RISCC::GPRRegClass, Address.getIterator(), /*RestoreAfter=*/false,
+      /*SPAdj=*/0, /*AllowSpill=*/false);
+  if (Scratch) {
+    RS->setRegUsed(Scratch);
+  } else {
+    Scratch = RISCC::R0;
+    int FI = MF.getInfo<RISCCMachineFunctionInfo>()
+                 ->getBranchRelaxationSpillFI();
+    if (FI < 0)
+      report_fatal_error("RISC-C function size was underestimated");
+
+    storeRegToStackSlot(MBB, Address.getIterator(), Scratch, true, FI,
+                        &RISCC::GPRRegClass, Register(),
+                        MachineInstr::NoFlags);
+    STI.getRegisterInfo()->eliminateFrameIndex(
+        std::prev(Address.getIterator()), 0, 1, RS);
+
+    Address.getOperand(1).setMBB(&RestoreBB);
+    loadRegFromStackSlot(RestoreBB, RestoreBB.end(), Scratch, FI,
+                         &RISCC::GPRRegClass, Register(), 0,
+                         MachineInstr::NoFlags);
+    STI.getRegisterInfo()->eliminateFrameIndex(RestoreBB.back(), 0, 1, RS);
+  }
+
+  MRI.replaceRegWith(VirtualScratch, Scratch);
+  MRI.clearVirtRegs();
 }
 
 unsigned RISCCInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {

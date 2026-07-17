@@ -1,3 +1,11 @@
+//===-- RISCCISelLowering.cpp - RISCC DAG Lowering ------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCISelLowering.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCMachineFunctionInfo.h"
@@ -17,6 +25,10 @@ using namespace llvm;
 #define GET_CALLING_CONV_IMPL
 #include "RISCCGenCallingConv.inc"
 
+//===----------------------------------------------------------------------===//
+// Target operation legalization
+//===----------------------------------------------------------------------===//
+
 RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
                                          const RISCCSubtarget &STI)
     : TargetLowering(TM, STI), STI(STI) {
@@ -29,9 +41,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setMaxAtomicSizeInBitsSupported(0);
   setMinimumJumpTableEntries(UINT_MAX);
 
-  for (unsigned Op : {ISD::ADD, ISD::SUB, ISD::AND, ISD::OR, ISD::XOR,
-                      ISD::MUL})
+  for (unsigned Op : {ISD::ADD, ISD::SUB, ISD::AND, ISD::OR, ISD::XOR})
     setOperationAction(Op, MVT::i16, Legal);
+  setOperationAction(ISD::MUL, MVT::i16,
+                     STI.hasMul() ? Legal : LibCall);
   for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA})
     setOperationAction(Op, MVT::i16, Custom);
   // These multi-result nodes have no native instruction.  Marking them
@@ -39,8 +52,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   // variable shifts use the mapped __*si3/__*di3 runtime helpers.
   for (unsigned Op : {ISD::SHL_PARTS, ISD::SRL_PARTS, ISD::SRA_PARTS})
     setOperationAction(Op, MVT::i16, Expand);
-  setOperationAction(ISD::UMUL_LOHI, MVT::i16, Custom);
-  setOperationAction(ISD::SMUL_LOHI, MVT::i16, Custom);
+  setOperationAction(ISD::UMUL_LOHI, MVT::i16,
+                     STI.hasMul() ? Custom : Expand);
+  setOperationAction(ISD::SMUL_LOHI, MVT::i16,
+                     STI.hasMul() ? Custom : Expand);
   setOperationAction(ISD::MULHU, MVT::i16, Expand);
   setOperationAction(ISD::MULHS, MVT::i16, Expand);
   for (unsigned Op : {ISD::ROTL, ISD::ROTR})
@@ -48,6 +63,7 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   for (unsigned Op : {ISD::BSWAP, ISD::CTLZ, ISD::CTTZ, ISD::CTPOP,
                       ISD::SIGN_EXTEND_INREG})
     setOperationAction(Op, MVT::i16, Expand);
+  setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
   for (unsigned Op : {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
     setOperationAction(Op, MVT::i16, LibCall);
   for (MVT VT : {MVT::i16, MVT::i32, MVT::i64}) {
@@ -85,6 +101,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setLoadExtAction(ISD::SEXTLOAD, MVT::i16, MVT::i8, Legal);
   setTruncStoreAction(MVT::i16, MVT::i8, Legal);
 }
+
+//===----------------------------------------------------------------------===//
+// Custom DAG lowering
+//===----------------------------------------------------------------------===//
 
 SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
                                             SelectionDAG &DAG) const {
@@ -207,9 +227,12 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op,
     unsigned Amount = C->getZExtValue() & 15;
     SDValue V = Op.getOperand(0);
     while (Amount) {
-      unsigned Chunk = std::min(Amount, 8u);
-      V = DAG.getNode(TOpc, DL, MVT::i16, V,
-                      DAG.getConstant(Chunk, DL, MVT::i16));
+      unsigned Chunk = STI.hasWideShift() ? std::min(Amount, 8u) : 1;
+      if (!STI.hasWideShift() && Op.getOpcode() == ISD::SHL)
+        V = DAG.getNode(ISD::ADD, DL, MVT::i16, V, V);
+      else
+        V = DAG.getNode(TOpc, DL, MVT::i16, V,
+                        DAG.getConstant(Chunk, DL, MVT::i16));
       Amount -= Chunk;
     }
     return V;
@@ -311,6 +334,10 @@ SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
       DAG.getConstant(cast<CondCodeSDNode>(Op.getOperand(4))->get(), DL,
                       MVT::i16));
 }
+
+//===----------------------------------------------------------------------===//
+// Calling convention lowering
+//===----------------------------------------------------------------------===//
 
 template <typename ArgT>
 static std::pair<MVT, CCValAssign::LocInfo>
@@ -535,6 +562,10 @@ SDValue RISCCTargetLowering::LowerReturn(
   return DAG.getNode(RISCCISD::RET_FLAG, DL, MVT::Other, Ops);
 }
 
+//===----------------------------------------------------------------------===//
+// Custom machine-instruction insertion
+//===----------------------------------------------------------------------===//
+
 static void emitComparisonBranch(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  const DebugLoc &DL, const RISCCInstrInfo &TII,
@@ -583,7 +614,8 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
 
 static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
                                             MachineBasicBlock *MBB,
-                                            const RISCCInstrInfo &TII) {
+                                            const RISCCInstrInfo &TII,
+                                            bool HasWideShift) {
   DebugLoc DL = MI.getDebugLoc();
   MachineFunction *MF = MBB->getParent();
   const BasicBlock *IRBlock = MBB->getBasicBlock();
@@ -622,12 +654,18 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
       .addMBB(MBB)
       .addReg(AmountNext)
       .addMBB(Loop);
-  const unsigned Opcode = MI.getOpcode() == RISCC::PseudoSHL   ? RISCC::SHLI
-                          : MI.getOpcode() == RISCC::PseudoSRL ? RISCC::SHRI
-                                                              : RISCC::SARI;
-  BuildMI(*Loop, Loop->end(), DL, TII.get(Opcode), ShiftNext)
-      .addReg(ShiftPhi)
-      .addImm(1);
+  if (MI.getOpcode() == RISCC::PseudoSHL && !HasWideShift)
+    BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::ADD), ShiftNext)
+        .addReg(ShiftPhi)
+        .addReg(ShiftPhi);
+  else {
+    const unsigned Opcode = MI.getOpcode() == RISCC::PseudoSHL   ? RISCC::SHLI
+                            : MI.getOpcode() == RISCC::PseudoSRL ? RISCC::SHRI
+                                                                : RISCC::SARI;
+    BuildMI(*Loop, Loop->end(), DL, TII.get(Opcode), ShiftNext)
+        .addReg(ShiftPhi)
+        .addImm(1);
+  }
   BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::ADDI), AmountNext)
       .addReg(AmountPhi)
       .addImm(-1);
@@ -698,7 +736,7 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
   case RISCC::PseudoSHL:
   case RISCC::PseudoSRL:
   case RISCC::PseudoSRA:
-    return emitVariableShift(MI, MBB, TII);
+    return emitVariableShift(MI, MBB, TII, STI.hasWideShift());
   case RISCC::PseudoBRCC:
     emitComparisonBranch(*MBB, MI, MI.getDebugLoc(), TII,
                          MI.getOperand(0).getReg(), MI.getOperand(1).getReg(),
@@ -713,6 +751,10 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
     llvm_unreachable("unexpected custom inserter opcode");
   }
 }
+
+//===----------------------------------------------------------------------===//
+// Inline assembly
+//===----------------------------------------------------------------------===//
 
 TargetLowering::ConstraintType
 RISCCTargetLowering::getConstraintType(StringRef C) const {

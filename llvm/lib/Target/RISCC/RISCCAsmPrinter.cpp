@@ -1,3 +1,11 @@
+//===-- RISCCAsmPrinter.cpp - RISCC Assembly Printer ----------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCAsmPrinter.h"
 #include "RISCC.h"
 #include "RISCCMCInstLower.h"
@@ -25,21 +33,6 @@ using namespace llvm;
 #define DEBUG_TYPE "riscc-asm-printer"
 
 namespace {
-static unsigned invertBranchOpcode(unsigned Opcode) {
-  switch (Opcode) {
-  case RISCC::BEQZ:
-    return RISCC::BNEZ;
-  case RISCC::BNEZ:
-    return RISCC::BEQZ;
-  case RISCC::BLTZ:
-    return RISCC::BGEZ;
-  case RISCC::BGEZ:
-    return RISCC::BLTZ;
-  default:
-    llvm_unreachable("unexpected conditional branch");
-  }
-}
-
 class RISCCAsmPrinter final : public AsmPrinter {
 public:
   static char ID;
@@ -56,18 +49,18 @@ public:
                                            getSubtargetInfo().getFeatureBits());
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
-    if (MI->getOpcode() == RISCC::LONG_BR) {
-      // LONG_BR is expanded here so textual and object output use the same
-      // inverse short branch followed by a four-byte jump.
-      MCInst Skip;
-      Skip.setOpcode(invertBranchOpcode(MI->getOperand(0).getImm()));
-      Skip.addOperand(MCOperand::createImm(2)); // Skip the four-byte JMP16.
-      EmitToStreamer(*OutStreamer, Skip);
+    if (MI->getOpcode() == RISCC::CALL_MIN) {
+      MCInst Address;
+      Address.setOpcode(RISCC::LI);
+      Address.addOperand(MCOperand::createReg(RISCC::R0));
+      Address.addOperand(Out.getOperand(0));
+      EmitToStreamer(*OutStreamer, Address);
 
-      MCInst Jump;
-      Jump.setOpcode(RISCC::JMP16);
-      Jump.addOperand(Out.getOperand(1));
-      EmitToStreamer(*OutStreamer, Jump);
+      MCInst Call;
+      Call.setOpcode(RISCC::JAL);
+      Call.addOperand(MCOperand::createReg(RISCC::S7));
+      Call.addOperand(MCOperand::createReg(RISCC::R0));
+      EmitToStreamer(*OutStreamer, Call);
       return;
     }
     EmitToStreamer(*OutStreamer, Out);

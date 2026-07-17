@@ -1,7 +1,14 @@
+//===-- RISCCAsmParser.cpp - RISCC Assembly Parser ------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "MCTargetDesc/RISCCMCExpr.h"
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "TargetInfo/RISCCTargetInfo.h"
-#include "llvm/ADT/StringSwitch.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
@@ -138,23 +145,11 @@ public:
 
 static MCRegister MatchRegisterName(StringRef Name);
 
-static std::optional<RISCCMCExpr::VariantKind>
-getVariantKind(StringRef Name) {
-  return StringSwitch<std::optional<RISCCMCExpr::VariantKind>>(Name.lower())
-      .Case("lo8", RISCCMCExpr::VK_LO8)
-      .Case("hi8", RISCCMCExpr::VK_HI8)
-      .Case("code", RISCCMCExpr::VK_CODE)
-      .Case("code_lo8", RISCCMCExpr::VK_CODE_LO8)
-      .Case("code_hi8", RISCCMCExpr::VK_CODE_HI8)
-      .Case("tpoff", RISCCMCExpr::VK_TPOFF)
-      .Default(std::nullopt);
-}
-
 bool RISCCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
   if (Parser.getTok().is(AsmToken::Identifier) &&
       Parser.getLexer().peekTok().is(AsmToken::LParen)) {
     std::optional<RISCCMCExpr::VariantKind> Kind =
-        getVariantKind(Parser.getTok().getIdentifier());
+        RISCCMCExpr::parseVariantKind(Parser.getTok().getIdentifier());
     if (!Kind)
       return Parser.parsePrimaryExpr(Res, EndLoc, nullptr);
     Parser.Lex();
@@ -278,16 +273,6 @@ bool RISCCAsmParser::parseInstruction(ParseInstructionInfo &, StringRef Name,
                                       SMLoc NameLoc,
                                       OperandVector &Operands) {
   std::string Lower = Name.lower();
-  Lower = StringSwitch<std::string>(Lower)
-              .Case("ldi16", "li")
-              .Case("ldi8", "ldi")
-              .Case("lui8", "lui")
-              .Case("addi8", "addi")
-              .Case("cmpi8", "cmpi")
-              .Case("andi8", "andi")
-              .Case("ori8", "ori")
-              .Case("xori8", "xori")
-              .Default(Lower);
   CurrentMnemonic = Lower;
   Operands.push_back(RISCCOperand::token(Lower, NameLoc));
 

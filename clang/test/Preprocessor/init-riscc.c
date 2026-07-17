@@ -1,17 +1,29 @@
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
-// RUN:   -target-cpu full < /dev/null | FileCheck %s
+// RUN:   -target-cpu min < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,MIN --implicit-check-not=__RISCC_SYS__ \
+// RUN:   --implicit-check-not=__RISCC_FULL__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu sys < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,SYS --implicit-check-not=__RISCC_MIN__ \
+// RUN:   --implicit-check-not=__RISCC_FULL__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu full < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL --implicit-check-not=__RISCC_MIN__ \
+// RUN:   --implicit-check-not=__RISCC_SYS__
 
-// CHECK-DAG: #define __RISCC_FULL__ 1
-// CHECK-DAG: #define __RISCC__ 1
-// CHECK-DAG: #define __riscc__ 1
-// CHECK-DAG: #define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
-// CHECK-DAG: #define __INT_MAX__ 32767
-// CHECK-DAG: #define __INTPTR_TYPE__ int
-// CHECK-DAG: #define __LONG_LONG_MAX__ 9223372036854775807LL
-// CHECK-DAG: #define __LONG_MAX__ 2147483647L
-// CHECK-DAG: #define __POINTER_WIDTH__ 16
-// CHECK-DAG: #define __SIZEOF_INT__ 2
-// CHECK-DAG: #define __SIZEOF_LONG_LONG__ 8
-// CHECK-DAG: #define __SIZEOF_LONG__ 4
-// CHECK-DAG: #define __SIZEOF_POINTER__ 2
-// CHECK-DAG: #define __SIZE_TYPE__ unsigned int
+// COMMON-DAG: #define __RISCC__ 1
+// COMMON-DAG: #define __riscc__ 1
+// COMMON-DAG: #define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+// COMMON-DAG: #define __INT_MAX__ 32767
+// COMMON-DAG: #define __INTPTR_TYPE__ int
+// COMMON-DAG: #define __LONG_LONG_MAX__ 9223372036854775807LL
+// COMMON-DAG: #define __LONG_MAX__ 2147483647L
+// COMMON-DAG: #define __POINTER_WIDTH__ 16
+// COMMON-DAG: #define __SIZEOF_INT__ 2
+// COMMON-DAG: #define __SIZEOF_LONG_LONG__ 8
+// COMMON-DAG: #define __SIZEOF_LONG__ 4
+// COMMON-DAG: #define __SIZEOF_POINTER__ 2
+// COMMON-DAG: #define __SIZE_TYPE__ unsigned int
+// MIN-DAG: #define __RISCC_MIN__ 1
+// SYS-DAG: #define __RISCC_SYS__ 1
+// FULL-DAG: #define __RISCC_FULL__ 1

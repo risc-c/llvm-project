@@ -1,7 +1,14 @@
+//===-- RISCCSubtarget.cpp - RISCC Subtarget Information ------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCSubtarget.h"
-#include "RISCCSelectionDAGInfo.h"
 #include "llvm/CodeGen/LibcallLoweringInfo.h"
-#include "llvm/Support/ErrorHandling.h"
+#include "llvm/CodeGen/SelectionDAGTargetInfo.h"
 
 using namespace llvm;
 
@@ -16,9 +23,6 @@ RISCCSubtarget &RISCCSubtarget::initializeSubtargetDependencies(StringRef CPU,
   if (CPU.empty())
     CPU = "full";
   ParseSubtargetFeatures(CPU, CPU, FS);
-  if (CPU != "full" || !HasSys || !HasWideShift || !HasMul)
-    report_fatal_error("RISC-C SelectionDAG code generation supports only "
-                       "-mcpu=full");
   return *this;
 }
 
@@ -26,7 +30,7 @@ RISCCSubtarget::RISCCSubtarget(const Triple &TT, const std::string &CPU,
                                const std::string &FS, const TargetMachine &TM)
     : RISCCGenSubtargetInfo(TT, CPU, CPU, FS),
       InstrInfo(initializeSubtargetDependencies(CPU, FS)), FrameLowering(*this),
-      TLInfo(TM, *this), TSInfo(std::make_unique<RISCCSelectionDAGInfo>()) {}
+      TLInfo(TM, *this), TSInfo(std::make_unique<SelectionDAGTargetInfo>()) {}
 
 RISCCSubtarget::~RISCCSubtarget() = default;
 
@@ -51,6 +55,7 @@ void RISCCSubtarget::initLibcallLoweringInfo(
       {RTLIB::MEMMOVE, RTLIB::impl_memmove},
       {RTLIB::MEMSET, RTLIB::impl_memset},
 
+      {RTLIB::MUL_I16, RTLIB::impl___mulhi3},
       {RTLIB::SDIV_I16, RTLIB::impl___divhi3},
       {RTLIB::UDIV_I16, RTLIB::impl___udivhi3},
       {RTLIB::SREM_I16, RTLIB::impl___modhi3},

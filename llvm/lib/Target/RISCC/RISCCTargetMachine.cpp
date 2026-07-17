@@ -1,3 +1,11 @@
+//===-- RISCCTargetMachine.cpp - RISCC TargetMachine ----------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCTargetMachine.h"
 #include "RISCC.h"
 #include "RISCCMachineFunctionInfo.h"
@@ -15,7 +23,6 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCCTarget() {
   PassRegistry &PR = *PassRegistry::getPassRegistry();
   initializeRISCCAsmPrinterPass(PR);
   initializeRISCCDAGToDAGISelLegacyPass(PR);
-  initializeRISCCBranchSelectorLegacyPass(PR);
 }
 
 static Reloc::Model effectiveRelocModel(std::optional<Reloc::Model> RM) {
@@ -58,7 +65,7 @@ public:
     addPass(createRISCCISelDag(getRISCCTargetMachine(), getOptLevel()));
     return false;
   }
-  void addPreEmitPass() override { addPass(createRISCCBranchSelectorPass()); }
+  void addPreEmitPass() override { addPass(&BranchRelaxationPassID); }
 };
 }
 

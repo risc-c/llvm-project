@@ -6,7 +6,9 @@ tablegen(LLVM RISCCGenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM RISCCGenAsmWriter.inc -gen-asm-writer)
 tablegen(LLVM RISCCGenCallingConv.inc -gen-callingconv)
 tablegen(LLVM RISCCGenDAGISel.inc -gen-dag-isel)
+tablegen(LLVM RISCCGenDisassemblerTables.inc -gen-disassembler)
 tablegen(LLVM RISCCGenInstrInfo.inc -gen-instr-info)
+tablegen(LLVM RISCCGenMCCodeEmitter.inc -gen-emitter)
 tablegen(LLVM RISCCGenRegisterInfo.inc -gen-register-info)
 tablegen(LLVM RISCCGenSubtargetInfo.inc -gen-subtarget)
 
@@ -14,7 +16,6 @@ add_public_tablegen_target(RISCCCommonTableGen)
 
 add_llvm_target(RISCCCodeGen
   RISCCAsmPrinter.cpp
-  RISCCBranchSelector.cpp
   RISCCCodeGenPassBuilder.cpp
   RISCCFrameLowering.cpp
   RISCCISelDAGToDAG.cpp
@@ -23,7 +24,6 @@ add_llvm_target(RISCCCodeGen
   RISCCMCInstLower.cpp
   RISCCMachineFunctionInfo.cpp
   RISCCRegisterInfo.cpp
-  RISCCSelectionDAGInfo.cpp
   RISCCSubtarget.cpp
   RISCCTargetMachine.cpp
 

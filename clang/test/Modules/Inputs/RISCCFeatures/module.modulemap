@@ -1,0 +1,9 @@
+module RISCCFeatures {
+  module riscc { requires riscc }
+  module min { requires min }
+  module sys { requires sys }
+  module system { requires system }
+  module jal16 { requires jal16 }
+  module mul { requires mul }
+  module full { requires full }
+}

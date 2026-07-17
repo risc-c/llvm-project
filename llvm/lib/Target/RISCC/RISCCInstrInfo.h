@@ -1,3 +1,11 @@
+//===-- RISCCInstrInfo.h - RISCC Instruction Information --------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef LLVM_LIB_TARGET_RISCC_RISCCINSTRINFO_H
 #define LLVM_LIB_TARGET_RISCC_RISCCINSTRINFO_H
 
@@ -11,11 +19,14 @@ namespace llvm {
 class RISCCSubtarget;
 class RISCCInstrInfo final : public RISCCGenInstrInfo {
   RISCCRegisterInfo RI;
+  const RISCCSubtarget &STI;
   void anchor();
 
 public:
   explicit RISCCInstrInfo(const RISCCSubtarget &);
   const RISCCRegisterInfo &getRegisterInfo() const { return RI; }
+  static bool isConditionalBranchOpcode(unsigned Opcode);
+  static unsigned getOppositeBranchOpcode(unsigned Opcode);
 
   void copyPhysReg(MachineBasicBlock &, MachineBasicBlock::iterator,
                    const DebugLoc &, Register, Register, bool,
@@ -36,6 +47,11 @@ public:
   unsigned insertBranch(MachineBasicBlock &, MachineBasicBlock *,
                         MachineBasicBlock *, ArrayRef<MachineOperand>,
                         const DebugLoc &, int * = nullptr) const override;
+  bool isBranchOffsetInRange(unsigned, int64_t) const override;
+  MachineBasicBlock *getBranchDestBlock(const MachineInstr &) const override;
+  void insertIndirectBranch(MachineBasicBlock &, MachineBasicBlock &,
+                            MachineBasicBlock &, const DebugLoc &, int64_t,
+                            RegScavenger *) const override;
 };
 }
 

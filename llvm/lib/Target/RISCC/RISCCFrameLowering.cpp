@@ -1,3 +1,11 @@
+//===-- RISCCFrameLowering.cpp - RISCC Frame Lowering ---------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCFrameLowering.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCMachineFunctionInfo.h"
@@ -93,11 +101,21 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
     int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
   }
+  // Min's largest forward short-branch displacement is 254 bytes. Reserve 14
+  // bytes for frame setup/teardown when deciding whether an indirect long
+  // branch may need to spill its scavenged address register.
+  constexpr int64_t MinBranchSpillThreshold = 254 - 14;
+  bool NeedsBranchSpill =
+      !STI.hasSys() &&
+      MF.estimateFunctionSizeInBytes() >= MinBranchSpillThreshold;
   // Large frame offsets and high-pressure post-RA expansions may need to
   // scavenge a GPR.  Reserve an addressable spill slot before frame layout so
   // RegScavenger can preserve a live register instead of aborting.
-  if (RS && MF.getFrameInfo().hasStackObjects()) {
+  if (RS && (MF.getFrameInfo().hasStackObjects() || NeedsBranchSpill)) {
     int FI = MF.getFrameInfo().CreateSpillStackObject(2, Align(2));
     RS->addScavengingFrameIndex(FI);
+    if (NeedsBranchSpill)
+      MF.getInfo<RISCCMachineFunctionInfo>()
+          ->setBranchRelaxationSpillFI(FI);
   }
 }

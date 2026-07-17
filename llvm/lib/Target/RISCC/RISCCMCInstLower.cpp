@@ -1,3 +1,11 @@
+//===-- RISCCMCInstLower.cpp - Lower MachineInstr to MCInst ---------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "RISCCMCInstLower.h"
 #include "RISCC.h"
 #include "MCTargetDesc/RISCCMCExpr.h"
@@ -14,7 +22,7 @@ using namespace llvm;
 MCOperand RISCCMCInstLower::lowerSymbolOperand(const MachineOperand &MO,
                                                MCSymbol *Sym) const {
   const MCExpr *Expr = MCSymbolRefExpr::create(Sym, Ctx);
-  if (!MO.isJTI() && MO.getOffset())
+  if (!MO.isMBB() && !MO.isJTI() && MO.getOffset())
     Expr = MCBinaryExpr::createAdd(
         Expr, MCConstantExpr::create(MO.getOffset(), Ctx), Ctx);
 
@@ -61,8 +69,7 @@ void RISCCMCInstLower::lower(const MachineInstr *MI, MCInst &Out) const {
       Out.addOperand(MCOperand::createImm(MO.getImm()));
       break;
     case MachineOperand::MO_MachineBasicBlock:
-      Out.addOperand(MCOperand::createExpr(
-          MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), Ctx)));
+      Out.addOperand(lowerSymbolOperand(MO, MO.getMBB()->getSymbol()));
       break;
     case MachineOperand::MO_GlobalAddress:
       Out.addOperand(lowerSymbolOperand(MO, Printer.getSymbol(MO.getGlobal())));

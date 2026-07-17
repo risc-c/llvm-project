@@ -1,5 +1,5 @@
 ; REQUIRES: riscc-registered-target
-; RUN: not --crash llc -mtriple=riscc-none-elf -mcpu=full < %s 2>&1 | FileCheck %s
+; RUN: not llc -mtriple=riscc-none-elf -mcpu=full < %s 2>&1 | FileCheck %s
 
 ; CHECK: RISC-C does not support dynamic stack allocation
 

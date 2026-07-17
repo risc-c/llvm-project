@@ -1,10 +1,16 @@
+//===-- RISCC.h - Top-level interface for RISCC -----------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef LLVM_LIB_TARGET_RISCC_RISCC_H
 #define LLVM_LIB_TARGET_RISCC_RISCC_H
 
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
-#include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
-#include "llvm/IR/PassManager.h"
 #include "llvm/Support/CodeGen.h"
 
 namespace llvm {
@@ -17,15 +23,8 @@ public:
   RISCCISelDAGToDAGPass(RISCCTargetMachine &, CodeGenOptLevel);
 };
 
-class RISCCBranchSelectorPass : public PassInfoMixin<RISCCBranchSelectorPass> {
-public:
-  PreservedAnalyses run(MachineFunction &, MachineFunctionAnalysisManager &);
-};
-
 FunctionPass *createRISCCISelDag(RISCCTargetMachine &, CodeGenOptLevel);
-FunctionPass *createRISCCBranchSelectorPass();
 void initializeRISCCDAGToDAGISelLegacyPass(PassRegistry &);
-void initializeRISCCBranchSelectorLegacyPass(PassRegistry &);
 void initializeRISCCAsmPrinterPass(PassRegistry &);
 
 namespace RISCCII {

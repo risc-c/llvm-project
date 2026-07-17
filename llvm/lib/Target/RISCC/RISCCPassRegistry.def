@@ -4,5 +4,4 @@
 #endif
 MACHINE_FUNCTION_PASS("riscc-isel",
                       RISCCISelDAGToDAGPass(*this, getOptLevel()))
-MACHINE_FUNCTION_PASS("riscc-branch-select", RISCCBranchSelectorPass())
 #undef MACHINE_FUNCTION_PASS

@@ -1,16 +1,34 @@
+//===-- RISCCInstrFormats.td - RISCC Instruction Formats ---*- tablegen -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 class RISCCInst<dag outs, dag ins, string asm, list<dag> pattern = []>
   : Instruction {
-  field bits<32> Inst = 0;
   let Namespace = "RISCC";
   let OutOperandList = outs;
   let InOperandList = ins;
   let AsmString = asm;
   let Pattern = pattern;
+}
+
+class RISCCInst16<dag outs, dag ins, string asm, list<dag> pattern = []>
+  : RISCCInst<outs, ins, asm, pattern> {
+  field bits<16> Inst;
   let Size = 2;
 }
 
+class RISCCInst32<dag outs, dag ins, string asm, list<dag> pattern = []>
+  : RISCCInst<outs, ins, asm, pattern> {
+  field bits<32> Inst;
+  let Size = 4;
+}
+
 class RI<bits<3> opc, dag outs, dag ins, string asm,
-         list<dag> pattern = []> : RISCCInst<outs, ins, asm, pattern> {
+         list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
   bits<3> rd;
   bits<8> imm;
   let Inst{15-14} = 0b10;
@@ -20,7 +38,7 @@ class RI<bits<3> opc, dag outs, dag ins, string asm,
 }
 
 class RR<bits<5> func, dag outs, dag ins, string asm,
-         list<dag> pattern = []> : RISCCInst<outs, ins, asm, pattern> {
+         list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
   bits<3> rd;
   bits<3> ra;
   bits<3> rb;
@@ -32,7 +50,7 @@ class RR<bits<5> func, dag outs, dag ins, string asm,
 }
 
 class RM<bits<2> major, dag outs, dag ins, string asm,
-         list<dag> pattern = []> : RISCCInst<outs, ins, asm, pattern> {
+         list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
   bits<3> rd;
   bits<3> base;
   bits<8> disp;
@@ -43,7 +61,7 @@ class RM<bits<2> major, dag outs, dag ins, string asm,
 }
 
 class RB<bits<3> cc, dag outs, dag ins, string asm,
-         list<dag> pattern = []> : RISCCInst<outs, ins, asm, pattern> {
+         list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
   bits<8> target;
   let Inst{15-14} = 0b10;
   let Inst{13-11} = cc;
@@ -56,4 +74,10 @@ class Pseudo<dag outs, dag ins, list<dag> pattern = []>
   let isPseudo = 1;
   let isCodeGenOnly = 1;
   let Size = 0;
+}
+
+class MCPseudo<dag outs, dag ins, string asm, int size>
+  : RISCCInst<outs, ins, asm> {
+  let isPseudo = 1;
+  let Size = size;
 }

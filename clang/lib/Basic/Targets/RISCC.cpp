@@ -33,20 +33,31 @@ ArrayRef<TargetInfo::GCCRegAlias> RISCCTargetInfo::getGCCRegAliases() const {
 }
 
 bool RISCCTargetInfo::isValidCPUName(StringRef Name) const {
-  return Name == "full";
+  return Name == "min" || Name == "sys" || Name == "full";
 }
 
 void RISCCTargetInfo::fillValidCPUList(
     SmallVectorImpl<StringRef> &Values) const {
+  Values.emplace_back("min");
+  Values.emplace_back("sys");
   Values.emplace_back("full");
 }
 
-bool RISCCTargetInfo::setCPU(StringRef Name) { return isValidCPUName(Name); }
+bool RISCCTargetInfo::setCPU(StringRef Name) {
+  if (!isValidCPUName(Name))
+    return false;
+  CPU = Name;
+  return true;
+}
 
 bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
   return llvm::StringSwitch<bool>(Feature)
-      .Cases({"riscc", "full"}, true)
-      .Cases({"system", "jal16", "wide-shifts", "mul"}, true)
+      .Case("riscc", true)
+      .Case("min", CPU == "min")
+      .Case("full", CPU == "full")
+      .Cases({"sys", "system", "jal16"}, CPU != "min")
+      .Cases({"wide-shift", "wide-shifts"}, CPU != "min")
+      .Case("mul", CPU == "full")
       .Default(false);
 }
 
@@ -54,5 +65,10 @@ void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
                                        MacroBuilder &Builder) const {
   Builder.defineMacro("__riscc__");
   Builder.defineMacro("__RISCC__");
-  Builder.defineMacro("__RISCC_FULL__");
+  if (CPU == "min")
+    Builder.defineMacro("__RISCC_MIN__");
+  else if (CPU == "sys")
+    Builder.defineMacro("__RISCC_SYS__");
+  else
+    Builder.defineMacro("__RISCC_FULL__");
 }

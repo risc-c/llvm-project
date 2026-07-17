@@ -20,6 +20,7 @@ namespace targets {
 class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
   static const char *const GCCRegNames[];
   static const TargetInfo::GCCRegAlias GCCRegAliases[];
+  std::string CPU = "full";
 
 public:
   RISCCTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
