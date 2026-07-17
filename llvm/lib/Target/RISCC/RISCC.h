@@ -30,11 +30,7 @@ void initializeRISCCAsmPrinterPass(PassRegistry &);
 namespace RISCCII {
 enum TOF : unsigned {
   MO_None,
-  MO_LO8,
-  MO_HI8,
   MO_CODE,
-  MO_CODE_LO8,
-  MO_CODE_HI8,
   MO_TPOFF
 };
 }

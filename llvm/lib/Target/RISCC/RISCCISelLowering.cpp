@@ -519,6 +519,19 @@ static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
   }
 }
 
+static SDValue unpackArgument(SDValue Value, const CCValAssign &VA,
+                              const SDLoc &DL, SelectionDAG &DAG) {
+  if (VA.getLocInfo() == CCValAssign::SExt)
+    Value = DAG.getNode(ISD::AssertSext, DL, VA.getLocVT(), Value,
+                        DAG.getValueType(VA.getValVT()));
+  else if (VA.getLocInfo() == CCValAssign::ZExt)
+    Value = DAG.getNode(ISD::AssertZext, DL, VA.getLocVT(), Value,
+                        DAG.getValueType(VA.getValVT()));
+  if (VA.getLocInfo() != CCValAssign::Full)
+    Value = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), Value);
+  return Value;
+}
+
 SDValue RISCCTargetLowering::LowerFormalArguments(
     SDValue Chain, CallingConv::ID CC, bool IsVarArg,
     const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &DL,
@@ -547,15 +560,7 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
       V = DAG.getLoad(VA.getLocVT(), DL, Chain, Addr,
                       MachinePointerInfo::getFixedStack(MF, FI));
     }
-    if (VA.getLocInfo() == CCValAssign::SExt)
-      V = DAG.getNode(ISD::AssertSext, DL, VA.getLocVT(), V,
-                      DAG.getValueType(VA.getValVT()));
-    else if (VA.getLocInfo() == CCValAssign::ZExt)
-      V = DAG.getNode(ISD::AssertZext, DL, VA.getLocVT(), V,
-                      DAG.getValueType(VA.getValVT()));
-    if (VA.getLocInfo() != CCValAssign::Full)
-      V = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), V);
-    InVals.push_back(V);
+    InVals.push_back(unpackArgument(V, VA, DL, DAG));
   }
   MachineFrameInfo &FrameInfo = MF.getFrameInfo();
   if (IsVarArg && FrameInfo.hasVAStart()) {
@@ -696,15 +701,7 @@ SDValue RISCCTargetLowering::lowerCallResult(
     SDValue V = DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
     Chain = V.getValue(1);
     Glue = V.getValue(2);
-    if (VA.getLocInfo() == CCValAssign::SExt)
-      V = DAG.getNode(ISD::AssertSext, DL, VA.getLocVT(), V,
-                      DAG.getValueType(VA.getValVT()));
-    else if (VA.getLocInfo() == CCValAssign::ZExt)
-      V = DAG.getNode(ISD::AssertZext, DL, VA.getLocVT(), V,
-                      DAG.getValueType(VA.getValVT()));
-    if (VA.getLocInfo() != CCValAssign::Full)
-      V = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), V);
-    InVals.push_back(V);
+    InVals.push_back(unpackArgument(V, VA, DL, DAG));
   }
   return Chain;
 }

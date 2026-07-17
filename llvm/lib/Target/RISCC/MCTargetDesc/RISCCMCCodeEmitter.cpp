@@ -195,74 +195,59 @@ void RISCCMCCodeEmitter::encodeInstruction(
     const MCInst &MI, SmallVectorImpl<char> &Code,
     SmallVectorImpl<MCFixup> &Fixups, const MCSubtargetInfo &STI) const {
   const unsigned Opcode = MI.getOpcode();
+  auto Encode = [&](MCInst Expanded) {
+    Expanded.setLoc(MI.getLoc());
+    encodeInstruction(Expanded, Code, Fixups, STI);
+  };
   switch (Opcode) {
   case RISCC::CALL16:
   case RISCC::JMP16:
   case RISCC::TAIL16: {
-    MCInst Native =
-        MCInstBuilder(RISCC::JAL16)
-            .addReg(Opcode == RISCC::CALL16 ? RISCC::S7 : RISCC::S0)
-            .addOperand(MI.getOperand(0));
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::JAL16)
+               .addReg(Opcode == RISCC::CALL16 ? RISCC::S7 : RISCC::S0)
+               .addOperand(MI.getOperand(0)));
     return;
   }
   case RISCC::CALL:
   case RISCC::TAIL_REG: {
-    MCInst Native =
-        MCInstBuilder(RISCC::JAL)
-            .addReg(Opcode == RISCC::CALL ? RISCC::S7 : RISCC::S0)
-            .addOperand(MI.getOperand(0));
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::JAL)
+               .addReg(Opcode == RISCC::CALL ? RISCC::S7 : RISCC::S0)
+               .addOperand(MI.getOperand(0)));
     return;
   }
   case RISCC::CALL_NANO_REG:
   case RISCC::TAIL_NANO_REG: {
-    MCInst Native =
-        MCInstBuilder(RISCC::JAL_NANO)
-            .addReg(Opcode == RISCC::CALL_NANO_REG ? RISCC::R6 : RISCC::R0)
-            .addOperand(MI.getOperand(0));
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::JAL_NANO)
+               .addReg(Opcode == RISCC::CALL_NANO_REG ? RISCC::R6 : RISCC::R0)
+               .addOperand(MI.getOperand(0)));
     return;
   }
   case RISCC::RETS: {
-    MCInst Native = MCInstBuilder(RISCC::RET).addReg(RISCC::S7);
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::RET).addReg(RISCC::S7));
     return;
   }
   case RISCC::RET_NANO: {
-    MCInst Native = MCInstBuilder(RISCC::JAL_NANO)
-                        .addReg(RISCC::R0)
-                        .addOperand(MI.getOperand(0));
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::JAL_NANO)
+               .addReg(RISCC::R0)
+               .addOperand(MI.getOperand(0)));
     return;
   }
   case RISCC::MOV: {
-    MCInst Native = MCInstBuilder(RISCC::OR)
-                        .addOperand(MI.getOperand(0))
-                        .addOperand(MI.getOperand(1))
-                        .addOperand(MI.getOperand(1));
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::OR)
+               .addOperand(MI.getOperand(0))
+               .addOperand(MI.getOperand(1))
+               .addOperand(MI.getOperand(1)));
     return;
   }
   case RISCC::NOP: {
-    MCInst Native = MCInstBuilder(RISCC::OR)
-                        .addReg(RISCC::R0)
-                        .addReg(RISCC::R0)
-                        .addReg(RISCC::R0);
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::OR)
+               .addReg(RISCC::R0)
+               .addReg(RISCC::R0)
+               .addReg(RISCC::R0));
     return;
   }
   case RISCC::HALT: {
-    MCInst Native = MCInstBuilder(RISCC::JMP8).addImm(-1);
-    Native.setLoc(MI.getLoc());
-    encodeInstruction(Native, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::JMP8).addImm(-1));
     return;
   }
   case RISCC::LI: {
@@ -285,20 +270,15 @@ void RISCCMCCodeEmitter::encodeInstruction(
       Hi = Lo = MCOperand::createExpr(Expr);
     }
 
-    MCInst High =
-        MCInstBuilder(RISCC::LUI)
-            .addOperand(MI.getOperand(0))
-            .addOperand(Hi);
-    High.setLoc(MI.getLoc());
-    encodeInstruction(High, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::LUI)
+               .addOperand(MI.getOperand(0))
+               .addOperand(Hi));
 
     unsigned FirstLowFixup = Fixups.size();
-    MCInst Low = MCInstBuilder(RISCC::ORI)
-                     .addOperand(MI.getOperand(0))
-                     .addOperand(MI.getOperand(0))
-                     .addOperand(Lo);
-    Low.setLoc(MI.getLoc());
-    encodeInstruction(Low, Code, Fixups, STI);
+    Encode(MCInstBuilder(RISCC::ORI)
+               .addOperand(MI.getOperand(0))
+               .addOperand(MI.getOperand(0))
+               .addOperand(Lo));
     for (unsigned I = FirstLowFixup; I != Fixups.size(); ++I)
       Fixups[I].setOffset(Fixups[I].getOffset() + 2);
     return;

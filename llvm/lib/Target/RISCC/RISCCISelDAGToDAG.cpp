@@ -23,6 +23,7 @@ using namespace llvm;
 namespace {
 class RISCCDAGToDAGISel final : public SelectionDAGISel {
   const RISCCSubtarget *Subtarget = nullptr;
+
 public:
   explicit RISCCDAGToDAGISel(RISCCTargetMachine &TM, CodeGenOptLevel OL)
       : SelectionDAGISel(TM, OL) {}
@@ -115,16 +116,12 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     SDValue Chain = LD->getChain(), Ptr = LD->getBasePtr();
     if (LD->getMemoryVT() == MVT::i16) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
-      if (Base != Ptr) {
-        CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
-                             {Base, Disp, Chain});
-      } else if (Ptr.getOpcode() == ISD::ADD) {
+      if (Base == Ptr && Ptr.getOpcode() == ISD::ADD)
         CurDAG->SelectNodeTo(N, RISCC::LDWX, MVT::i16, MVT::Other,
                              {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
-      } else {
+      else
         CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
                              {Base, Disp, Chain});
-      }
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {

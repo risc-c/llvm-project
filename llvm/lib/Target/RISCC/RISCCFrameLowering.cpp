@@ -79,22 +79,13 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
         .addReg(RISCC::R0, RegState::Kill)
         .setMIFlag(MachineInstr::FrameDestroy);
   }
-  Register Scratch = RISCC::R0;
-  if (I != MBB.end() && I->isCall() && I->isReturn()) {
-    for (MCRegister Candidate :
-         {RISCC::R0, RISCC::R1, RISCC::R2, RISCC::R3, RISCC::R4}) {
-      if (!I->readsRegister(Candidate, STI.getRegisterInfo())) {
-        Scratch = Candidate;
-        break;
-      }
-    }
-    assert(!I->readsRegister(Scratch, STI.getRegisterInfo()) &&
-           "tail call left no register for frame teardown");
-  } else if (STI.isNano() && I != MBB.end() &&
-             I->getOpcode() == RISCC::RET_NANO &&
-             I->getOperand(0).getReg() == RISCC::R0) {
-    Scratch = RISCC::R6;
-  }
+  // A Nano return may hold its target in r0 while a large SP adjustment also
+  // needs a temporary. Calls and tail calls use direct targets here.
+  Register Scratch =
+      STI.isNano() && I != MBB.end() && I->getOpcode() == RISCC::RET_NANO &&
+              I->getOperand(0).getReg() == RISCC::R0
+          ? RISCC::R6
+          : RISCC::R0;
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
            MachineInstr::FrameDestroy, Scratch);
 }

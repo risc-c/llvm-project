@@ -69,12 +69,6 @@ static DecodeStatus decodeSigned8(MCInst &MI, uint64_t Value, uint64_t,
   return MCDisassembler::Success;
 }
 
-static DecodeStatus decodeBranchTarget(MCInst &MI, uint64_t Value,
-                                       uint64_t Address,
-                                       const MCDisassembler *Decoder) {
-  return decodeSigned8(MI, Value, Address, Decoder);
-}
-
 static DecodeStatus decodeShiftAmount(MCInst &MI, uint64_t Value, uint64_t,
                                       const MCDisassembler *Decoder) {
   bool HasWideShift =

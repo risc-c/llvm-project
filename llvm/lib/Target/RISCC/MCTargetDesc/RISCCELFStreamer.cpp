@@ -59,15 +59,13 @@ public:
       : MCTargetStreamer(S) {
     auto &ES = static_cast<MCELFStreamer &>(Streamer);
     unsigned Profile = ELF::EF_RISCC_PROFILE_MIN;
-    if (STI.hasFeature(RISCC::FeatureNano)) {
+    if (STI.hasFeature(RISCC::FeatureNano))
       Profile = ELF::EF_RISCC_PROFILE_NANO;
-    } else {
-      if (STI.hasFeature(RISCC::FeatureSys) ||
-          STI.hasFeature(RISCC::FeatureWideShift))
-        Profile = ELF::EF_RISCC_PROFILE_SYS;
-      if (STI.hasFeature(RISCC::FeatureMul))
-        Profile = ELF::EF_RISCC_PROFILE_FULL;
-    }
+    else if (STI.hasFeature(RISCC::FeatureMul))
+      Profile = ELF::EF_RISCC_PROFILE_FULL;
+    else if (STI.hasFeature(RISCC::FeatureSys) ||
+             STI.hasFeature(RISCC::FeatureWideShift))
+      Profile = ELF::EF_RISCC_PROFILE_SYS;
     ES.getWriter().setELFHeaderEFlags(ELF::EF_RISCC_ABI_V1 | Profile);
   }
 };

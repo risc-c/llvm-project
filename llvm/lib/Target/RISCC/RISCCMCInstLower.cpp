@@ -30,20 +30,8 @@ MCOperand RISCCMCInstLower::lowerSymbolOperand(const MachineOperand &MO,
   switch (MO.getTargetFlags()) {
   case RISCCII::MO_None:
     break;
-  case RISCCII::MO_LO8:
-    Kind = RISCCMCExpr::VK_LO8;
-    break;
-  case RISCCII::MO_HI8:
-    Kind = RISCCMCExpr::VK_HI8;
-    break;
   case RISCCII::MO_CODE:
     Kind = RISCCMCExpr::VK_CODE;
-    break;
-  case RISCCII::MO_CODE_LO8:
-    Kind = RISCCMCExpr::VK_CODE_LO8;
-    break;
-  case RISCCII::MO_CODE_HI8:
-    Kind = RISCCMCExpr::VK_CODE_HI8;
     break;
   case RISCCII::MO_TPOFF:
     Kind = RISCCMCExpr::VK_TPOFF;

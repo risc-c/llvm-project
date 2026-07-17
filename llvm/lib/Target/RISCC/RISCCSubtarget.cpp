@@ -60,8 +60,6 @@ void RISCCSubtarget::initLibcallLoweringInfo(
       {RTLIB::UDIV_I16, RTLIB::impl___udivhi3},
       {RTLIB::SREM_I16, RTLIB::impl___modhi3},
       {RTLIB::UREM_I16, RTLIB::impl___umodhi3},
-      {RTLIB::SDIVREM_I16, RTLIB::impl___divmodhi4},
-      {RTLIB::UDIVREM_I16, RTLIB::impl___udivmodhi4},
 
       {RTLIB::MUL_I32, RTLIB::impl___mulsi3},
       {RTLIB::SHL_I32, RTLIB::impl___ashlsi3},
@@ -71,8 +69,6 @@ void RISCCSubtarget::initLibcallLoweringInfo(
       {RTLIB::UDIV_I32, RTLIB::impl___udivsi3},
       {RTLIB::SREM_I32, RTLIB::impl___modsi3},
       {RTLIB::UREM_I32, RTLIB::impl___umodsi3},
-      {RTLIB::SDIVREM_I32, RTLIB::impl___divmodsi4},
-      {RTLIB::UDIVREM_I32, RTLIB::impl___udivmodsi4},
 
       {RTLIB::MUL_I64, RTLIB::impl___muldi3},
       {RTLIB::SHL_I64, RTLIB::impl___ashldi3},

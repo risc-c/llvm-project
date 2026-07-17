@@ -110,7 +110,7 @@ def u16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
 def brtarget : Operand<OtherVT> {
   let PrintMethod = "printBranchOperand";
   let EncoderMethod = "getBranchTargetEncoding";
-  let DecoderMethod = "decodeBranchTarget";
+  let DecoderMethod = "decodeSigned8";
 }
 def codeaddr : Operand<i16> {
   let EncoderMethod = "getCodeTargetEncoding";

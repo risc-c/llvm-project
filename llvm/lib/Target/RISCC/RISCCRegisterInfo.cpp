@@ -47,6 +47,21 @@ static void reserveNanoReturnRegister(MachineBasicBlock::iterator I,
   }
 }
 
+static Register scavengeFrameAddressRegister(
+    const MachineInstr &MI, MachineBasicBlock::iterator I, RegScavenger *RS,
+    const RISCCSubtarget &STI, int SPAdj) {
+  assert(RS && "register scavenging required for large frame offset");
+  reserveInstructionRegisters(MI, *RS);
+  if (STI.isNano())
+    reserveNanoReturnRegister(I, *RS);
+  Register Scratch = RS->FindUnusedReg(&RISCC::GPRRegClass);
+  if (!Scratch)
+    Scratch = RS->scavengeRegisterBackwards(RISCC::GPRRegClass, I, false,
+                                             SPAdj);
+  assert(Scratch && "unable to scavenge frame-address register");
+  return Scratch;
+}
+
 const MCPhysReg *
 RISCCRegisterInfo::getCalleeSavedRegs(const MachineFunction *) const {
   return STI.isNano() ? CSR_RISCC_Nano_SaveList : CSR_RISCC_SaveList;
@@ -93,13 +108,8 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
         BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI), Dst)
             .addReg(Dst).addImm(Offset);
       else {
-        reserveInstructionRegisters(MI, *RS);
-        if (STI.isNano())
-          reserveNanoReturnRegister(II, *RS);
-        Register Scratch = RS->FindUnusedReg(&RISCC::GPRRegClass);
-        if (!Scratch)
-          Scratch = RS->scavengeRegisterBackwards(RISCC::GPRRegClass, II,
-                                                   false, SPAdj);
+        Register Scratch =
+            scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
         TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
         BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Dst)
             .addReg(Dst).addReg(Scratch, RegState::Kill);
@@ -115,15 +125,7 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
     return false;
   }
 
-  assert(RS && "register scavenging required for large frame offset");
-  reserveInstructionRegisters(MI, *RS);
-  if (STI.isNano())
-    reserveNanoReturnRegister(II, *RS);
-  Register Scratch = RS->FindUnusedReg(&RISCC::GPRRegClass);
-  if (!Scratch)
-    Scratch =
-        RS->scavengeRegisterBackwards(RISCC::GPRRegClass, II, false, SPAdj);
-  assert(Scratch && "unable to scavenge frame-address register");
+  Register Scratch = scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
   const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
   TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);

@@ -22,6 +22,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -49,27 +50,21 @@ public:
                                            getSubtargetInfo().getFeatureBits());
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
-    if (MI->getOpcode() == RISCC::CALL_MIN ||
-        MI->getOpcode() == RISCC::CALL_NANO ||
-        MI->getOpcode() == RISCC::TAIL_MIN ||
-        MI->getOpcode() == RISCC::TAIL_NANO) {
-      bool IsNano = MI->getOpcode() == RISCC::CALL_NANO ||
-                    MI->getOpcode() == RISCC::TAIL_NANO;
-      bool IsTail = MI->getOpcode() == RISCC::TAIL_MIN ||
-                    MI->getOpcode() == RISCC::TAIL_NANO;
-      MCInst Address;
-      Address.setOpcode(RISCC::LI);
-      Address.addOperand(MCOperand::createReg(RISCC::R0));
-      Address.addOperand(Out.getOperand(0));
+    unsigned Opcode = MI->getOpcode();
+    if (Opcode == RISCC::CALL_MIN || Opcode == RISCC::CALL_NANO ||
+        Opcode == RISCC::TAIL_MIN || Opcode == RISCC::TAIL_NANO) {
+      bool IsNano = Opcode == RISCC::CALL_NANO || Opcode == RISCC::TAIL_NANO;
+      bool IsTail = Opcode == RISCC::TAIL_MIN || Opcode == RISCC::TAIL_NANO;
+      MCInst Address = MCInstBuilder(RISCC::LI)
+                           .addReg(RISCC::R0)
+                           .addOperand(Out.getOperand(0));
       EmitToStreamer(*OutStreamer, Address);
 
-      MCRegister Link = IsNano ? RISCC::R6 : RISCC::S7;
-      if (IsTail)
-        Link = IsNano ? RISCC::R0 : RISCC::S0;
-      MCInst Transfer;
-      Transfer.setOpcode(IsNano ? RISCC::JAL_NANO : RISCC::JAL);
-      Transfer.addOperand(MCOperand::createReg(Link));
-      Transfer.addOperand(MCOperand::createReg(RISCC::R0));
+      MCRegister Link = IsTail ? (IsNano ? RISCC::R0 : RISCC::S0)
+                               : (IsNano ? RISCC::R6 : RISCC::S7);
+      MCInst Transfer = MCInstBuilder(IsNano ? RISCC::JAL_NANO : RISCC::JAL)
+                            .addReg(Link)
+                            .addReg(RISCC::R0);
       EmitToStreamer(*OutStreamer, Transfer);
       return;
     }
