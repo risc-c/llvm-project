@@ -329,11 +329,31 @@ SDValue RISCCTargetLowering::lowerAddrSpaceCast(SDValue Op,
 
 SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
   SDLoc DL(Op);
+  SDValue LHS = Op.getOperand(2);
+  SDValue RHS = Op.getOperand(3);
+  ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(1))->get();
+  if (isa<ConstantSDNode>(LHS) && !isa<ConstantSDNode>(RHS)) {
+    std::swap(LHS, RHS);
+    CC = ISD::getSetCCSwappedOperands(CC);
+  }
+  if (auto *C = dyn_cast<ConstantSDNode>(RHS)) {
+    int64_t Immediate = C->getSExtValue();
+    bool IsEquality = CC == ISD::SETEQ || CC == ISD::SETNE;
+    bool IsSignTest =
+        (Immediate == 0 && (CC == ISD::SETLT || CC == ISD::SETGE)) ||
+        (Immediate == -1 && (CC == ISD::SETGT || CC == ISD::SETLE));
+    if (IsSignTest ||
+        (IsEquality && (Immediate == 0 ||
+                        (!STI.isNano() && isInt<8>(Immediate))))) {
+      return DAG.getNode(
+          RISCCISD::BR_CC_IMM, DL, MVT::Other, Op.getOperand(0),
+          LHS, DAG.getConstant(APInt(16, Immediate, true), DL, MVT::i16),
+          DAG.getConstant(CC, DL, MVT::i16), Op.getOperand(4));
+    }
+  }
   return DAG.getNode(
-      RISCCISD::BR_CC, DL, MVT::Other, Op.getOperand(0), Op.getOperand(2),
-      Op.getOperand(3),
-      DAG.getConstant(cast<CondCodeSDNode>(Op.getOperand(1))->get(), DL,
-                      MVT::i16),
+      RISCCISD::BR_CC, DL, MVT::Other, Op.getOperand(0), LHS, RHS,
+      DAG.getConstant(CC, DL, MVT::i16),
       Op.getOperand(4));
 }
 
@@ -602,6 +622,26 @@ SDValue RISCCTargetLowering::LowerReturn(
 // Custom machine-instruction insertion
 //===----------------------------------------------------------------------===//
 
+static void biasSignedComparisonOperands(MachineBasicBlock &MBB,
+                                         MachineBasicBlock::iterator I,
+                                         const DebugLoc &DL,
+                                         const RISCCInstrInfo &TII,
+                                         Register &LHS, Register &RHS) {
+  MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
+  Register SignMask = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register BiasedLHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register BiasedRHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  BuildMI(MBB, I, DL, TII.get(RISCC::LUI), SignMask).addImm(0x80);
+  BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedLHS)
+      .addReg(LHS)
+      .addReg(SignMask);
+  BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedRHS)
+      .addReg(RHS)
+      .addReg(SignMask);
+  LHS = BiasedLHS;
+  RHS = BiasedRHS;
+}
+
 static void emitComparisonBranch(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  const DebugLoc &DL, const RISCCInstrInfo &TII,
@@ -645,23 +685,89 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
     llvm_unreachable("unsupported integer condition");
   }
   if (IsNano && (CC == ISD::SETLT || CC == ISD::SETGT ||
-                 CC == ISD::SETGE || CC == ISD::SETLE)) {
-    MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
-    Register SignMask = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    Register BiasedLHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    Register BiasedRHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
-    BuildMI(MBB, I, DL, TII.get(RISCC::LI), SignMask).addImm(0x8000);
-    BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedLHS)
-        .addReg(LHS)
-        .addReg(SignMask);
-    BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedRHS)
-        .addReg(RHS)
-        .addReg(SignMask);
-    LHS = BiasedLHS;
-    RHS = BiasedRHS;
-  }
+                 CC == ISD::SETGE || CC == ISD::SETLE))
+    biasSignedComparisonOperands(MBB, I, DL, TII, LHS, RHS);
   BuildMI(MBB, I, DL, TII.get(Cmp), RISCC::R0).addReg(LHS).addReg(RHS);
   BuildMI(MBB, I, DL, TII.get(Br)).addMBB(Target);
+}
+
+static void emitImmediateComparisonBranch(
+    MachineInstr &MI, MachineBasicBlock &MBB, const RISCCInstrInfo &TII) {
+  Register LHS = MI.getOperand(0).getReg();
+  int64_t RHS = MI.getOperand(1).getImm();
+  ISD::CondCode CC = ISD::CondCode(MI.getOperand(2).getImm());
+  unsigned Branch;
+  bool IsSignTest = RHS == 0 || (RHS == -1 &&
+                                 (CC == ISD::SETGT || CC == ISD::SETLE));
+  if (IsSignTest) {
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::MOV), RISCC::R0)
+        .addReg(LHS);
+    switch (CC) {
+    case ISD::SETEQ:
+      Branch = RISCC::BEQZ;
+      break;
+    case ISD::SETNE:
+      Branch = RISCC::BNEZ;
+      break;
+    case ISD::SETLT:
+    case ISD::SETLE:
+      Branch = RISCC::BLTZ;
+      break;
+    case ISD::SETGE:
+    case ISD::SETGT:
+      Branch = RISCC::BGEZ;
+      break;
+    default:
+      llvm_unreachable("unsupported sign comparison");
+    }
+  } else {
+    assert((CC == ISD::SETEQ || CC == ISD::SETNE) &&
+           "unsupported immediate comparison");
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::CMPI))
+        .addReg(LHS)
+        .addImm(RHS);
+    Branch = CC == ISD::SETEQ ? RISCC::BEQZ : RISCC::BNEZ;
+  }
+  BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Branch))
+      .addMBB(MI.getOperand(3).getMBB());
+}
+
+static bool emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
+                                 const RISCCInstrInfo &TII, bool IsNano) {
+  ISD::CondCode CC = ISD::CondCode(MI.getOperand(3).getImm());
+  bool IsSigned = CC == ISD::SETLT || CC == ISD::SETGT ||
+                  CC == ISD::SETLE || CC == ISD::SETGE;
+  bool IsUnsigned = CC == ISD::SETULT || CC == ISD::SETUGT ||
+                    CC == ISD::SETULE || CC == ISD::SETUGE;
+  if (!IsSigned && !IsUnsigned)
+    return false;
+
+  Register Destination = MI.getOperand(0).getReg();
+  Register LHS = MI.getOperand(1).getReg();
+  Register RHS = MI.getOperand(2).getReg();
+  bool Swap = CC == ISD::SETGT || CC == ISD::SETLE ||
+              CC == ISD::SETUGT || CC == ISD::SETULE;
+  bool Invert = CC == ISD::SETGE || CC == ISD::SETLE ||
+                CC == ISD::SETUGE || CC == ISD::SETULE;
+  if (Swap)
+    std::swap(LHS, RHS);
+  if (IsNano && IsSigned)
+    biasSignedComparisonOperands(MBB, MI, MI.getDebugLoc(), TII, LHS, RHS);
+
+  Register Less = Destination;
+  if (Invert)
+    Less = MBB.getParent()->getRegInfo().createVirtualRegister(
+        &RISCC::GPRRegClass);
+  unsigned Compare = IsSigned && !IsNano ? RISCC::SLT : RISCC::SLTU;
+  BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Compare), Less)
+      .addReg(LHS)
+      .addReg(RHS);
+  if (Invert)
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::XORI), Destination)
+        .addReg(Less)
+        .addImm(1);
+  MI.eraseFromParent();
+  return true;
 }
 
 static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
@@ -797,7 +903,14 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
                          MI.getOperand(3).getMBB(), STI.isNano());
     MI.eraseFromParent();
     return MBB;
+  case RISCC::PseudoBRCCImm:
+    emitImmediateComparisonBranch(MI, *MBB, TII);
+    MI.eraseFromParent();
+    return MBB;
   case RISCC::PseudoSETCC:
+    if (emitComparisonResult(MI, *MBB, TII, STI.isNano()))
+      return MBB;
+    return emitComparisonValue(MI, MBB, TII, STI.isNano());
   case RISCC::PseudoSELECTCC:
     return emitComparisonValue(MI, MBB, TII, STI.isNano());
   default:

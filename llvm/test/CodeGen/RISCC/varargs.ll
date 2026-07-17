@@ -26,9 +26,9 @@ define i16 @take_one(i16 %fixed, ...) {
 ; CHECK-LABEL: call_take_one:
 ; CHECK:       addi r7, -6
 ; CHECK:       stw r0, [r7 + 4]
-; CHECK:       li [[VARARG:r[0-6]]], 9
+; CHECK:       ldi [[VARARG:r[0-6]]], 9
 ; CHECK-NEXT:  stw [[VARARG]], [r7 + 0]
-; CHECK:       li r1, 7
+; CHECK:       ldi r1, 7
 ; CHECK:       call16 code(take_one)
 ; CHECK:       ldw r0, [r7 + 4]
 ; CHECK:       addi r7, 6

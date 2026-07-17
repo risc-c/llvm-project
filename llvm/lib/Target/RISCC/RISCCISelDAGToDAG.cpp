@@ -82,6 +82,24 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
   }
   SDLoc DL(N);
   switch (N->getOpcode()) {
+  case ISD::Constant: {
+    if (N->getValueType(0) != MVT::i16)
+      break;
+    uint64_t Value = cast<ConstantSDNode>(N)->getZExtValue();
+    if (isUInt<8>(Value)) {
+      CurDAG->SelectNodeTo(
+          N, RISCC::LDI, MVT::i16,
+          CurDAG->getTargetConstant(Value, DL, MVT::i16));
+      return;
+    }
+    if ((Value & 0xff) == 0) {
+      CurDAG->SelectNodeTo(
+          N, RISCC::LUI, MVT::i16,
+          CurDAG->getTargetConstant(Value >> 8, DL, MVT::i16));
+      return;
+    }
+    break;
+  }
   case ISD::FrameIndex: {
     int FI = cast<FrameIndexSDNode>(N)->getIndex();
     SDValue TFI = CurDAG->getTargetFrameIndex(FI, MVT::i16);
@@ -95,13 +113,26 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     SDValue Chain = LD->getChain(), Ptr = LD->getBasePtr();
     if (LD->getMemoryVT() == MVT::i16) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
-      CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
-                           {Base, Disp, Chain});
+      if (Base != Ptr) {
+        CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
+                             {Base, Disp, Chain});
+      } else if (Ptr.getOpcode() == ISD::ADD) {
+        CurDAG->SelectNodeTo(N, RISCC::LDWX, MVT::i16, MVT::Other,
+                             {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
+      } else {
+        CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
+                             {Base, Disp, Chain});
+      }
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {
       unsigned Opc = LD->getExtensionType() == ISD::SEXTLOAD ? RISCC::LDBS
                                                               : RISCC::LDB;
+      if (Ptr.getOpcode() == ISD::ADD) {
+        CurDAG->SelectNodeTo(N, Opc, MVT::i16, MVT::Other,
+                             {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
+        return;
+      }
       SDNode *Zero = CurDAG->getMachineNode(
           RISCC::LDI, DL, MVT::i16,
           CurDAG->getTargetConstant(0, DL, MVT::i16));

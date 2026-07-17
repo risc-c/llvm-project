@@ -49,6 +49,8 @@ def RISCCret : SDNode<"RISCCISD::RET_FLAG", SDT_RISCCRet,
   [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCWrapper : SDNode<"RISCCISD::Wrapper", SDT_RISCCWrapper>;
 def RISCCbrcc : SDNode<"RISCCISD::BR_CC", SDT_RISCCBrCC, [SDNPHasChain]>;
+def RISCCbrccimm : SDNode<"RISCCISD::BR_CC_IMM", SDT_RISCCBrCC,
+  [SDNPHasChain]>;
 def RISCCsetcc : SDNode<"RISCCISD::SET_CC", SDT_RISCCSetCC>;
 def RISCCselectcc : SDNode<"RISCCISD::SELECT_CC", SDT_RISCCSelectCC>;
 def RISCCshl : SDNode<"RISCCISD::SHL", SDT_RISCCShift>;
@@ -321,6 +323,10 @@ let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
 def PseudoBRCC : Pseudo<(outs),
   (ins GPR:$lhs, GPR:$rhs, condcode:$cc, brtarget:$target),
   [(RISCCbrcc GPR:$lhs, GPR:$rhs, imm:$cc, bb:$target)]>;
+let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
+def PseudoBRCCImm : Pseudo<(outs),
+  (ins GPR:$lhs, s8imm:$rhs, condcode:$cc, brtarget:$target),
+  [(RISCCbrccimm GPR:$lhs, s8imm:$rhs, imm:$cc, bb:$target)]>;
 let usesCustomInserter = 1 in
 def PseudoSETCC : Pseudo<(outs GPR:$dst),
   (ins GPR:$lhs, GPR:$rhs, condcode:$cc),

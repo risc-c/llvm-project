@@ -36,8 +36,21 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   Register Dst = MI.getOperand(0).getReg();
   Register Src = MI.getOperand(1).getReg();
   const DebugLoc &DL = MI.getDebugLoc();
-  BuildMI(MBB, MI, DL, get(RISCC::ANDI), Dst).addReg(Src).addImm(0xff);
-  BuildMI(MBB, MI, DL, get(RISCC::XORI), Dst).addReg(Dst).addImm(0x80);
+  bool SourceIsByteLoad = false;
+  for (auto I = MI.getIterator(); I != MBB.begin();) {
+    --I;
+    if (!I->modifiesRegister(Src, &RI))
+      continue;
+    SourceIsByteLoad =
+        I->getOpcode() == RISCC::LDB && I->getOperand(0).getReg() == Src;
+    break;
+  }
+  Register Extended = Src;
+  if (!SourceIsByteLoad) {
+    BuildMI(MBB, MI, DL, get(RISCC::ANDI), Dst).addReg(Src).addImm(0xff);
+    Extended = Dst;
+  }
+  BuildMI(MBB, MI, DL, get(RISCC::XORI), Dst).addReg(Extended).addImm(0x80);
   BuildMI(MBB, MI, DL, get(RISCC::ADDI), Dst).addReg(Dst).addImm(-128);
   MI.eraseFromParent();
   return true;

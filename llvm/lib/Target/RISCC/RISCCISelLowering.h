@@ -22,6 +22,7 @@ enum NodeType {
   CALL,
   Wrapper,
   BR_CC,
+  BR_CC_IMM,
   SET_CC,
   SELECT_CC,
   SHL,
