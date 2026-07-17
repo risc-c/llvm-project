@@ -1,7 +1,11 @@
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
 // RUN:   -target-cpu min < /dev/null | FileCheck %s \
 // RUN:   --check-prefixes=COMMON,MIN --implicit-check-not=__RISCC_SYS__ \
-// RUN:   --implicit-check-not=__RISCC_FULL__
+// RUN:   --implicit-check-not=__RISCC_FULL__ --implicit-check-not=__RISCC_NANO__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu nano < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,NANO --implicit-check-not=__RISCC_MIN__ \
+// RUN:   --implicit-check-not=__RISCC_SYS__ --implicit-check-not=__RISCC_FULL__
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
 // RUN:   -target-cpu sys < /dev/null | FileCheck %s \
 // RUN:   --check-prefixes=COMMON,SYS --implicit-check-not=__RISCC_MIN__ \
@@ -25,5 +29,6 @@
 // COMMON-DAG: #define __SIZEOF_POINTER__ 2
 // COMMON-DAG: #define __SIZE_TYPE__ unsigned int
 // MIN-DAG: #define __RISCC_MIN__ 1
+// NANO-DAG: #define __RISCC_NANO__ 1
 // SYS-DAG: #define __RISCC_SYS__ 1
 // FULL-DAG: #define __RISCC_FULL__ 1

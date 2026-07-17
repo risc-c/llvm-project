@@ -16,6 +16,7 @@ class RISCCMachineFunctionInfo final : public MachineFunctionInfo {
   int LRSpillFI = -1;
   int BranchRelaxationSpillFI = -1;
   int VarArgsFrameIndex = 0;
+  Register ReturnAddressReg;
 
 public:
   RISCCMachineFunctionInfo() = default;
@@ -30,6 +31,8 @@ public:
   }
   int getVarArgsFrameIndex() const { return VarArgsFrameIndex; }
   void setVarArgsFrameIndex(int FI) { VarArgsFrameIndex = FI; }
+  Register getReturnAddressReg() const { return ReturnAddressReg; }
+  void setReturnAddressReg(Register Reg) { ReturnAddressReg = Reg; }
   virtual void anchor();
   static MachineFunctionInfo *create(BumpPtrAllocator &, const Function &,
                                      const TargetSubtargetInfo *);

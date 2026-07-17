@@ -49,7 +49,8 @@ public:
                                            getSubtargetInfo().getFeatureBits());
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
-    if (MI->getOpcode() == RISCC::CALL_MIN) {
+    if (MI->getOpcode() == RISCC::CALL_MIN ||
+        MI->getOpcode() == RISCC::CALL_NANO) {
       MCInst Address;
       Address.setOpcode(RISCC::LI);
       Address.addOperand(MCOperand::createReg(RISCC::R0));
@@ -57,8 +58,10 @@ public:
       EmitToStreamer(*OutStreamer, Address);
 
       MCInst Call;
-      Call.setOpcode(RISCC::JAL);
-      Call.addOperand(MCOperand::createReg(RISCC::S7));
+      bool IsNano = MI->getOpcode() == RISCC::CALL_NANO;
+      Call.setOpcode(IsNano ? RISCC::JAL_NANO : RISCC::JAL);
+      Call.addOperand(
+          MCOperand::createReg(IsNano ? RISCC::R6 : RISCC::S7));
       Call.addOperand(MCOperand::createReg(RISCC::R0));
       EmitToStreamer(*OutStreamer, Call);
       return;

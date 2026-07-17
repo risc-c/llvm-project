@@ -20,7 +20,8 @@ using namespace llvm;
 #define GET_REGINFO_TARGET_DESC
 #include "RISCCGenRegisterInfo.inc"
 
-RISCCRegisterInfo::RISCCRegisterInfo() : RISCCGenRegisterInfo(RISCC::S7) {}
+RISCCRegisterInfo::RISCCRegisterInfo(const RISCCSubtarget &STI)
+    : RISCCGenRegisterInfo(STI.isNano() ? RISCC::R6 : RISCC::S7), STI(STI) {}
 
 static void reserveInstructionRegisters(const MachineInstr &MI,
                                         RegScavenger &RS) {
@@ -36,14 +37,25 @@ static void reserveInstructionRegisters(const MachineInstr &MI,
   }
 }
 
+static void reserveNanoReturnRegister(MachineBasicBlock::iterator I,
+                                      RegScavenger &RS) {
+  for (auto E = I->getParent()->end(); I != E; ++I) {
+    if (I->getOpcode() != RISCC::RET_NANO)
+      continue;
+    RS.setRegUsed(I->getOperand(0).getReg());
+    return;
+  }
+}
+
 const MCPhysReg *
 RISCCRegisterInfo::getCalleeSavedRegs(const MachineFunction *) const {
-  return CSR_RISCC_SaveList;
+  return STI.isNano() ? CSR_RISCC_Nano_SaveList : CSR_RISCC_SaveList;
 }
 
 const uint32_t *RISCCRegisterInfo::getCallPreservedMask(
     const MachineFunction &, CallingConv::ID) const {
-  return CSR_RISCC_CallPreserved_RegMask;
+  return STI.isNano() ? CSR_RISCC_Nano_CallPreserved_RegMask
+                      : CSR_RISCC_CallPreserved_RegMask;
 }
 
 BitVector RISCCRegisterInfo::getReservedRegs(const MachineFunction &) const {
@@ -82,6 +94,8 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
             .addReg(Dst).addImm(Offset);
       else {
         reserveInstructionRegisters(MI, *RS);
+        if (STI.isNano())
+          reserveNanoReturnRegister(II, *RS);
         Register Scratch = RS->FindUnusedReg(&RISCC::GPRRegClass);
         if (!Scratch)
           Scratch = RS->scavengeRegisterBackwards(RISCC::GPRRegClass, II,
@@ -104,6 +118,8 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
 
   assert(RS && "register scavenging required for large frame offset");
   reserveInstructionRegisters(MI, *RS);
+  if (STI.isNano())
+    reserveNanoReturnRegister(II, *RS);
   Register Scratch = RS->FindUnusedReg(&RISCC::GPRRegClass);
   if (!Scratch)
     Scratch =

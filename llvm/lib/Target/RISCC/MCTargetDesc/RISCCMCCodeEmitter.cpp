@@ -215,8 +215,25 @@ void RISCCMCCodeEmitter::encodeInstruction(
     encodeInstruction(Native, Code, Fixups, STI);
     return;
   }
+  case RISCC::CALL_NANO_REG: {
+    MCInst Native =
+        MCInstBuilder(RISCC::JAL_NANO)
+            .addReg(RISCC::R6)
+            .addOperand(MI.getOperand(0));
+    Native.setLoc(MI.getLoc());
+    encodeInstruction(Native, Code, Fixups, STI);
+    return;
+  }
   case RISCC::RETS: {
     MCInst Native = MCInstBuilder(RISCC::RET).addReg(RISCC::S7);
+    Native.setLoc(MI.getLoc());
+    encodeInstruction(Native, Code, Fixups, STI);
+    return;
+  }
+  case RISCC::RET_NANO: {
+    MCInst Native = MCInstBuilder(RISCC::JAL_NANO)
+                        .addReg(RISCC::R0)
+                        .addOperand(MI.getOperand(0));
     Native.setLoc(MI.getLoc());
     encodeInstruction(Native, Code, Fixups, STI);
     return;

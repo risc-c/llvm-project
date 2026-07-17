@@ -101,8 +101,15 @@ DecodeStatus RISCCDisassembler::getInstruction(
 
   uint16_t Instruction = support::endian::read16le(Bytes.data());
   Size = 2;
-  DecodeStatus Result =
-      decodeInstruction(DecoderTable16, MI, Instruction, Address, this, STI);
+  DecodeStatus Result = Fail;
+  if (STI.hasFeature(RISCC::FeatureNano))
+    Result = decodeInstruction(DecoderTableNano16, MI, Instruction, Address,
+                               this, STI);
+  if (Result == Fail) {
+    MI.clear();
+    Result =
+        decodeInstruction(DecoderTable16, MI, Instruction, Address, this, STI);
+  }
   if (Result != Fail)
     return Result;
 

@@ -25,19 +25,24 @@ const TargetInfo::GCCRegAlias RISCCTargetInfo::GCCRegAliases[] = {
 };
 
 ArrayRef<const char *> RISCCTargetInfo::getGCCRegNames() const {
+  if (CPU == "nano")
+    return llvm::ArrayRef(GCCRegNames, 8);
   return llvm::ArrayRef(GCCRegNames);
 }
 
 ArrayRef<TargetInfo::GCCRegAlias> RISCCTargetInfo::getGCCRegAliases() const {
+  if (CPU == "nano")
+    return {};
   return llvm::ArrayRef(GCCRegAliases);
 }
 
 bool RISCCTargetInfo::isValidCPUName(StringRef Name) const {
-  return Name == "min" || Name == "sys" || Name == "full";
+  return Name == "nano" || Name == "min" || Name == "sys" || Name == "full";
 }
 
 void RISCCTargetInfo::fillValidCPUList(
     SmallVectorImpl<StringRef> &Values) const {
+  Values.emplace_back("nano");
   Values.emplace_back("min");
   Values.emplace_back("sys");
   Values.emplace_back("full");
@@ -47,16 +52,18 @@ bool RISCCTargetInfo::setCPU(StringRef Name) {
   if (!isValidCPUName(Name))
     return false;
   CPU = Name;
+  TLSSupported = Name != "nano";
   return true;
 }
 
 bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
   return llvm::StringSwitch<bool>(Feature)
       .Case("riscc", true)
+      .Case("nano", CPU == "nano")
       .Case("min", CPU == "min")
       .Case("full", CPU == "full")
-      .Cases({"sys", "system", "jal16"}, CPU != "min")
-      .Cases({"wide-shift", "wide-shifts"}, CPU != "min")
+      .Cases({"sys", "system", "jal16"}, CPU == "sys" || CPU == "full")
+      .Cases({"wide-shift", "wide-shifts"}, CPU == "sys" || CPU == "full")
       .Case("mul", CPU == "full")
       .Default(false);
 }
@@ -65,7 +72,9 @@ void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
                                        MacroBuilder &Builder) const {
   Builder.defineMacro("__riscc__");
   Builder.defineMacro("__RISCC__");
-  if (CPU == "min")
+  if (CPU == "nano")
+    Builder.defineMacro("__RISCC_NANO__");
+  else if (CPU == "min")
     Builder.defineMacro("__RISCC_MIN__");
   else if (CPU == "sys")
     Builder.defineMacro("__RISCC_SYS__");

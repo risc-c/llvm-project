@@ -18,10 +18,13 @@ def FeatureWideShift : SubtargetFeature<"wide-shift", "HasWideShift", "true",
   "Enable shift counts from 2 through 8">;
 def FeatureMul : SubtargetFeature<"mul", "HasMul", "true",
   "Enable the low-half multiply instruction">;
+def FeatureNano : SubtargetFeature<"nano", "IsNano", "true",
+  "Select the incompatible Nano register and instruction profile">;
 
 include "RISCCInstrInfo.td"
 
 def : ProcessorModel<"min", NoSchedModel, []>;
+def : ProcessorModel<"nano", NoSchedModel, [FeatureNano]>;
 def : ProcessorModel<"sys", NoSchedModel, [FeatureSys, FeatureWideShift]>;
 def : ProcessorModel<"full", NoSchedModel,
                      [FeatureSys, FeatureWideShift, FeatureMul]>;

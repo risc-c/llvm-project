@@ -60,9 +60,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::MULHS, MVT::i16, Expand);
   for (unsigned Op : {ISD::ROTL, ISD::ROTR})
     setOperationAction(Op, MVT::i16, Expand);
-  for (unsigned Op : {ISD::BSWAP, ISD::CTLZ, ISD::CTTZ, ISD::CTPOP,
-                      ISD::SIGN_EXTEND_INREG})
+  for (unsigned Op : {ISD::BSWAP, ISD::CTLZ, ISD::CTTZ, ISD::CTPOP})
     setOperationAction(Op, MVT::i16, Expand);
+  setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i16,
+                     STI.isNano() ? Custom : Expand);
   setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
   for (unsigned Op : {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
     setOperationAction(Op, MVT::i16, LibCall);
@@ -98,7 +99,8 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
 
   setLoadExtAction(ISD::EXTLOAD, MVT::i16, MVT::i8, Legal);
   setLoadExtAction(ISD::ZEXTLOAD, MVT::i16, MVT::i8, Legal);
-  setLoadExtAction(ISD::SEXTLOAD, MVT::i16, MVT::i8, Legal);
+  setLoadExtAction(ISD::SEXTLOAD, MVT::i16, MVT::i8,
+                   STI.isNano() ? Expand : Legal);
   setTruncStoreAction(MVT::i16, MVT::i8, Legal);
 }
 
@@ -129,6 +131,18 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
   case ISD::SRL:
   case ISD::SRA:
     return lowerShift(Op, DAG);
+  case ISD::SIGN_EXTEND_INREG: {
+    assert(STI.isNano() &&
+           cast<VTSDNode>(Op.getOperand(1))->getVT() == MVT::i8);
+    SDLoc DL(Op);
+    SDValue Value = DAG.getNode(
+        ISD::AND, DL, MVT::i16, Op.getOperand(0),
+        DAG.getConstant(0xff, DL, MVT::i16));
+    Value = DAG.getNode(ISD::XOR, DL, MVT::i16, Value,
+                        DAG.getConstant(0x80, DL, MVT::i16));
+    return DAG.getNode(ISD::ADD, DL, MVT::i16, Value,
+                       DAG.getConstant(-128, DL, MVT::i16));
+  }
   case ISD::UMUL_LOHI:
     return lowerMULLOHI(Op, DAG, false);
   case ISD::SMUL_LOHI:
@@ -256,6 +270,12 @@ SDValue RISCCTargetLowering::lowerGlobalTLSAddress(SDValue Op,
   const auto *N = cast<GlobalAddressSDNode>(Op);
   const GlobalValue *GV = N->getGlobal();
   SDLoc DL(Op);
+  if (STI.isNano()) {
+    DAG.getContext()->diagnose(DiagnosticInfoUnsupported(
+        DAG.getMachineFunction().getFunction(),
+        "RISC-C Nano does not support thread-local storage", DL.getDebugLoc()));
+    return DAG.getPOISON(Op.getValueType());
+  }
   TLSModel::Model Model = getTargetMachine().getTLSModel(GV);
   // Clang leaves an external TLS declaration non-DSO-local even in a static
   // executable, so TargetMachine classifies it as InitialExec.  There is no
@@ -396,6 +416,11 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
   CCState State(CC, IsVarArg, DAG.getMachineFunction(), Locs, *DAG.getContext());
   analyzeArguments(State, Locs, Ins);
   MachineFunction &MF = DAG.getMachineFunction();
+  if (STI.isNano()) {
+    Register ReturnAddress =
+        MF.addLiveIn(RISCC::R6, &RISCC::GPRCallerRegClass);
+    MF.getInfo<RISCCMachineFunctionInfo>()->setReturnAddressReg(ReturnAddress);
+  }
 
   for (const CCValAssign &VA : Locs) {
     SDValue V;
@@ -544,6 +569,17 @@ SDValue RISCCTargetLowering::LowerReturn(
   State.AnalyzeReturn(Outs, RetCC_RISCC);
   SDValue Glue;
   SmallVector<SDValue, 8> Ops{Chain};
+  if (STI.isNano()) {
+    Register ReturnAddress =
+        DAG.getMachineFunction()
+            .getInfo<RISCCMachineFunctionInfo>()
+            ->getReturnAddressReg();
+    assert(ReturnAddress && "Nano return address was not initialized");
+    SDValue SavedReturnAddress =
+        DAG.getCopyFromReg(Chain, DL, ReturnAddress, MVT::i16);
+    Chain = SavedReturnAddress.getValue(1);
+    Ops.push_back(SavedReturnAddress);
+  }
   for (unsigned I = 0; I != Locs.size(); ++I) {
     SDValue V = OutVals[I];
     if (Locs[I].getLocInfo() != CCValAssign::Full) {
@@ -570,7 +606,7 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  const DebugLoc &DL, const RISCCInstrInfo &TII,
                                  Register LHS, Register RHS, ISD::CondCode CC,
-                                 MachineBasicBlock *Target) {
+                                 MachineBasicBlock *Target, bool IsNano) {
   bool Swap = CC == ISD::SETGT || CC == ISD::SETLE ||
               CC == ISD::SETUGT || CC == ISD::SETULE;
   if (Swap)
@@ -587,12 +623,12 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
     break;
   case ISD::SETLT:
   case ISD::SETGT:
-    Cmp = RISCC::SLT;
+    Cmp = IsNano ? RISCC::SLTU : RISCC::SLT;
     Br = RISCC::BNEZ;
     break;
   case ISD::SETGE:
   case ISD::SETLE:
-    Cmp = RISCC::SLT;
+    Cmp = IsNano ? RISCC::SLTU : RISCC::SLT;
     Br = RISCC::BEQZ;
     break;
   case ISD::SETULT:
@@ -607,6 +643,22 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
     break;
   default:
     llvm_unreachable("unsupported integer condition");
+  }
+  if (IsNano && (CC == ISD::SETLT || CC == ISD::SETGT ||
+                 CC == ISD::SETGE || CC == ISD::SETLE)) {
+    MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
+    Register SignMask = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+    Register BiasedLHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+    Register BiasedRHS = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+    BuildMI(MBB, I, DL, TII.get(RISCC::LI), SignMask).addImm(0x8000);
+    BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedLHS)
+        .addReg(LHS)
+        .addReg(SignMask);
+    BuildMI(MBB, I, DL, TII.get(RISCC::XOR), BiasedRHS)
+        .addReg(RHS)
+        .addReg(SignMask);
+    LHS = BiasedLHS;
+    RHS = BiasedRHS;
   }
   BuildMI(MBB, I, DL, TII.get(Cmp), RISCC::R0).addReg(LHS).addReg(RHS);
   BuildMI(MBB, I, DL, TII.get(Br)).addMBB(Target);
@@ -684,7 +736,8 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
 
 static MachineBasicBlock *emitComparisonValue(MachineInstr &MI,
                                               MachineBasicBlock *MBB,
-                                              const RISCCInstrInfo &TII) {
+                                              const RISCCInstrInfo &TII,
+                                              bool IsNano) {
   DebugLoc DL = MI.getDebugLoc();
   MachineFunction *MF = MBB->getParent();
   const BasicBlock *IRBlock = MBB->getBasicBlock();
@@ -718,7 +771,7 @@ static MachineBasicBlock *emitComparisonValue(MachineInstr &MI,
   }
   emitComparisonBranch(*MBB, MI, DL, TII, LHS, RHS,
                        ISD::CondCode(MI.getOperand(ConditionOperand).getImm()),
-                       True);
+                       True, IsNano);
   BuildMI(*MBB, MI, DL, TII.get(RISCC::JMP8)).addMBB(Sink);
   BuildMI(*Sink, Sink->begin(), DL, TII.get(TargetOpcode::PHI), Destination)
       .addReg(FalseValue)
@@ -741,12 +794,12 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
     emitComparisonBranch(*MBB, MI, MI.getDebugLoc(), TII,
                          MI.getOperand(0).getReg(), MI.getOperand(1).getReg(),
                          ISD::CondCode(MI.getOperand(2).getImm()),
-                         MI.getOperand(3).getMBB());
+                         MI.getOperand(3).getMBB(), STI.isNano());
     MI.eraseFromParent();
     return MBB;
   case RISCC::PseudoSETCC:
   case RISCC::PseudoSELECTCC:
-    return emitComparisonValue(MI, MBB, TII);
+    return emitComparisonValue(MI, MBB, TII, STI.isNano());
   default:
     llvm_unreachable("unexpected custom inserter opcode");
   }

@@ -21,9 +21,16 @@ def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
 def HasMulPred : Predicate<"Subtarget->hasMul()">,
                  AssemblerPredicate<(all_of FeatureMul)>;
-def NoSysPred : Predicate<"!Subtarget->hasSys()">;
+def IsNanoPred : Predicate<"Subtarget->isNano()">,
+                 AssemblerPredicate<(all_of FeatureNano)>;
+def NoNanoPred : Predicate<"!Subtarget->isNano()">,
+                 AssemblerPredicate<(not FeatureNano)>;
+def IsMinPred : Predicate<"!Subtarget->hasSys() && !Subtarget->isNano()">,
+                AssemblerPredicate<(all_of (not FeatureSys),
+                                           (not FeatureNano))>;
 
 def SDT_RISCCCall : SDTypeProfile<0, -1, [SDTCisVT<0, iPTR>] >;
+def SDT_RISCCRet : SDTypeProfile<0, -1, []>;
 def SDT_RISCCWrapper : SDTypeProfile<1, 1,
   [SDTCisSameAs<0, 1>, SDTCisPtrTy<0>]>;
 def SDT_RISCCBrCC : SDTypeProfile<0, 4,
@@ -38,7 +45,7 @@ def SDT_RISCCShift : SDTypeProfile<1, 2,
 
 def RISCCcall : SDNode<"RISCCISD::CALL", SDT_RISCCCall,
   [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
-def RISCCret : SDNode<"RISCCISD::RET_FLAG", SDTNone,
+def RISCCret : SDNode<"RISCCISD::RET_FLAG", SDT_RISCCRet,
   [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCWrapper : SDNode<"RISCCISD::Wrapper", SDT_RISCCWrapper>;
 def RISCCbrcc : SDNode<"RISCCISD::BR_CC", SDT_RISCCBrCC, [SDNPHasChain]>;
@@ -129,7 +136,7 @@ def ORI : RI<0b101, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
 def XORI : RI<0b110, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
               "xori\t$rd, $imm", [(set i16:$rd, (xor i16:$src, u8imm:$imm))]>;
 }
-let Defs = [R0] in
+let Predicates = [NoNanoPred], Defs = [R0] in
 def CMPI : RI<0b011, (outs), (ins GPR:$rd, s8imm:$imm),
               "cmpi\t$rd, $imm">;
 
@@ -150,6 +157,7 @@ def ADD : RR<0x00, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "add\t$rd, $ra, $rb", [(set i16:$rd, (add i16:$ra, i16:$rb))]>;
 def SUB : RR<0x01, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "sub\t$rd, $ra, $rb", [(set i16:$rd, (sub i16:$ra, i16:$rb))]>;
+let Predicates = [NoNanoPred] in
 def SLT : RR<0x02, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "slt\t$rd, $ra, $rb">;
 def SLTU : RR<0x03, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
@@ -171,6 +179,7 @@ def LDWX : RR<0x08, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
               "ldwx\t$rd, [$ra + $rb]">;
 def LDB : RR<0x0a, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "ldb\t$rd, [$ra + $rb]">;
+let Predicates = [NoNanoPred] in
 def LDBS : RR<0x0e, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
               "ldbs\t$rd, [$ra + $rb]">;
 }
@@ -192,6 +201,7 @@ def SARI : RR<0x0d, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
   bits<3> amount;
   let rb = amount;
 }
+let Predicates = [NoNanoPred] in
 def SHLI : RR<0x0f, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "shli\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCshl GPR:$ra, shiftimm:$amount))]> {
@@ -211,12 +221,20 @@ class SYS<bits<3> sub, dag outs, dag ins, string asm>
   let Inst{2-0} = sub;
 }
 
-let isReturn = 1, isTerminator = 1, isBarrier = 1 in
+let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
+    isBarrier = 1 in
 def RET : SYS<0, (outs), (ins SREG:$ra), "ret\t$ra"> { let sd = 0; }
-let isBranch = 1, isIndirectBranch = 1, isTerminator = 1, isBarrier = 1 in
+let Predicates = [NoNanoPred], isBranch = 1, isIndirectBranch = 1,
+    isTerminator = 1, isBarrier = 1 in
 def JAL : SYS<1, (outs SREG:$sd), (ins GPR:$ra), "jal\t$sd, $ra">;
+let Predicates = [NoNanoPred] in {
 def MFS : SYS<2, (outs GPR:$sd), (ins SREG:$ra), "mfs\t$sd, $ra">;
 def MTS : SYS<3, (outs SREG:$sd), (ins GPR:$ra), "mts\t$sd, $ra">;
+}
+let Predicates = [IsNanoPred], isBranch = 1, isIndirectBranch = 1,
+    isTerminator = 1, isBarrier = 1, DecoderNamespace = "Nano" in
+def JAL_NANO : SYS<1, (outs GPR:$sd), (ins GPR:$ra),
+                   "jal\t$sd, $ra">;
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
 def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 7; }
 
@@ -243,21 +261,39 @@ def LI : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm), "li\t$rd, $imm", 4>;
 let Predicates = [HasSysPred], isCall = 1,
     Defs = [S7, R0, R1, R2, R3, R4] in
 def CALL16 : MCPseudo<(outs), (ins codeaddr:$target), "call16\t$target", 4>;
-let Predicates = [NoSysPred], isCall = 1, isCodeGenOnly = 1,
+let Predicates = [IsMinPred], isCall = 1, isCodeGenOnly = 1,
     Defs = [S7, R0, R1, R2, R3, R4] in
 def CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
-let isCall = 1, Defs = [S7, R0, R1, R2, R3, R4] in
+let Predicates = [IsNanoPred], isCall = 1, isCodeGenOnly = 1,
+    Defs = [R6, R0, R1, R2, R3, R4] in
+def CALL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
+  let Size = 6;
+}
+let Predicates = [NoNanoPred], isCall = 1,
+    Defs = [S7, R0, R1, R2, R3, R4] in
 def CALL : MCPseudo<(outs), (ins GPR:$target), "call\t$target", 2> {
+  let Pattern = [(RISCCcall GPR:$target)];
+}
+let Predicates = [IsNanoPred], isCall = 1,
+    Defs = [R6, R0, R1, R2, R3, R4] in
+def CALL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
+                             "call\t$target", 2> {
   let Pattern = [(RISCCcall GPR:$target)];
 }
 let Predicates = [HasSysPred], isBranch = 1, isTerminator = 1,
     isBarrier = 1 in
 def JMP16 : MCPseudo<(outs), (ins codeaddr:$target), "jmp16\t$target", 4>;
-let isReturn = 1, isTerminator = 1, isBarrier = 1, Uses = [S7] in
+let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
+    isBarrier = 1, Uses = [S7] in
 def RETS : MCPseudo<(outs), (ins), "rets", 2> {
   let Pattern = [(RISCCret)];
+}
+let Predicates = [IsNanoPred], isReturn = 1, isTerminator = 1,
+    isBarrier = 1 in
+def RET_NANO : MCPseudo<(outs), (ins GPR:$ra), "ret\t$ra", 2> {
+  let Pattern = [(RISCCret GPR:$ra)];
 }
 def MOV : MCPseudo<(outs GPR:$rd), (ins GPR:$rs), "mov\t$rd, $rs", 2>;
 def NOP : MCPseudo<(outs), (ins), "nop", 2>;
@@ -272,6 +308,14 @@ def ADJCALLSTACKUP : Pseudo<(outs), (ins i16imm:$amt1, i16imm:$amt2),
   [(callseq_end timm:$amt1, timm:$amt2)]>;
 }
 def FRAMEADDR : Pseudo<(outs GPR:$dst), (ins i16imm:$fi, i16imm:$offset)>;
+
+// Nano has unsigned byte loads. Keep sign extension as one tied pseudo until
+// after register allocation, then expand it to three ordinary immediates.
+let Predicates = [IsNanoPred], Constraints = "$dst = $src" in
+def SEXT8_NANO : Pseudo<(outs GPR:$dst), (ins GPR:$src),
+  [(set i16:$dst, (sext_inreg GPR:$src, i8))]> {
+  let Size = 6;
+}
 
 let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
 def PseudoBRCC : Pseudo<(outs),
@@ -306,9 +350,15 @@ def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
           (CALL16 texternalsym:$target)>;
 }
-let Predicates = [NoSysPred] in {
+let Predicates = [IsMinPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL_MIN tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
           (CALL_MIN texternalsym:$target)>;
+}
+let Predicates = [IsNanoPred] in {
+def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
+          (CALL_NANO tglobaladdr:$target)>;
+def : Pat<(RISCCcall (i16 texternalsym:$target)),
+          (CALL_NANO texternalsym:$target)>;
 }

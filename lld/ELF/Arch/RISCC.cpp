@@ -62,8 +62,11 @@ uint32_t RISCC::calcEFlags() const {
   };
 
   // Capability order is min < sys < full, although the numeric e_flags
-  // encodings are not ordered that way.
+  // encodings are not ordered that way. Nano is an incompatible profile:
+  // Nano objects may link together, but never with a mainline object.
   unsigned outputRank = 0;
+  bool sawNano = false;
+  bool sawMainline = false;
   for (InputFile *file : ctx.objectFiles) {
     uint32_t flags = getFlags(file);
     if (uint32_t unknown = flags & ~knownMask)
@@ -78,18 +81,19 @@ uint32_t RISCC::calcEFlags() const {
     unsigned rank = 0;
     switch (flags & EF_RISCC_PROFILE_MASK) {
     case EF_RISCC_PROFILE_MIN:
+      sawMainline = true;
       rank = 1;
       break;
     case EF_RISCC_PROFILE_SYS:
+      sawMainline = true;
       rank = 2;
       break;
     case EF_RISCC_PROFILE_FULL:
+      sawMainline = true;
       rank = 3;
       break;
     case EF_RISCC_PROFILE_NANO:
-      ErrAlways(ctx) << file
-                     << ": RISC-C Nano uses an incompatible ABI and cannot "
-                        "be linked as mainline RISC-C";
+      sawNano = true;
       break;
     default:
       ErrAlways(ctx) << file << ": unsupported RISC-C ISA profile flags 0x"
@@ -98,6 +102,12 @@ uint32_t RISCC::calcEFlags() const {
     }
     outputRank = std::max(outputRank, rank);
   }
+
+  if (sawNano && sawMainline)
+    ErrAlways(ctx) << "cannot link incompatible RISC-C Nano and mainline "
+                      "profiles";
+  if (sawNano)
+    return EF_RISCC_ABI_V1 | EF_RISCC_PROFILE_NANO;
 
   uint32_t profile;
   switch (outputRank) {

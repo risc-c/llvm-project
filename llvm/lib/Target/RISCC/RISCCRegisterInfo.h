@@ -15,9 +15,12 @@
 #include "RISCCGenRegisterInfo.inc"
 
 namespace llvm {
+class RISCCSubtarget;
 class RISCCRegisterInfo final : public RISCCGenRegisterInfo {
+  const RISCCSubtarget &STI;
+
 public:
-  RISCCRegisterInfo();
+  explicit RISCCRegisterInfo(const RISCCSubtarget &);
   const MCPhysReg *getCalleeSavedRegs(const MachineFunction *) const override;
   const uint32_t *getCallPreservedMask(const MachineFunction &,
                                        CallingConv::ID) const override;

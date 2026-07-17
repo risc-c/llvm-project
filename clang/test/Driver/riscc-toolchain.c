@@ -4,6 +4,8 @@
 // RUN:   FileCheck %s --check-prefix=MIN
 // RUN: %clang -### --target=riscc-none-elf -mcpu=sys -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=SYS
+// RUN: %clang -### --target=riscc-none-elf -mcpu=nano -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=NANO
 // RUN: %clang -### --target=riscc-none-elf -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=DEFAULT
 // RUN: not %clang --target=riscc-none-elf -mcpu=invalid -c %s -o %t.o 2>&1 | \
@@ -21,8 +23,11 @@
 // SYS: "-cc1"
 // SYS-SAME: "-target-cpu" "sys"
 
+// NANO: "-cc1"
+// NANO-SAME: "-target-cpu" "nano"
+
 // DEFAULT: "-cc1"
 // DEFAULT-SAME: "-target-cpu" "full"
 
 // INVALID-CPU: error: unknown target CPU 'invalid'
-// INVALID-CPU-NEXT: note: valid target CPU values are: min, sys, full
+// INVALID-CPU-NEXT: note: valid target CPU values are: nano, min, sys, full

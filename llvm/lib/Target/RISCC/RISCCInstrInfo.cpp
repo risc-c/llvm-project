@@ -26,7 +26,22 @@ void RISCCInstrInfo::anchor() {}
 RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
     : RISCCGenInstrInfo(STI, RI, RISCC::ADJCALLSTACKDOWN,
                         RISCC::ADJCALLSTACKUP),
-      STI(STI) {}
+      RI(STI), STI(STI) {}
+
+bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
+  if (MI.getOpcode() != RISCC::SEXT8_NANO)
+    return false;
+
+  MachineBasicBlock &MBB = *MI.getParent();
+  Register Dst = MI.getOperand(0).getReg();
+  Register Src = MI.getOperand(1).getReg();
+  const DebugLoc &DL = MI.getDebugLoc();
+  BuildMI(MBB, MI, DL, get(RISCC::ANDI), Dst).addReg(Src).addImm(0xff);
+  BuildMI(MBB, MI, DL, get(RISCC::XORI), Dst).addReg(Dst).addImm(0x80);
+  BuildMI(MBB, MI, DL, get(RISCC::ADDI), Dst).addReg(Dst).addImm(-128);
+  MI.eraseFromParent();
+  return true;
+}
 
 void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
@@ -54,7 +69,8 @@ void RISCCInstrInfo::storeRegToStackSlot(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator I, Register Src,
     bool Kill, int FI, const TargetRegisterClass *RC, Register,
     MachineInstr::MIFlag Flags) const {
-  assert(RC == &RISCC::GPRRegClass && "only GPR spills are supported");
+  assert(RISCC::GPRRegClass.hasSubClassEq(RC) &&
+         "only GPR spills are supported");
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
@@ -69,7 +85,8 @@ void RISCCInstrInfo::loadRegFromStackSlot(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator I, Register Dst,
     int FI, const TargetRegisterClass *RC, Register, unsigned,
     MachineInstr::MIFlag Flags) const {
-  assert(RC == &RISCC::GPRRegClass && "only GPR spills are supported");
+  assert(RISCC::GPRRegClass.hasSubClassEq(RC) &&
+         "only GPR reloads are supported");
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
@@ -215,15 +232,19 @@ void RISCCInstrInfo::insertIndirectBranch(
     return;
   }
 
-  assert(RS && "register scavenger required for a min-profile long branch");
+  assert(RS && "register scavenger required for a short-call-profile branch");
   MachineFunction &MF = *MBB.getParent();
   MachineRegisterInfo &MRI = MF.getRegInfo();
   Register VirtualScratch = MRI.createVirtualRegister(&RISCC::GPRRegClass);
   MachineInstr &Address =
       *BuildMI(MBB, MBB.end(), DL, get(RISCC::LI), VirtualScratch)
            .addMBB(&DestBB, RISCCII::MO_CODE);
-  BuildMI(MBB, MBB.end(), DL, get(RISCC::JAL), RISCC::S0)
-      .addReg(VirtualScratch, RegState::Kill);
+  if (STI.isNano())
+    BuildMI(MBB, MBB.end(), DL, get(RISCC::JAL_NANO), RISCC::R0)
+        .addReg(VirtualScratch, RegState::Kill);
+  else
+    BuildMI(MBB, MBB.end(), DL, get(RISCC::JAL), RISCC::S0)
+        .addReg(VirtualScratch, RegState::Kill);
 
   RS->enterBasicBlockEnd(MBB);
   Register Scratch = RS->scavengeRegisterBackwards(

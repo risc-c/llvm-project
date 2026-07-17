@@ -38,6 +38,7 @@ public:
                             Register, int, const TargetRegisterClass *,
                             Register, unsigned,
                             MachineInstr::MIFlag) const override;
+  bool expandPostRAPseudo(MachineInstr &) const override;
   unsigned getInstSizeInBytes(const MachineInstr &) const override;
   bool reverseBranchCondition(SmallVectorImpl<MachineOperand> &) const override;
   bool analyzeBranch(MachineBasicBlock &, MachineBasicBlock *&,

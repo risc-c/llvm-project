@@ -22,6 +22,7 @@ class RISCCSubtarget final : public RISCCGenSubtargetInfo {
   bool HasSys = false;
   bool HasWideShift = false;
   bool HasMul = false;
+  bool IsNano = false;
   RISCCInstrInfo InstrInfo;
   RISCCFrameLowering FrameLowering;
   RISCCTargetLowering TLInfo;
@@ -37,6 +38,7 @@ public:
   bool hasSys() const { return HasSys; }
   bool hasWideShift() const { return HasWideShift; }
   bool hasMul() const { return HasMul; }
+  bool isNano() const { return IsNano; }
   const RISCCInstrInfo *getInstrInfo() const override { return &InstrInfo; }
   const RISCCRegisterInfo *getRegisterInfo() const override;
   const RISCCFrameLowering *getFrameLowering() const override {

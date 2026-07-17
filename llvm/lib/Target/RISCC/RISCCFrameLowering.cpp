@@ -22,7 +22,8 @@ RISCCFrameLowering::RISCCFrameLowering(const RISCCSubtarget &STI)
 
 static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      const DebugLoc &DL, const RISCCInstrInfo &TII,
-                     int64_t Amount, MachineInstr::MIFlag Flag) {
+                     int64_t Amount, MachineInstr::MIFlag Flag,
+                     Register Scratch = RISCC::R0) {
   if (!Amount)
     return;
   if (isInt<8>(Amount)) {
@@ -32,12 +33,12 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
         .setMIFlag(Flag);
     return;
   }
-  BuildMI(MBB, I, DL, TII.get(RISCC::LI), RISCC::R0)
+  BuildMI(MBB, I, DL, TII.get(RISCC::LI), Scratch)
       .addImm(std::abs(Amount))
       .setMIFlag(Flag);
   BuildMI(MBB, I, DL, TII.get(Amount < 0 ? RISCC::SUB : RISCC::ADD), RISCC::R7)
       .addReg(RISCC::R7)
-      .addReg(RISCC::R0, RegState::Kill)
+      .addReg(Scratch, RegState::Kill)
       .setMIFlag(Flag);
 }
 
@@ -52,7 +53,7 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
   adjustSP(MBB, I, DL, TII, -int64_t(Size), MachineInstr::FrameSetup);
 
   int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
-  if (FI >= 0) {
+  if (!STI.isNano() && FI >= 0) {
     BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
         .addReg(RISCC::S7)
         .setMIFlag(MachineInstr::FrameSetup);
@@ -70,7 +71,7 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   DebugLoc DL = I == MBB.end() ? DebugLoc() : I->getDebugLoc();
   const auto &TII = *STI.getInstrInfo();
   int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
-  if (FI >= 0) {
+  if (!STI.isNano() && FI >= 0) {
     BuildMI(MBB, I, DL, TII.get(RISCC::LDW), RISCC::R0)
         .addFrameIndex(FI)
         .addImm(0)
@@ -79,8 +80,12 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
         .addReg(RISCC::R0, RegState::Kill)
         .setMIFlag(MachineInstr::FrameDestroy);
   }
+  Register Scratch = RISCC::R0;
+  if (STI.isNano() && I != MBB.end() && I->getOpcode() == RISCC::RET_NANO &&
+      I->getOperand(0).getReg() == RISCC::R0)
+    Scratch = RISCC::R6;
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
-           MachineInstr::FrameDestroy);
+           MachineInstr::FrameDestroy, Scratch);
 }
 
 MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
@@ -97,7 +102,7 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   if (MF.getFrameInfo().getMaxCallFrameSize() > 126)
     report_fatal_error("RISC-C supports outgoing call frames of at most 126 "
                        "bytes");
-  if (MF.getFrameInfo().hasCalls()) {
+  if (!STI.isNano() && MF.getFrameInfo().hasCalls()) {
     int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
   }

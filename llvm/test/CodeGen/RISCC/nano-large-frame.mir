@@ -1,0 +1,34 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=nano -run-pass=prolog-epilog %s -o - | FileCheck %s
+
+# A Nano return may keep the incoming link in r0. Large frame teardown must
+# therefore use another scratch register and leave r0 live through RET_NANO.
+# CHECK-LABEL: name: return_link_in_r0
+# CHECK:       $r6 = frame-destroy LI 302
+# CHECK-NEXT:  $r7 = frame-destroy ADD $r7, killed $r6
+# CHECK-NEXT:  RET_NANO killed $r0
+
+--- |
+  target triple = "riscc-none-elf"
+
+  define void @return_link_in_r0() {
+  entry:
+    ret void
+  }
+...
+---
+name:            return_link_in_r0
+alignment:       2
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:  2
+stack:
+  - { id: 0, name: '', type: default, offset: 0, size: 300, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+body:             |
+  bb.0.entry:
+    liveins: $r0
+
+    RET_NANO killed $r0
+...
