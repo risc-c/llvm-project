@@ -108,6 +108,42 @@ MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
   return MBB.erase(I);
 }
 
+static bool needsFrameScavengerSlot(const MachineFunction &MF) {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  uint64_t EstimatedSize = MFI.estimateStackSize(MF);
+
+  if (EstimatedSize > 127)
+    return true;
+
+  // Local object bases fit when the complete frame fits. Fixed incoming
+  // objects already have ABI offsets, so check their exact estimated
+  // SP-relative address. Account for any extra target-instruction displacement
+  // in both cases.
+  for (const MachineBasicBlock &MBB : MF) {
+    for (const MachineInstr &MI : MBB) {
+      for (unsigned I = 0, E = MI.getNumOperands(); I != E; ++I) {
+        if (!MI.getOperand(I).isFI())
+          continue;
+        if (I + 1 == E || !MI.getOperand(I + 1).isImm())
+          return true;
+        int64_t Extra = MI.getOperand(I + 1).getImm();
+        int FI = MI.getOperand(I).getIndex();
+        if (MFI.isFixedObjectIndex(FI)) {
+          int64_t Offset =
+              MFI.getObjectOffset(FI) + int64_t(EstimatedSize) + Extra;
+          if (!isInt<8>(Offset))
+            return true;
+          continue;
+        }
+        if (Extra < -128 ||
+            (Extra > 0 && EstimatedSize + uint64_t(Extra) > 127))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
     MachineFunction &MF, RegScavenger *RS) const {
   if (MF.getFrameInfo().getMaxCallFrameSize() > 126)
@@ -129,10 +165,9 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   bool NeedsBranchSpill =
       !STI.hasSys() &&
       MF.estimateFunctionSizeInBytes() >= MinBranchSpillThreshold;
-  // Large frame offsets and high-pressure post-RA expansions may need to
-  // scavenge a GPR.  Reserve an addressable spill slot before frame layout so
-  // RegScavenger can preserve a live register instead of aborting.
-  if (RS && (MF.getFrameInfo().hasStackObjects() || NeedsBranchSpill)) {
+  // Only large frame offsets and long branches need a scavenged GPR. Avoid
+  // growing every ordinary frame by a word just to reserve an unused slot.
+  if (RS && (needsFrameScavengerSlot(MF) || NeedsBranchSpill)) {
     int FI = MF.getFrameInfo().CreateSpillStackObject(2, Align(2));
     RS->addScavengingFrameIndex(FI);
     if (NeedsBranchSpill)

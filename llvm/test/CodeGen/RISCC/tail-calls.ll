@@ -32,9 +32,10 @@ define i16 @indirect_tail(ptr addrspace(1) %callee_ptr, i16 %x) {
 
 define i16 @framed_tail(i16 %x) {
 ; CHECK-LABEL: framed_tail:
-; CHECK:       addi r7, -4
-; CHECK-NOT:   {{mfs|stw r0, \[r7 \+ 2\]}}
-; CHECK:       addi r7, 4
+; CHECK:       addi r7, -2
+; CHECK-NEXT:  stw r1, [r7 + 0]
+; CHECK-NEXT:  ldw r1, [r7 + 0]
+; CHECK-NEXT:  addi r7, 2
 ; SYS-NEXT:    tail code(callee)
 ; MIN-NEXT:    li r0, code(callee)
 ; MIN-NEXT:    jal s0, r0

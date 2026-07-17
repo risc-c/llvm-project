@@ -55,6 +55,7 @@ class RISCCTargetLowering final : public TargetLowering {
 public:
   RISCCTargetLowering(const TargetMachine &, const RISCCSubtarget &);
   SDValue LowerOperation(SDValue, SelectionDAG &) const override;
+  SDValue PerformDAGCombine(SDNode *, DAGCombinerInfo &) const override;
   SDValue LowerFormalArguments(
       SDValue, CallingConv::ID, bool,
       const SmallVectorImpl<ISD::InputArg> &, const SDLoc &, SelectionDAG &,

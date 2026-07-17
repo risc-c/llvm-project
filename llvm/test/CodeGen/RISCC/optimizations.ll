@@ -183,6 +183,61 @@ define i16 @load_signed_byte(ptr %address) {
   ret i16 %result
 }
 
+define i16 @multiply_by_3(i16 %value) {
+; COMMON-LABEL: multiply_by_3:
+; FULL:         mul
+; MIN:          add [[TWICE:r[0-7]]], r1, r1
+; MIN-NEXT:     add r1, [[TWICE]], r1
+; NANO:         add [[TWICE:r[0-7]]], r1, r1
+; NANO-NEXT:    add r1, [[TWICE]], r1
+; COMMON-NOT:   __mulhi3
+  %product = mul i16 %value, 3
+  ret i16 %product
+}
+
+define i16 @multiply_by_10(i16 %value) {
+; COMMON-LABEL: multiply_by_10:
+; FULL:         mul
+; MIN-COUNT-4:  add
+; NANO-COUNT-4: add
+; COMMON-NOT:   __mulhi3
+  %product = mul i16 %value, 10
+  ret i16 %product
+}
+
+define i16 @select_or_zero(i1 %condition, i16 %value) {
+; COMMON-LABEL: select_or_zero:
+; COMMON:       andi
+; COMMON-NEXT:  ldi
+; COMMON-NEXT:  sub
+; COMMON-NEXT:  and
+; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
+  %result = select i1 %condition, i16 %value, i16 0
+  ret i16 %result
+}
+
+define i16 @zero_or_select(i1 %condition, i16 %value) {
+; COMMON-LABEL: zero_or_select:
+; COMMON:       andi
+; COMMON-NEXT:  addi {{.*}}, -1
+; COMMON-NEXT:  and
+; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
+  %result = select i1 %condition, i16 0, i16 %value
+  ret i16 %result
+}
+
+define i16 @small_frame_word(i16 %value) {
+; COMMON-LABEL: small_frame_word:
+; COMMON:       addi r7, -2
+; COMMON-NEXT:  stw r1, [r7 + 0]
+; COMMON-NEXT:  ldw r1, [r7 + 0]
+; COMMON-NEXT:  addi r7, 2
+  %slot = alloca i16, align 2
+  store volatile i16 %value, ptr %slot, align 2
+  %result = load volatile i16, ptr %slot, align 2
+  ret i16 %result
+}
+
 define void @small_large_frame() {
 ; COMMON-LABEL: small_large_frame:
 ; COMMON:       ldi r0, 20{{[0-9]}}

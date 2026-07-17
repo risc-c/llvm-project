@@ -61,6 +61,8 @@ RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
       Displacement = C->getSExtValue();
     }
   }
+  if (auto *FI = dyn_cast<FrameIndexSDNode>(Base))
+    Base = CurDAG->getTargetFrameIndex(FI->getIndex(), MVT::i16);
   SDValue Disp = CurDAG->getTargetConstant(
       APInt(16, Displacement, true), DL, MVT::i16);
   return {Base, Disp};

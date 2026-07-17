@@ -18,6 +18,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Target/TargetMachine.h"
 #include <climits>
 
@@ -103,11 +104,87 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setLoadExtAction(ISD::SEXTLOAD, MVT::i16, MVT::i8,
                    STI.isNano() ? Expand : Legal);
   setTruncStoreAction(MVT::i16, MVT::i8, Legal);
+
+  setTargetDAGCombine(ISD::MUL);
+  setTargetDAGCombine(ISD::SELECT);
 }
 
 //===----------------------------------------------------------------------===//
 // Custom DAG lowering
 //===----------------------------------------------------------------------===//
+
+static SDValue expandSmallConstantMultiply(SDValue Value, int64_t Multiplier,
+                                           SelectionDAG &DAG,
+                                           const SDLoc &DL) {
+  bool Negate = Multiplier < 0;
+  uint64_t Magnitude = Negate ? -Multiplier : Multiplier;
+  unsigned Cost = Log2_64(Magnitude) + popcount(Magnitude) - 1 + Negate;
+  if (Cost > 4)
+    return {};
+
+  SDValue Product = Value;
+  uint64_t Bit = (uint64_t(1) << Log2_64(Magnitude)) >> 1;
+  for (; Bit; Bit >>= 1) {
+    Product = DAG.getNode(ISD::ADD, DL, MVT::i16, Product, Product);
+    if (Magnitude & Bit)
+      Product = DAG.getNode(ISD::ADD, DL, MVT::i16, Product, Value);
+  }
+  if (Negate)
+    Product =
+        DAG.getNode(ISD::SUB, DL, MVT::i16,
+                    DAG.getConstant(0, DL, MVT::i16), Product);
+  return Product;
+}
+
+SDValue
+RISCCTargetLowering::PerformDAGCombine(SDNode *N,
+                                       DAGCombinerInfo &DCI) const {
+  SelectionDAG &DAG = DCI.DAG;
+  SDLoc DL(N);
+
+  if (N->getOpcode() == ISD::MUL && !STI.hasMul() &&
+      N->getValueType(0) == MVT::i16) {
+    SDValue Value = N->getOperand(0);
+    auto *Multiplier = dyn_cast<ConstantSDNode>(N->getOperand(1));
+    if (!Multiplier) {
+      Value = N->getOperand(1);
+      Multiplier = dyn_cast<ConstantSDNode>(N->getOperand(0));
+    }
+    if (Multiplier) {
+      int64_t Amount = Multiplier->getSExtValue();
+      if (Amount > 1 || Amount < -1)
+        return expandSmallConstantMultiply(Value, Amount, DAG, DL);
+    }
+    return {};
+  }
+
+  if (N->getOpcode() == ISD::SELECT &&
+      N->getValueType(0) == MVT::i16) {
+    SDValue Cond = N->getOperand(0);
+    SDValue TrueValue = N->getOperand(1);
+    SDValue FalseValue = N->getOperand(2);
+    bool TrueIsZero = isNullConstant(TrueValue);
+    bool FalseIsZero = isNullConstant(FalseValue);
+    if (TrueIsZero == FalseIsZero)
+      return {};
+
+    SDValue Bool = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i16, Cond);
+    SDValue Mask;
+    SDValue Value;
+    if (FalseIsZero) {
+      Mask = DAG.getNode(ISD::SUB, DL, MVT::i16,
+                         DAG.getConstant(0, DL, MVT::i16), Bool);
+      Value = TrueValue;
+    } else {
+      Mask = DAG.getNode(ISD::ADD, DL, MVT::i16, Bool,
+                         DAG.getSignedConstant(-1, DL, MVT::i16));
+      Value = FalseValue;
+    }
+    return DAG.getNode(ISD::AND, DL, MVT::i16, Value, Mask);
+  }
+
+  return {};
+}
 
 SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
                                             SelectionDAG &DAG) const {
