@@ -197,7 +197,8 @@ void RISCCMCCodeEmitter::encodeInstruction(
   const unsigned Opcode = MI.getOpcode();
   switch (Opcode) {
   case RISCC::CALL16:
-  case RISCC::JMP16: {
+  case RISCC::JMP16:
+  case RISCC::TAIL16: {
     MCInst Native =
         MCInstBuilder(RISCC::JAL16)
             .addReg(Opcode == RISCC::CALL16 ? RISCC::S7 : RISCC::S0)
@@ -206,19 +207,21 @@ void RISCCMCCodeEmitter::encodeInstruction(
     encodeInstruction(Native, Code, Fixups, STI);
     return;
   }
-  case RISCC::CALL: {
+  case RISCC::CALL:
+  case RISCC::TAIL_REG: {
     MCInst Native =
         MCInstBuilder(RISCC::JAL)
-            .addReg(RISCC::S7)
+            .addReg(Opcode == RISCC::CALL ? RISCC::S7 : RISCC::S0)
             .addOperand(MI.getOperand(0));
     Native.setLoc(MI.getLoc());
     encodeInstruction(Native, Code, Fixups, STI);
     return;
   }
-  case RISCC::CALL_NANO_REG: {
+  case RISCC::CALL_NANO_REG:
+  case RISCC::TAIL_NANO_REG: {
     MCInst Native =
         MCInstBuilder(RISCC::JAL_NANO)
-            .addReg(RISCC::R6)
+            .addReg(Opcode == RISCC::CALL_NANO_REG ? RISCC::R6 : RISCC::R0)
             .addOperand(MI.getOperand(0));
     Native.setLoc(MI.getLoc());
     encodeInstruction(Native, Code, Fixups, STI);

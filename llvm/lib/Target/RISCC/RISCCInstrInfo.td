@@ -45,6 +45,8 @@ def SDT_RISCCShift : SDTypeProfile<1, 2,
 
 def RISCCcall : SDNode<"RISCCISD::CALL", SDT_RISCCCall,
   [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
+def RISCCTail : SDNode<"RISCCISD::TAIL", SDT_RISCCCall,
+  [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCret : SDNode<"RISCCISD::RET_FLAG", SDT_RISCCRet,
   [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCWrapper : SDNode<"RISCCISD::Wrapper", SDT_RISCCWrapper>;
@@ -285,6 +287,29 @@ def CALL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
                              "call\t$target", 2> {
   let Pattern = [(RISCCcall GPR:$target)];
 }
+let isCall = 1, isReturn = 1, isTerminator = 1, isBarrier = 1 in {
+let Predicates = [HasSysPred], Uses = [S7] in
+def TAIL16 : MCPseudo<(outs), (ins codeaddr:$target),
+                      "tail\t$target", 4>;
+let Predicates = [IsMinPred], Uses = [S7], isCodeGenOnly = 1 in
+def TAIL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
+  let Size = 6;
+}
+let Predicates = [IsNanoPred], Uses = [R6], isCodeGenOnly = 1 in
+def TAIL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
+  let Size = 6;
+}
+let Predicates = [NoNanoPred], Uses = [S7] in
+def TAIL_REG : MCPseudo<(outs), (ins GPRTail:$target),
+                        "tail\t$target", 2> {
+  let Pattern = [(RISCCTail GPRTail:$target)];
+}
+let Predicates = [IsNanoPred], Uses = [R6] in
+def TAIL_NANO_REG : MCPseudo<(outs), (ins GPRTail:$target),
+                             "tail\t$target", 2> {
+  let Pattern = [(RISCCTail GPRTail:$target)];
+}
+}
 let Predicates = [HasSysPred], isBranch = 1, isTerminator = 1,
     isBarrier = 1 in
 def JMP16 : MCPseudo<(outs), (ins codeaddr:$target), "jmp16\t$target", 4>;
@@ -360,16 +385,28 @@ def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL16 tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
           (CALL16 texternalsym:$target)>;
+def : Pat<(RISCCTail (i16 tglobaladdr:$target)),
+          (TAIL16 tglobaladdr:$target)>;
+def : Pat<(RISCCTail (i16 texternalsym:$target)),
+          (TAIL16 texternalsym:$target)>;
 }
 let Predicates = [IsMinPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL_MIN tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
           (CALL_MIN texternalsym:$target)>;
+def : Pat<(RISCCTail (i16 tglobaladdr:$target)),
+          (TAIL_MIN tglobaladdr:$target)>;
+def : Pat<(RISCCTail (i16 texternalsym:$target)),
+          (TAIL_MIN texternalsym:$target)>;
 }
 let Predicates = [IsNanoPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL_NANO tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
           (CALL_NANO texternalsym:$target)>;
+def : Pat<(RISCCTail (i16 tglobaladdr:$target)),
+          (TAIL_NANO tglobaladdr:$target)>;
+def : Pat<(RISCCTail (i16 texternalsym:$target)),
+          (TAIL_NANO texternalsym:$target)>;
 }

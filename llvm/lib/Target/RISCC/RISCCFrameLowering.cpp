@@ -10,6 +10,7 @@
 #include "RISCCInstrInfo.h"
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
@@ -79,9 +80,21 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
         .setMIFlag(MachineInstr::FrameDestroy);
   }
   Register Scratch = RISCC::R0;
-  if (STI.isNano() && I != MBB.end() && I->getOpcode() == RISCC::RET_NANO &&
-      I->getOperand(0).getReg() == RISCC::R0)
+  if (I != MBB.end() && I->isCall() && I->isReturn()) {
+    for (MCRegister Candidate :
+         {RISCC::R0, RISCC::R1, RISCC::R2, RISCC::R3, RISCC::R4}) {
+      if (!I->readsRegister(Candidate, STI.getRegisterInfo())) {
+        Scratch = Candidate;
+        break;
+      }
+    }
+    assert(!I->readsRegister(Scratch, STI.getRegisterInfo()) &&
+           "tail call left no register for frame teardown");
+  } else if (STI.isNano() && I != MBB.end() &&
+             I->getOpcode() == RISCC::RET_NANO &&
+             I->getOperand(0).getReg() == RISCC::R0) {
     Scratch = RISCC::R6;
+  }
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
            MachineInstr::FrameDestroy, Scratch);
 }
@@ -100,7 +113,12 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   if (MF.getFrameInfo().getMaxCallFrameSize() > 126)
     report_fatal_error("RISC-C supports outgoing call frames of at most 126 "
                        "bytes");
-  if (!STI.isNano() && MF.getFrameInfo().hasCalls()) {
+  bool HasReturningCall = llvm::any_of(MF, [](const MachineBasicBlock &MBB) {
+    return llvm::any_of(MBB, [](const MachineInstr &MI) {
+      return MI.isCall() && !MI.isReturn();
+    });
+  });
+  if (!STI.isNano() && HasReturningCall) {
     int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
   }

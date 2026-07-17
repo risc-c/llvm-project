@@ -20,6 +20,7 @@ enum NodeType {
   FIRST_NUMBER = ISD::BUILTIN_OP_END,
   RET_FLAG,
   CALL,
+  TAIL,
   Wrapper,
   BR_CC,
   BR_CC_IMM,

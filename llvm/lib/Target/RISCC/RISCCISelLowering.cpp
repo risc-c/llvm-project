@@ -11,6 +11,7 @@
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -488,23 +489,55 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
   return Chain;
 }
 
+static bool isEligibleForSiblingCall(
+    const TargetLowering::CallLoweringInfo &CLI, const MachineFunction &MF,
+    ArrayRef<CCValAssign> ArgLocs, unsigned StackBytes, bool IsDirect) {
+  const Function &Caller = MF.getFunction();
+  if (CLI.IsVarArg || Caller.isVarArg() || StackBytes != 0)
+    return false;
+  if (CLI.CallConv != Caller.getCallingConv() ||
+      CLI.RetTy != Caller.getReturnType() ||
+      Caller.hasFnAttribute("interrupt"))
+    return false;
+  if (llvm::any_of(CLI.Outs, [](const ISD::OutputArg &Arg) {
+        return Arg.Flags.isByVal() || Arg.Flags.isSRet() ||
+               Arg.Flags.isNest();
+      }))
+    return false;
+
+  // An indirect target consumes another caller-clobbered GPR. Keep one of
+  // R0-R4 free so a large frame can be torn down after register allocation.
+  return IsDirect || ArgLocs.size() < 4;
+}
+
 SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
                                        SmallVectorImpl<SDValue> &InVals) const {
-  CLI.IsTailCall = false;
   if (CLI.CallConv != CallingConv::C && CLI.CallConv != CallingConv::Fast)
     report_fatal_error("unsupported RISC-C calling convention");
   SelectionDAG &DAG = CLI.DAG;
   SDLoc DL = CLI.DL;
+  MachineFunction &MF = DAG.getMachineFunction();
   SmallVector<CCValAssign, 16> Locs;
-  CCState State(CLI.CallConv, CLI.IsVarArg, DAG.getMachineFunction(), Locs,
-                *DAG.getContext());
+  CCState State(CLI.CallConv, CLI.IsVarArg, MF, Locs, *DAG.getContext());
   analyzeArguments(State, Locs, CLI.Outs);
   unsigned NumBytes = State.getStackSize();
   if (NumBytes > 0xffff)
     report_fatal_error(
         "RISC-C outgoing call frame exceeds the 16-bit address space");
-  DAG.getMachineFunction().getFrameInfo().setAdjustsStack(true);
-  SDValue Chain = DAG.getCALLSEQ_START(CLI.Chain, NumBytes, 0, DL);
+
+  const bool IsDirect =
+      isa<GlobalAddressSDNode, ExternalSymbolSDNode>(CLI.Callee);
+  if (CLI.IsTailCall)
+    CLI.IsTailCall =
+        isEligibleForSiblingCall(CLI, MF, Locs, NumBytes, IsDirect);
+  if (!CLI.IsTailCall && CLI.CB && CLI.CB->isMustTailCall())
+    report_fatal_error("failed to lower a mandatory RISC-C tail call");
+
+  SDValue Chain = CLI.Chain;
+  if (!CLI.IsTailCall) {
+    MF.getFrameInfo().setAdjustsStack(true);
+    Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
+  }
   SmallVector<std::pair<MCRegister, SDValue>, 4> RegArgs;
   SmallVector<SDValue, 8> Stores;
 
@@ -534,6 +567,18 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
     Chain = DAG.getCopyToReg(Chain, DL, Reg, V, Glue);
     Glue = Chain.getValue(1);
   }
+  if (CLI.IsTailCall && STI.isNano()) {
+    Register ReturnAddress =
+        MF.getInfo<RISCCMachineFunctionInfo>()->getReturnAddressReg();
+    assert(ReturnAddress && "Nano return address was not initialized");
+    SDValue SavedReturnAddress =
+        DAG.getCopyFromReg(Chain, DL, ReturnAddress, MVT::i16, Glue);
+    Chain = SavedReturnAddress.getValue(1);
+    Glue = SavedReturnAddress.getValue(2);
+    Chain =
+        DAG.getCopyToReg(Chain, DL, RISCC::R6, SavedReturnAddress, Glue);
+    Glue = Chain.getValue(1);
+  }
 
   SDValue Callee = CLI.Callee;
   if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
@@ -551,8 +596,14 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
                                                    CLI.CallConv)));
   if (Glue)
     Ops.push_back(Glue);
-  Chain = DAG.getNode(RISCCISD::CALL, DL,
+  unsigned CallOpcode =
+      CLI.IsTailCall ? RISCCISD::TAIL : RISCCISD::CALL;
+  Chain = DAG.getNode(CallOpcode, DL,
                       DAG.getVTList(MVT::Other, MVT::Glue), Ops);
+  if (CLI.IsTailCall) {
+    MF.getFrameInfo().setHasTailCall();
+    return Chain;
+  }
   Glue = Chain.getValue(1);
   Chain = DAG.getCALLSEQ_END(Chain, NumBytes, 0, Glue, DL);
   Glue = Chain.getValue(1);

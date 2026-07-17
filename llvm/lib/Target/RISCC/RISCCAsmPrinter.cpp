@@ -50,20 +50,27 @@ public:
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
     if (MI->getOpcode() == RISCC::CALL_MIN ||
-        MI->getOpcode() == RISCC::CALL_NANO) {
+        MI->getOpcode() == RISCC::CALL_NANO ||
+        MI->getOpcode() == RISCC::TAIL_MIN ||
+        MI->getOpcode() == RISCC::TAIL_NANO) {
+      bool IsNano = MI->getOpcode() == RISCC::CALL_NANO ||
+                    MI->getOpcode() == RISCC::TAIL_NANO;
+      bool IsTail = MI->getOpcode() == RISCC::TAIL_MIN ||
+                    MI->getOpcode() == RISCC::TAIL_NANO;
       MCInst Address;
       Address.setOpcode(RISCC::LI);
       Address.addOperand(MCOperand::createReg(RISCC::R0));
       Address.addOperand(Out.getOperand(0));
       EmitToStreamer(*OutStreamer, Address);
 
-      MCInst Call;
-      bool IsNano = MI->getOpcode() == RISCC::CALL_NANO;
-      Call.setOpcode(IsNano ? RISCC::JAL_NANO : RISCC::JAL);
-      Call.addOperand(
-          MCOperand::createReg(IsNano ? RISCC::R6 : RISCC::S7));
-      Call.addOperand(MCOperand::createReg(RISCC::R0));
-      EmitToStreamer(*OutStreamer, Call);
+      MCRegister Link = IsNano ? RISCC::R6 : RISCC::S7;
+      if (IsTail)
+        Link = IsNano ? RISCC::R0 : RISCC::S0;
+      MCInst Transfer;
+      Transfer.setOpcode(IsNano ? RISCC::JAL_NANO : RISCC::JAL);
+      Transfer.addOperand(MCOperand::createReg(Link));
+      Transfer.addOperand(MCOperand::createReg(RISCC::R0));
+      EmitToStreamer(*OutStreamer, Transfer);
       return;
     }
     EmitToStreamer(*OutStreamer, Out);
