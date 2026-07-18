@@ -355,8 +355,9 @@ SDValue RISCCTargetLowering::lowerShiftLibCall(
 
   const char *Symbol =
       DAG.getMachineFunction().createExternalSymbolName(Name);
-  SDValue Callee =
-      DAG.getExternalSymbol(Symbol, getPointerTy(DAG.getDataLayout()));
+  SDValue Callee = DAG.getTargetExternalSymbol(
+      Symbol, getPointerTy(DAG.getDataLayout()),
+      RISCCII::MO_SREG_PRESERVING_CALL);
   CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(DL)
       .setChain(DAG.getEntryNode())
@@ -631,6 +632,12 @@ static MCRegister getDirectCalleeLink(SDValue Callee) {
   return RISCC::S7;
 }
 
+static bool isSRegPreservingCall(SDValue Callee) {
+  const auto *Symbol = dyn_cast<ExternalSymbolSDNode>(Callee);
+  return Symbol &&
+         Symbol->getTargetFlags() == RISCCII::MO_SREG_PRESERVING_CALL;
+}
+
 static void copyMainlineLink(SelectionDAG &DAG, const SDLoc &DL,
                              Register From, Register To, SDValue &Chain,
                              SDValue &Glue) {
@@ -657,6 +664,7 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   SDLoc DL = CLI.DL;
   MachineFunction &MF = DAG.getMachineFunction();
   auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
+  bool PreservesSRegs = !STI.isNano() && isSRegPreservingCall(CLI.Callee);
   SmallVector<CCValAssign, 16> Locs;
   CCState State(CLI.CallConv, CLI.IsVarArg, MF, Locs, *DAG.getContext());
   analyzeArguments(State, Locs, CLI.Outs);
@@ -737,9 +745,11 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   SmallVector<SDValue, 10> Ops{Chain, Callee};
   for (auto [Reg, V] : RegArgs)
     Ops.push_back(DAG.getRegister(Reg, V.getValueType()));
-  Ops.push_back(DAG.getRegisterMask(
-      STI.getRegisterInfo()->getCallPreservedMask(DAG.getMachineFunction(),
-                                                   CLI.CallConv)));
+  const auto *TRI = STI.getRegisterInfo();
+  const uint32_t *CallMask =
+      PreservesSRegs ? TRI->getSRegPreservingCallMask()
+                     : TRI->getCallPreservedMask(MF, CLI.CallConv);
+  Ops.push_back(DAG.getRegisterMask(CallMask));
   if (Glue)
     Ops.push_back(Glue);
   unsigned CallOpcode =

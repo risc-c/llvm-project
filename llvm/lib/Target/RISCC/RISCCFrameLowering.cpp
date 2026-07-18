@@ -102,11 +102,6 @@ bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
   MachineFrameInfo &MFI = MF.getFrameInfo();
   auto *FuncInfo = MF.getInfo<RISCCMachineFunctionInfo>();
 
-  // Calls can overwrite the software-managed S-register cache. Let the
-  // generic frame code handle their callee-saved GPRs on the data stack.
-  if (MFI.hasCalls())
-    return false;
-
   for (CalleeSavedInfo &Info : CSI) {
     if (Info.getReg() == RISCC::R5 || Info.getReg() == RISCC::R6) {
       MCRegister SReg = FuncInfo->getCalleeSavedSReg(Info.getReg());

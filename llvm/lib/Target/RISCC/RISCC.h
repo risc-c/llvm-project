@@ -33,7 +33,12 @@ namespace RISCCII {
 enum TOF : unsigned {
   MO_None,
   MO_CODE,
-  MO_TPOFF
+  MO_TPOFF,
+
+  // SelectionDAG-only marker for compiler-private helpers that preserve the
+  // software-managed S-register cache. Call lowering replaces this with
+  // MO_CODE before instruction selection.
+  MO_SREG_PRESERVING_CALL
 };
 }
 }

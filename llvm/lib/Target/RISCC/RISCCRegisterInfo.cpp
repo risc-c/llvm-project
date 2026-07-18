@@ -73,6 +73,11 @@ const uint32_t *RISCCRegisterInfo::getCallPreservedMask(
                       : CSR_RISCC_CallPreserved_RegMask;
 }
 
+const uint32_t *RISCCRegisterInfo::getSRegPreservingCallMask() const {
+  assert(!STI.isNano() && "Nano has no S-register cache");
+  return CSR_RISCC_SRegPreservingCall_RegMask;
+}
+
 BitVector RISCCRegisterInfo::getReservedRegs(const MachineFunction &) const {
   BitVector R(getNumRegs());
   R.set(RISCC::R7);

@@ -10,7 +10,7 @@
 // participate in ordinary register allocation because ALU instructions cannot
 // use them directly. After register and stack-slot coloring, this pass ranks
 // the remaining spill slots and the function's entry values, then assigns the
-// five cache registers greedily.
+// cache registers preserved by every call greedily.
 //
 //===----------------------------------------------------------------------===//
 
@@ -114,15 +114,32 @@ static bool takeRegister(SmallVectorImpl<MCRegister> &Free,
   return true;
 }
 
+static bool isPreservedByAllCalls(const MachineFunction &MF, MCRegister Reg,
+                                  const TargetRegisterInfo &TRI) {
+  for (const MachineBasicBlock &MBB : MF) {
+    for (const MachineInstr &MI : MBB) {
+      if (!MI.isCall())
+        continue;
+
+      bool HasRegMask =
+          llvm::any_of(MI.operands(),
+                       [](const MachineOperand &MO) { return MO.isRegMask(); });
+      if (!HasRegMask || MI.modifiesRegister(Reg, &TRI))
+        return false;
+    }
+  }
+  return true;
+}
+
 static bool allocateSRegisters(MachineFunction &MF,
                                const MachineBlockFrequencyInfo &MBFI) {
   const RISCCSubtarget &STI = MF.getSubtarget<RISCCSubtarget>();
   MachineFrameInfo &MFI = MF.getFrameInfo();
-  if (STI.isNano() || MFI.hasCalls() || MFI.hasTailCall())
-    return false;
-
   auto *Info = MF.getInfo<RISCCMachineFunctionInfo>();
   Info->clearSRegPlan();
+  if (STI.isNano() || MFI.hasTailCall())
+    return false;
+
   MachineRegisterInfo &MRI = MF.getRegInfo();
   MCRegister Link = Info->getReturnAddressReg().asMCReg();
   const TargetRegisterInfo &TRI = *STI.getRegisterInfo();
@@ -164,7 +181,8 @@ static bool allocateSRegisters(MachineFunction &MF,
   SmallVector<MCRegister, 5> Free;
   for (MCRegister Reg :
        {RISCC::S3, RISCC::S4, RISCC::S5, RISCC::S6, RISCC::S7})
-    if (!MRI.isPhysRegUsed(Reg) || (Reg == Link && !IsLinkClobbered))
+    if (isPreservedByAllCalls(MF, Reg, TRI) &&
+        (!MRI.isPhysRegUsed(Reg) || (Reg == Link && !IsLinkClobbered)))
       Free.push_back(Reg);
 
   // Flexible candidates avoid the precolored link register until its value is

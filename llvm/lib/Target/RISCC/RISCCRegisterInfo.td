@@ -42,5 +42,7 @@ def SREG : RegisterClass<"RISCC", [i16], 16,
 
 def CSR_RISCC : CalleeSavedRegs<(add R5, R6)>;
 def CSR_RISCC_CallPreserved : CalleeSavedRegs<(add R5, R6, R7)>;
+def CSR_RISCC_SRegPreservingCall :
+    CalleeSavedRegs<(add R5, R6, R7, S3, S4, S5, S6)>;
 def CSR_RISCC_Nano : CalleeSavedRegs<(add R5)>;
 def CSR_RISCC_Nano_CallPreserved : CalleeSavedRegs<(add R5, R7)>;

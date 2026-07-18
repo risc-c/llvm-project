@@ -24,6 +24,7 @@ public:
   const MCPhysReg *getCalleeSavedRegs(const MachineFunction *) const override;
   const uint32_t *getCallPreservedMask(const MachineFunction &,
                                        CallingConv::ID) const override;
+  const uint32_t *getSRegPreservingCallMask() const;
   BitVector getReservedRegs(const MachineFunction &) const override;
   const TargetRegisterClass *getPointerRegClass(unsigned = 0) const override;
   bool eliminateFrameIndex(MachineBasicBlock::iterator, int, unsigned,

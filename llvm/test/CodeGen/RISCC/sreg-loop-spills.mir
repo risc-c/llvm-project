@@ -30,6 +30,23 @@
 # CHECK:       STW
 # CHECK:       RETS implicit $s7
 
+# A compiler-private helper preserves S3..S6, so a spill may remain cached
+# across that call.
+# CHECK-LABEL: name: spill_across_preserving_call
+# CHECK:       $s3 = MTS killed $r1
+# CHECK:       CALL $r0, csr_riscc_sregpreservingcall
+# CHECK:       $r1 = MFS $s3
+# CHECK-NOT:   STW $r1
+# CHECK:       RETS implicit $s7
+
+# An ordinary call clobbers the cache. Keep the same spill on the data stack.
+# CHECK-LABEL: name: spill_across_ordinary_call
+# CHECK-NOT:   $s3 = MTS
+# CHECK:       STW killed $r1,
+# CHECK:       CALL $r0, csr_riscc
+# CHECK:       $r1 = LDW
+# CHECK:       RETS implicit $s7
+
 --- |
   target triple = "riscc-none-elf"
 
@@ -43,6 +60,16 @@
   }
 
   define void @cold_spills_keep_link() {
+  entry:
+    ret void
+  }
+
+  define void @spill_across_preserving_call() {
+  entry:
+    ret void
+  }
+
+  define void @spill_across_ordinary_call() {
   entry:
     ret void
   }
@@ -90,6 +117,48 @@ body:             |
   bb.2.exit:
     liveins: $r1
 
+    RETS implicit $s7, implicit $r1
+...
+---
+name:            spill_across_preserving_call
+alignment:       2
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  hasCalls:      true
+  adjustsStack:  true
+  maxAlignment:  2
+stack:
+  - { id: 0, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+body:             |
+  bb.0.entry:
+    liveins: $r0, $r1
+
+    STW killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    CALL $r0, csr_riscc_sregpreservingcall
+    $r1 = LDW %stack.0, 0 :: (load (s16) from %stack.0)
+    RETS implicit $s7, implicit $r1
+...
+---
+name:            spill_across_ordinary_call
+alignment:       2
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  hasCalls:      true
+  adjustsStack:  true
+  maxAlignment:  2
+stack:
+  - { id: 0, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+body:             |
+  bb.0.entry:
+    liveins: $r0, $r1
+
+    STW killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    CALL $r0, csr_riscc
+    $r1 = LDW %stack.0, 0 :: (load (s16) from %stack.0)
     RETS implicit $s7, implicit $r1
 ...
 ---

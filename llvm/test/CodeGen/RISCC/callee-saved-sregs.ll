@@ -4,6 +4,8 @@
 
 target triple = "riscc-none-elf"
 
+declare void @external()
+
 ; A mainline leaf can preserve both callee-saved GPRs in the software-managed
 ; S register bank. This must not create a data-stack frame.
 define void @leaf_clobber_r5_r6() {
@@ -42,4 +44,37 @@ define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
   %all.ok = and i1 %args.ok, %suffix.ok
   %result = select i1 %all.ok, i16 18058, i16 0
   ret i16 %result
+}
+
+; Compiler-private shift staircases preserve S3..S6. Callee-saved values may
+; therefore remain in the cache across the call, while the public S7 link is
+; saved normally.
+define i16 @shift_call_clobber_r5_r6(i16 %value) minsize {
+; CHECK-LABEL: shift_call_clobber_r5_r6:
+; CHECK:       mts s3, r5
+; CHECK-NEXT:  mts s4, r6
+; MIN:         li r0, code(__riscc_shlhi11)
+; MIN-NEXT:    jal s7, r0
+; CHECK:       mfs r6, s4
+; CHECK-NEXT:  mfs r5, s3
+; CHECK:       rets
+  call void asm sideeffect "", "~{r5},~{r6}"()
+  %result = shl i16 %value, 11
+  ret i16 %result
+}
+
+; An ordinary C call may clobber the entire cache, so its caller continues to
+; preserve callee-saved GPRs on the data stack.
+define void @ordinary_call_clobber_r5_r6() {
+; CHECK-LABEL: ordinary_call_clobber_r5_r6:
+; CHECK-NOT:   mts s3, r5
+; CHECK-NOT:   mts s4, r6
+; CHECK:       stw r5,
+; CHECK:       stw r6,
+; CHECK:       ldw r6,
+; CHECK:       ldw r5,
+; CHECK:       rets
+  call void asm sideeffect "", "~{r5},~{r6}"()
+  call void @external()
+  ret void
 }
