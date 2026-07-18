@@ -12,6 +12,7 @@
 #include "RISCCSubtarget.h"
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -318,6 +319,15 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op,
   if (const auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(1))) {
     unsigned Amount = C->getZExtValue() & 15;
     SDValue V = Op.getOperand(0);
+    const Function &Fn = DAG.getMachineFunction().getFunction();
+
+    // A Min/Nano direct call is six bytes, but making a leaf function call
+    // also costs return-address save/restore code.  Eleven is the first count
+    // with a useful local size win after that overhead.  The archive supplies
+    // one shared fall-through staircase per shift direction.
+    if (!STI.hasWideShift() && Fn.hasMinSize() && Amount >= 11)
+      return lowerShiftLibCall(V, Op.getOpcode(), Amount, DAG);
+
     while (Amount) {
       unsigned Chunk = STI.hasWideShift() ? std::min(Amount, 8u) : 1;
       if (!STI.hasWideShift() && Op.getOpcode() == ISD::SHL)
@@ -330,6 +340,29 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op,
     return V;
   }
   return DAG.getNode(TOpc, DL, MVT::i16, Op.getOperand(0), Op.getOperand(1));
+}
+
+SDValue RISCCTargetLowering::lowerShiftLibCall(
+    SDValue Value, unsigned Opcode, unsigned Amount, SelectionDAG &DAG) const {
+  const char *Stem = Opcode == ISD::SHL ? "__riscc_shlhi"
+                     : Opcode == ISD::SRL ? "__riscc_lshrhi"
+                                          : "__riscc_ashrhi";
+  std::string Name = (Twine(Stem) + Twine(Amount)).str();
+  SDLoc DL(Value);
+  Type *I16 = Type::getInt16Ty(*DAG.getContext());
+  ArgListTy Args;
+  Args.emplace_back(Value, I16);
+
+  const char *Symbol =
+      DAG.getMachineFunction().createExternalSymbolName(Name);
+  SDValue Callee =
+      DAG.getExternalSymbol(Symbol, getPointerTy(DAG.getDataLayout()));
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, I16, Callee, std::move(Args))
+      .setIsPostTypeLegalization(true);
+  return LowerCallTo(CLI).first;
 }
 
 SDValue RISCCTargetLowering::lowerGlobalAddress(SDValue Op,

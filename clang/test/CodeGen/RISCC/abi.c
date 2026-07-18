@@ -84,3 +84,24 @@ bytes9_t pass_bytes9(bytes9_t value) { return value; }
 
 // CHECK: define{{.*}} zeroext i1 @pass_bool(i1 {{.*}}zeroext %{{[^)]*}}) addrspace(1)
 _Bool pass_bool(_Bool value) { return value; }
+
+// Soft-float scalars keep their LLVM floating type at the Clang ABI boundary;
+// the backend later splits them into ordinary 16-bit argument/result slots.
+// long double intentionally has the same representation as double.
+// CHECK: define{{.*}} float @pass_float(float noundef %value) addrspace(1)
+float pass_float(float value) { return value; }
+
+// CHECK: define{{.*}} double @pass_double(double noundef %value) addrspace(1)
+double pass_double(double value) { return value; }
+
+// CHECK: define{{.*}} double @pass_long_double(double noundef %value) addrspace(1)
+long double pass_long_double(long double value) { return value; }
+
+typedef struct {
+  float first;
+  float second;
+} float_pair_t;
+
+// Floating members do not create a special aggregate convention.
+// CHECK: define{{.*}} i64 @pass_float_pair(i64 %{{[^)]*}}) addrspace(1)
+float_pair_t pass_float_pair(float_pair_t value) { return value; }
