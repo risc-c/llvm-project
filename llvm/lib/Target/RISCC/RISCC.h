@@ -15,6 +15,7 @@
 
 namespace llvm {
 class FunctionPass;
+class Function;
 class RISCCTargetMachine;
 class PassRegistry;
 
@@ -24,6 +25,7 @@ public:
 };
 
 FunctionPass *createRISCCISelDag(RISCCTargetMachine &, CodeGenOptLevel);
+MCRegister getRISCCMainlineLinkRegister(const Function &);
 void initializeRISCCDAGToDAGISelLegacyPass(PassRegistry &);
 void initializeRISCCAsmPrinterPass(PassRegistry &);
 

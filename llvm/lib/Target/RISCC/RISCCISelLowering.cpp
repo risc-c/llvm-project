@@ -624,6 +624,31 @@ static bool isEligibleForSiblingCall(
   return true;
 }
 
+static MCRegister getDirectCalleeLink(SDValue Callee) {
+  if (auto *Address = dyn_cast<GlobalAddressSDNode>(Callee))
+    if (auto *F = dyn_cast<Function>(Address->getGlobal()))
+      return getRISCCMainlineLinkRegister(*F);
+  return RISCC::S7;
+}
+
+static void copyMainlineLink(SelectionDAG &DAG, const SDLoc &DL,
+                             Register From, Register To, SDValue &Chain,
+                             SDValue &Glue) {
+  // S registers cannot copy directly to one another. Route the link through
+  // r0 so normal COPY expansion emits one MFS and one MTS.
+  SDValue Link = DAG.getCopyFromReg(Chain, DL, From, MVT::i16, Glue);
+  Chain = Link.getValue(1);
+  Glue = Link.getValue(2);
+  Chain = DAG.getCopyToReg(Chain, DL, RISCC::R0, Link, Glue);
+  Glue = Chain.getValue(1);
+
+  Link = DAG.getCopyFromReg(Chain, DL, RISCC::R0, MVT::i16, Glue);
+  Chain = Link.getValue(1);
+  Glue = Link.getValue(2);
+  Chain = DAG.getCopyToReg(Chain, DL, To, Link, Glue);
+  Glue = Chain.getValue(1);
+}
+
 SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
                                        SmallVectorImpl<SDValue> &InVals) const {
   if (CLI.CallConv != CallingConv::C && CLI.CallConv != CallingConv::Fast)
@@ -631,6 +656,7 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   SelectionDAG &DAG = CLI.DAG;
   SDLoc DL = CLI.DL;
   MachineFunction &MF = DAG.getMachineFunction();
+  auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   SmallVector<CCValAssign, 16> Locs;
   CCState State(CLI.CallConv, CLI.IsVarArg, MF, Locs, *DAG.getContext());
   analyzeArguments(State, Locs, CLI.Outs);
@@ -678,9 +704,18 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
     Chain = DAG.getCopyToReg(Chain, DL, Reg, V, Glue);
     Glue = Chain.getValue(1);
   }
+
+  MCRegister CalleeLink =
+      STI.isNano() ? RISCC::S7 : getDirectCalleeLink(CLI.Callee);
+  bool UsesPrivateLink = !STI.isNano() && CalleeLink == RISCC::S3;
+
+  if (CLI.IsTailCall && !STI.isNano()) {
+    Register CallerLink = FuncInfo.getReturnAddressReg();
+    if (CallerLink != Register(CalleeLink))
+      copyMainlineLink(DAG, DL, CallerLink, CalleeLink, Chain, Glue);
+  }
   if (CLI.IsTailCall && STI.isNano()) {
-    Register ReturnAddress =
-        MF.getInfo<RISCCMachineFunctionInfo>()->getReturnAddressReg();
+    Register ReturnAddress = FuncInfo.getReturnAddressReg();
     assert(ReturnAddress && "Nano return address was not initialized");
     SDValue SavedReturnAddress =
         DAG.getCopyFromReg(Chain, DL, ReturnAddress, MVT::i16, Glue);
@@ -708,7 +743,9 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   if (Glue)
     Ops.push_back(Glue);
   unsigned CallOpcode =
-      CLI.IsTailCall ? RISCCISD::TAIL : RISCCISD::CALL;
+      CLI.IsTailCall
+          ? (UsesPrivateLink ? RISCCISD::TAIL_PRIVATE : RISCCISD::TAIL)
+          : (UsesPrivateLink ? RISCCISD::CALL_PRIVATE : RISCCISD::CALL);
   Chain = DAG.getNode(CallOpcode, DL,
                       DAG.getVTList(MVT::Other, MVT::Glue), Ops);
   if (CLI.IsTailCall) {
@@ -753,16 +790,15 @@ SDValue RISCCTargetLowering::LowerReturn(
     const SmallVectorImpl<ISD::OutputArg> &Outs,
     const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
     SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   SmallVector<CCValAssign, 8> Locs;
-  CCState State(CC, IsVarArg, DAG.getMachineFunction(), Locs, *DAG.getContext());
+  CCState State(CC, IsVarArg, MF, Locs, *DAG.getContext());
   State.AnalyzeReturn(Outs, RetCC_RISCC);
   SDValue Glue;
   SmallVector<SDValue, 8> Ops{Chain};
   if (STI.isNano()) {
-    Register ReturnAddress =
-        DAG.getMachineFunction()
-            .getInfo<RISCCMachineFunctionInfo>()
-            ->getReturnAddressReg();
+    Register ReturnAddress = FuncInfo.getReturnAddressReg();
     assert(ReturnAddress && "Nano return address was not initialized");
     SDValue SavedReturnAddress =
         DAG.getCopyFromReg(Chain, DL, ReturnAddress, MVT::i16);
@@ -784,7 +820,11 @@ SDValue RISCCTargetLowering::LowerReturn(
   Ops[0] = Chain;
   if (Glue)
     Ops.push_back(Glue);
-  return DAG.getNode(RISCCISD::RET_FLAG, DL, MVT::Other, Ops);
+  Register ReturnAddress = FuncInfo.getReturnAddressReg();
+  unsigned RetOpcode = !STI.isNano() && ReturnAddress == RISCC::S3
+                           ? RISCCISD::RET_PRIVATE_FLAG
+                           : RISCCISD::RET_FLAG;
+  return DAG.getNode(RetOpcode, DL, MVT::Other, Ops);
 }
 
 //===----------------------------------------------------------------------===//

@@ -1,0 +1,128 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=riscc-sreg-allocator,prolog-epilog %s -o - | FileCheck %s
+
+# Five loop-local spills are more valuable than keeping the return address in
+# S7 for the whole function. Save S7 once outside the loop, use S3..S7 for the
+# spills, then restore S7 before returning.
+# CHECK-LABEL: name: loop_spills_use_link
+# CHECK:       $r0 = frame-setup MFS $s7
+# CHECK:       frame-setup STW killed $r0, $r7, 0
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   STW
+# CHECK:       $s3 = MTS
+# CHECK:       $s4 = MTS
+# CHECK:       $s5 = MTS
+# CHECK:       $s6 = MTS
+# CHECK:       $s7 = MTS
+# CHECK:       bb.2.exit:
+# CHECK:       $r0 = frame-destroy LDW $r7, 0
+# CHECK-NEXT:  $s7 = frame-destroy MTS killed $r0
+# CHECK:       RETS implicit $s7
+
+# Caching the fifth entry-frequency spill would cost more than saving and
+# restoring it on the stack. Keep the link and cache only four spill slots.
+# CHECK-LABEL: name: cold_spills_keep_link
+# CHECK-NOT:   frame-setup MFS $s7
+# CHECK:       $s3 = MTS
+# CHECK:       $s4 = MTS
+# CHECK:       $s5 = MTS
+# CHECK:       $s6 = MTS
+# CHECK:       STW
+# CHECK:       RETS implicit $s7
+
+--- |
+  target triple = "riscc-none-elf"
+
+  define void @loop_spills_use_link() {
+  entry:
+    br label %loop
+  loop:
+    br label %loop
+  exit:
+    ret void
+  }
+
+  define void @cold_spills_keep_link() {
+  entry:
+    ret void
+  }
+...
+---
+name:            loop_spills_use_link
+alignment:       2
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:  2
+stack:
+  - { id: 0, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 1, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 2, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 3, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 4, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+body:             |
+  bb.0.entry:
+    successors: %bb.1.loop
+
+    JMP8 %bb.1.loop
+
+  bb.1.loop:
+    liveins: $r1
+    successors: %bb.1.loop
+
+    STW $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LDW %stack.0, 0 :: (load (s16) from %stack.0)
+    STW $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r1 = LDW %stack.1, 0 :: (load (s16) from %stack.1)
+    STW $r1, %stack.2, 0 :: (store (s16) into %stack.2)
+    $r1 = LDW %stack.2, 0 :: (load (s16) from %stack.2)
+    STW $r1, %stack.3, 0 :: (store (s16) into %stack.3)
+    $r1 = LDW %stack.3, 0 :: (load (s16) from %stack.3)
+    STW $r1, %stack.4, 0 :: (store (s16) into %stack.4)
+    $r1 = LDW %stack.4, 0 :: (load (s16) from %stack.4)
+    JMP8 %bb.1.loop
+
+  bb.2.exit:
+    liveins: $r1
+
+    RETS implicit $s7, implicit $r1
+...
+---
+name:            cold_spills_keep_link
+alignment:       2
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:  2
+stack:
+  - { id: 0, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 1, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 2, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 3, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+  - { id: 4, name: '', type: spill-slot, offset: 0, size: 2, alignment: 2,
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true }
+body:             |
+  bb.0.entry:
+    liveins: $r1
+
+    STW $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LDW %stack.0, 0 :: (load (s16) from %stack.0)
+    STW $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r1 = LDW %stack.1, 0 :: (load (s16) from %stack.1)
+    STW $r1, %stack.2, 0 :: (store (s16) into %stack.2)
+    $r1 = LDW %stack.2, 0 :: (load (s16) from %stack.2)
+    STW $r1, %stack.3, 0 :: (store (s16) into %stack.3)
+    $r1 = LDW %stack.3, 0 :: (load (s16) from %stack.3)
+    STW $r1, %stack.4, 0 :: (store (s16) into %stack.4)
+    $r1 = LDW %stack.4, 0 :: (load (s16) from %stack.4)
+    RETS implicit $s7, implicit $r1
+...

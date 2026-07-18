@@ -51,10 +51,11 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
     report_fatal_error("RISC-C stack frame exceeds the 16-bit address space");
   adjustSP(MBB, I, DL, TII, -int64_t(Size), MachineInstr::FrameSetup);
 
-  int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
+  const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
+  int FI = FuncInfo.getLRSpillFI();
   if (!STI.isNano() && FI >= 0) {
     BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
-        .addReg(RISCC::S7)
+        .addReg(FuncInfo.getReturnAddressReg())
         .setMIFlag(MachineInstr::FrameSetup);
     BuildMI(MBB, I, DL, TII.get(RISCC::STW))
         .addReg(RISCC::R0, RegState::Kill)
@@ -69,13 +70,15 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   auto I = MBB.getLastNonDebugInstr();
   DebugLoc DL = I == MBB.end() ? DebugLoc() : I->getDebugLoc();
   const auto &TII = *STI.getInstrInfo();
-  int FI = MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI();
+  const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
+  int FI = FuncInfo.getLRSpillFI();
   if (!STI.isNano() && FI >= 0) {
     BuildMI(MBB, I, DL, TII.get(RISCC::LDW), RISCC::R0)
         .addFrameIndex(FI)
         .addImm(0)
         .setMIFlag(MachineInstr::FrameDestroy);
-    BuildMI(MBB, I, DL, TII.get(RISCC::MTS), RISCC::S7)
+    BuildMI(MBB, I, DL, TII.get(RISCC::MTS),
+            FuncInfo.getReturnAddressReg())
         .addReg(RISCC::R0, RegState::Kill)
         .setMIFlag(MachineInstr::FrameDestroy);
   }
@@ -88,6 +91,59 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
           : RISCC::R0;
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
            MachineInstr::FrameDestroy, Scratch);
+}
+
+bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
+    MachineFunction &MF, const TargetRegisterInfo *TRI,
+    std::vector<CalleeSavedInfo> &CSI) const {
+  if (STI.isNano())
+    return false;
+
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  auto *FuncInfo = MF.getInfo<RISCCMachineFunctionInfo>();
+
+  // Calls can overwrite the software-managed S-register cache. Let the
+  // generic frame code handle their callee-saved GPRs on the data stack.
+  if (MFI.hasCalls())
+    return false;
+
+  for (CalleeSavedInfo &Info : CSI) {
+    if (Info.getReg() == RISCC::R5 || Info.getReg() == RISCC::R6) {
+      MCRegister SReg = FuncInfo->getCalleeSavedSReg(Info.getReg());
+      if (SReg) {
+        Info.setDstReg(SReg);
+        continue;
+      }
+    }
+
+    const TargetRegisterClass *RC =
+        TRI->getMinimalPhysRegClass(Info.getReg());
+    Align Alignment = std::min(TRI->getSpillAlign(*RC), getStackAlign());
+    int FI = MFI.CreateStackObject(TRI->getSpillSize(*RC), Alignment, true);
+    MFI.setIsCalleeSavedObjectIndex(FI, true);
+    Info.setFrameIdx(FI);
+  }
+  return true;
+}
+
+bool RISCCFrameLowering::restoreCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+    MutableArrayRef<CalleeSavedInfo> CSI,
+    const TargetRegisterInfo *TRI) const {
+  const auto *TII = STI.getInstrInfo();
+  for (const CalleeSavedInfo &Info : reverse(CSI))
+    restoreCalleeSavedRegister(MBB, I, Info, TII, TRI);
+
+  // RETS has no explicit GPR operands. Keep the restored ABI state live until
+  // the return so post-RA COPY expansion cannot discard the restores.
+  for (auto Term = I, End = MBB.end(); Term != End; ++Term) {
+    if (!Term->isReturn())
+      continue;
+    for (const CalleeSavedInfo &Info : CSI)
+      Term->addOperand(
+          MachineOperand::CreateReg(Info.getReg(), false, true));
+  }
+  return true;
 }
 
 MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
@@ -116,7 +172,8 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
       return MI.isCall() && !MI.isReturn();
     });
   });
-  if (!STI.isNano() && HasReturningCall) {
+  if (!STI.isNano() && HasReturningCall &&
+      MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI() < 0) {
     int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
   }

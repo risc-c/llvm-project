@@ -51,21 +51,52 @@ public:
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
     unsigned Opcode = MI->getOpcode();
-    if (Opcode == RISCC::CALL_MIN || Opcode == RISCC::CALL_NANO ||
-        Opcode == RISCC::TAIL_MIN || Opcode == RISCC::TAIL_NANO) {
-      bool IsNano = Opcode == RISCC::CALL_NANO || Opcode == RISCC::TAIL_NANO;
-      bool IsTail = Opcode == RISCC::TAIL_MIN || Opcode == RISCC::TAIL_NANO;
-      MCInst Address = MCInstBuilder(RISCC::LI)
-                           .addReg(RISCC::R0)
-                           .addOperand(Out.getOperand(0));
-      EmitToStreamer(*OutStreamer, Address);
 
-      MCRegister Link = IsTail ? (IsNano ? RISCC::R0 : RISCC::S0)
-                               : (IsNano ? RISCC::R6 : RISCC::S7);
-      MCInst Transfer = MCInstBuilder(IsNano ? RISCC::JAL_NANO : RISCC::JAL)
-                            .addReg(Link)
-                            .addReg(RISCC::R0);
-      EmitToStreamer(*OutStreamer, Transfer);
+    MCRegister Link;
+    unsigned TransferOpcode = RISCC::JAL;
+    switch (Opcode) {
+    default:
+      break;
+    case RISCC::LINK_S3_RET:
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::RET).addReg(RISCC::S3));
+      return;
+    case RISCC::LINK_S3_CALL_MIN:
+      Link = RISCC::S3;
+      break;
+    case RISCC::LINK_S3_TAIL_MIN:
+      Link = RISCC::S0;
+      break;
+    case RISCC::CALL_MIN:
+      Link = RISCC::S7;
+      break;
+    case RISCC::TAIL_MIN:
+      Link = RISCC::S0;
+      break;
+    case RISCC::CALL_NANO:
+      Link = RISCC::R6;
+      TransferOpcode = RISCC::JAL_NANO;
+      break;
+    case RISCC::TAIL_NANO:
+      Link = RISCC::R0;
+      TransferOpcode = RISCC::JAL_NANO;
+      break;
+    case RISCC::LINK_S3_CALL16:
+    case RISCC::LINK_S3_TAIL16:
+      EmitToStreamer(
+          *OutStreamer,
+          MCInstBuilder(RISCC::JAL16)
+              .addReg(Opcode == RISCC::LINK_S3_CALL16 ? RISCC::S3 : RISCC::S0)
+              .addOperand(Out.getOperand(0)));
+      return;
+    }
+
+    if (Link) {
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::LI)
+                                          .addReg(RISCC::R0)
+                                          .addOperand(Out.getOperand(0)));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(TransferOpcode)
+                                          .addReg(Link)
+                                          .addReg(RISCC::R0));
       return;
     }
     EmitToStreamer(*OutStreamer, Out);

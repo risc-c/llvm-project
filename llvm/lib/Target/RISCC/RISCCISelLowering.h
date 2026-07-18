@@ -19,8 +19,11 @@ namespace RISCCISD {
 enum NodeType {
   FIRST_NUMBER = ISD::BUILTIN_OP_END,
   RET_FLAG,
+  RET_PRIVATE_FLAG,
   CALL,
+  CALL_PRIVATE,
   TAIL,
+  TAIL_PRIVATE,
   Wrapper,
   BR_CC,
   BR_CC_IMM,

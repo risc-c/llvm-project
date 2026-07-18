@@ -9,6 +9,7 @@
 #include "RISCCTargetMachine.h"
 #include "RISCC.h"
 #include "RISCCMachineFunctionInfo.h"
+#include "RISCCSRegAllocator.h"
 #include "TargetInfo/RISCCTargetInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
@@ -23,6 +24,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCCTarget() {
   PassRegistry &PR = *PassRegistry::getPassRegistry();
   initializeRISCCAsmPrinterPass(PR);
   initializeRISCCDAGToDAGISelLegacyPass(PR);
+  initializeRISCCSRegAllocatorLegacyPass(PR);
 }
 
 static Reloc::Model effectiveRelocModel(std::optional<Reloc::Model> RM) {
@@ -64,6 +66,9 @@ public:
   bool addInstSelector() override {
     addPass(createRISCCISelDag(getRISCCTargetMachine(), getOptLevel()));
     return false;
+  }
+  void addPostRewrite() override {
+    addPass(createRISCCSRegAllocatorLegacyPass());
   }
   void addPreEmitPass() override { addPass(&BranchRelaxationPassID); }
 };

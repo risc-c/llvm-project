@@ -45,9 +45,15 @@ def SDT_RISCCShift : SDTypeProfile<1, 2,
 
 def RISCCcall : SDNode<"RISCCISD::CALL", SDT_RISCCCall,
   [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
+def RISCCcallPrivate : SDNode<"RISCCISD::CALL_PRIVATE", SDT_RISCCCall,
+  [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCTail : SDNode<"RISCCISD::TAIL", SDT_RISCCCall,
   [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
+def RISCCTailPrivate : SDNode<"RISCCISD::TAIL_PRIVATE", SDT_RISCCCall,
+  [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCret : SDNode<"RISCCISD::RET_FLAG", SDT_RISCCRet,
+  [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+def RISCCretPrivate : SDNode<"RISCCISD::RET_PRIVATE_FLAG", SDT_RISCCRet,
   [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 def RISCCWrapper : SDNode<"RISCCISD::Wrapper", SDT_RISCCWrapper>;
 def RISCCbrcc : SDNode<"RISCCISD::BR_CC", SDT_RISCCBrCC, [SDNPHasChain]>;
@@ -287,6 +293,42 @@ def CALL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
                              "call\t$target", 2> {
   let Pattern = [(RISCCcall GPR:$target)];
 }
+
+// Direct-only private functions use S3 instead of the public S7 ABI link.
+// Keep that physical link in the instruction descriptor so ordinary
+// call/return liveness remains exact.
+multiclass PrivateLink<Register link> {
+  let Predicates = [HasSysPred], isCall = 1, isCodeGenOnly = 1,
+      Defs = [link, R0, R1, R2, R3, R4] in
+  def _CALL16 : Pseudo<(outs), (ins codeaddr:$target)> {
+    let Size = 4;
+  }
+  let Predicates = [IsMinPred], isCall = 1, isCodeGenOnly = 1,
+      Defs = [link, R0, R1, R2, R3, R4] in
+  def _CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
+    let Size = 6;
+  }
+  let Predicates = [HasSysPred], isCall = 1, isReturn = 1,
+      isTerminator = 1, isBarrier = 1, isCodeGenOnly = 1,
+      Uses = [link] in
+  def _TAIL16 : Pseudo<(outs), (ins codeaddr:$target)> {
+    let Size = 4;
+  }
+  let Predicates = [IsMinPred], isCall = 1, isReturn = 1,
+      isTerminator = 1, isBarrier = 1, isCodeGenOnly = 1,
+      Uses = [link] in
+  def _TAIL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
+    let Size = 6;
+  }
+  let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
+      isBarrier = 1, isCodeGenOnly = 1, Uses = [link] in
+  def _RET : Pseudo<(outs), (ins)> {
+    let Size = 2;
+  }
+}
+
+defm LINK_S3 : PrivateLink<S3>;
+
 let isCall = 1, isReturn = 1, isTerminator = 1, isBarrier = 1 in {
 let Predicates = [HasSysPred], Uses = [S7] in
 def TAIL16 : MCPseudo<(outs), (ins codeaddr:$target),
@@ -387,6 +429,10 @@ def : Pat<(RISCCTail (i16 tglobaladdr:$target)),
           (TAIL16 tglobaladdr:$target)>;
 def : Pat<(RISCCTail (i16 texternalsym:$target)),
           (TAIL16 texternalsym:$target)>;
+def : Pat<(RISCCcallPrivate (i16 tglobaladdr:$target)),
+          (LINK_S3_CALL16 tglobaladdr:$target)>;
+def : Pat<(RISCCTailPrivate (i16 tglobaladdr:$target)),
+          (LINK_S3_TAIL16 tglobaladdr:$target)>;
 }
 let Predicates = [IsMinPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
@@ -397,6 +443,10 @@ def : Pat<(RISCCTail (i16 tglobaladdr:$target)),
           (TAIL_MIN tglobaladdr:$target)>;
 def : Pat<(RISCCTail (i16 texternalsym:$target)),
           (TAIL_MIN texternalsym:$target)>;
+def : Pat<(RISCCcallPrivate (i16 tglobaladdr:$target)),
+          (LINK_S3_CALL_MIN tglobaladdr:$target)>;
+def : Pat<(RISCCTailPrivate (i16 tglobaladdr:$target)),
+          (LINK_S3_TAIL_MIN tglobaladdr:$target)>;
 }
 let Predicates = [IsNanoPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
@@ -408,3 +458,4 @@ def : Pat<(RISCCTail (i16 tglobaladdr:$target)),
 def : Pat<(RISCCTail (i16 texternalsym:$target)),
           (TAIL_NANO texternalsym:$target)>;
 }
+def : Pat<(RISCCretPrivate), (LINK_S3_RET)>;

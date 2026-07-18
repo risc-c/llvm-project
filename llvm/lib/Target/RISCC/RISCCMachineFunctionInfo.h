@@ -17,10 +17,13 @@ class RISCCMachineFunctionInfo final : public MachineFunctionInfo {
   int BranchRelaxationSpillFI = -1;
   int VarArgsFrameIndex = 0;
   Register ReturnAddressReg;
+  MCRegister R5SaveReg;
+  MCRegister R6SaveReg;
 
 public:
   RISCCMachineFunctionInfo() = default;
-  explicit RISCCMachineFunctionInfo(const Function &, const TargetSubtargetInfo *) {}
+  explicit RISCCMachineFunctionInfo(const Function &,
+                                    const TargetSubtargetInfo *);
   int getLRSpillFI() const { return LRSpillFI; }
   void setLRSpillFI(int FI) { LRSpillFI = FI; }
   int getBranchRelaxationSpillFI() const {
@@ -33,6 +36,12 @@ public:
   void setVarArgsFrameIndex(int FI) { VarArgsFrameIndex = FI; }
   Register getReturnAddressReg() const { return ReturnAddressReg; }
   void setReturnAddressReg(Register Reg) { ReturnAddressReg = Reg; }
+  void clearSRegPlan() {
+    R5SaveReg = MCRegister();
+    R6SaveReg = MCRegister();
+  }
+  void setCalleeSavedSReg(MCRegister GPR, MCRegister SReg);
+  MCRegister getCalleeSavedSReg(MCRegister GPR) const;
   virtual void anchor();
   static MachineFunctionInfo *create(BumpPtrAllocator &, const Function &,
                                      const TargetSubtargetInfo *);

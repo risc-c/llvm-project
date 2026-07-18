@@ -8,6 +8,7 @@
 
 #include "RISCC.h"
 #include "RISCCAsmPrinter.h"
+#include "RISCCSRegAllocator.h"
 #include "RISCCTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
 #include "llvm/CodeGen/BranchRelaxation.h"
@@ -35,6 +36,9 @@ public:
   Error addInstSelector(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(RISCCISelDAGToDAGPass(TM, getOptLevel()), PMW);
     return Error::success();
+  }
+  void addPostRewrite(PassManagerWrapper &PMW) const {
+    addMachineFunctionPass(RISCCSRegAllocatorPass(), PMW);
   }
   void addPreEmitPass(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(BranchRelaxationPass(), PMW);

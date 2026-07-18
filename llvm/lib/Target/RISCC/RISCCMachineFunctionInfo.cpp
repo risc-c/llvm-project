@@ -6,9 +6,36 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RISCC.h"
 #include "RISCCMachineFunctionInfo.h"
+#include "RISCCSubtarget.h"
+#include "llvm/IR/Function.h"
 
 using namespace llvm;
+
+MCRegister llvm::getRISCCMainlineLinkRegister(const Function &F) {
+  return F.hasLocalLinkage() && !F.hasAddressTaken() ? RISCC::S3 : RISCC::S7;
+}
+
+RISCCMachineFunctionInfo::RISCCMachineFunctionInfo(
+    const Function &F, const TargetSubtargetInfo *STI) {
+  if (!static_cast<const RISCCSubtarget *>(STI)->isNano())
+    ReturnAddressReg = getRISCCMainlineLinkRegister(F);
+}
+
+void RISCCMachineFunctionInfo::setCalleeSavedSReg(MCRegister GPR,
+                                                  MCRegister SReg) {
+  assert((GPR == RISCC::R5 || GPR == RISCC::R6) &&
+         "only callee-saved GPRs have S-register backups");
+  (GPR == RISCC::R5 ? R5SaveReg : R6SaveReg) = SReg;
+}
+
+MCRegister
+RISCCMachineFunctionInfo::getCalleeSavedSReg(MCRegister GPR) const {
+  assert((GPR == RISCC::R5 || GPR == RISCC::R6) &&
+         "only callee-saved GPRs have S-register backups");
+  return GPR == RISCC::R5 ? R5SaveReg : R6SaveReg;
+}
 
 void RISCCMachineFunctionInfo::anchor() {}
 
