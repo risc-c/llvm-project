@@ -65,6 +65,8 @@ def RISCCselectcc : SDNode<"RISCCISD::SELECT_CC", SDT_RISCCSelectCC>;
 def RISCCshl : SDNode<"RISCCISD::SHL", SDT_RISCCShift>;
 def RISCCsrl : SDNode<"RISCCISD::SRL", SDT_RISCCShift>;
 def RISCCsra : SDNode<"RISCCISD::SRA", SDT_RISCCShift>;
+def RISCCfsl1 : SDNode<"RISCCISD::FSL1", SDT_RISCCShift>;
+def RISCCfsr1 : SDNode<"RISCCISD::FSR1", SDT_RISCCShift>;
 
 def callseq_start : SDNode<"ISD::CALLSEQ_START", SDCallSeqStart<
   [SDTCisVT<0, i16>, SDTCisVT<1, i16>]>, [SDNPHasChain, SDNPOutGlue]>;
@@ -183,6 +185,15 @@ def XOR : RR<0x06, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
 let Predicates = [HasMulPred] in
 def MUL : RR<0x07, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "mul\t$rd, $ra, $rb", [(set i16:$rd, (mul i16:$ra, i16:$rb))]>;
+}
+
+let Predicates = [NoNanoPred] in {
+def FSL1 : RR<0x13, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
+              "fsl1\t$rd, $ra, $rb",
+              [(set i16:$rd, (RISCCfsl1 GPR:$ra, GPR:$rb))]>;
+def FSR1 : RR<0x12, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
+              "fsr1\t$rd, $ra, $rb",
+              [(set i16:$rd, (RISCCfsr1 GPR:$ra, GPR:$rb))]>;
 }
 
 let mayLoad = 1 in {

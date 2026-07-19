@@ -41,6 +41,10 @@ xor r6, r7, r0
 # ENC: xor	r6, r7, r0{{ *}}; encoding: [0x30,0xf7]
 mul r7, r0, r1
 # ENC: mul	r7, r0, r1{{ *}}; encoding: [0x39,0xf8]
+fsl1 r5, r3, r2
+# ENC: fsl1	r5, r3, r2{{ *}}; encoding: [0x9a,0xeb]
+fsr1 r5, r3, r2
+# ENC: fsr1	r5, r3, r2{{ *}}; encoding: [0x92,0xeb]
 ldwx r0, [r1 + r2]
 # ENC: ldwx	r0, [r1 + r2]{{ *}}; encoding: [0x42,0xc1]
 ldb r1, [r2 + r3]
@@ -94,6 +98,8 @@ halt
 # JAL16 format.  Pseudos intentionally disassemble to canonical instructions.
 # DIS: ldw	r1, [r2 + 127]
 # DIS: mul	r7, r0, r1
+# DIS: fsl1	r5, r3, r2
+# DIS: fsr1	r5, r3, r2
 # DIS: reti	s0
 # DIS: jal16	s7, 4660
 # DIS: cli

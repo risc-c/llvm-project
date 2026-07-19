@@ -50,6 +50,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
                      STI.hasMul() ? Legal : LibCall);
   for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA})
     setOperationAction(Op, MVT::i16, Custom);
+  // Custom is treated as available by integer type legalization, allowing
+  // wide shifts to form i16 funnels which are then lowered here.
+  for (unsigned Op : {ISD::FSHL, ISD::FSHR})
+    setOperationAction(Op, MVT::i16, STI.isNano() ? Expand : Custom);
   // These multi-result nodes have no native instruction.  Marking them
   // Expand (rather than leaving the default Legal action) makes illegal wide
   // variable shifts use the mapped __*si3/__*di3 runtime helpers.
@@ -107,6 +111,7 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setTruncStoreAction(MVT::i16, MVT::i8, Legal);
 
   setTargetDAGCombine(ISD::MUL);
+  setTargetDAGCombine(ISD::OR);
   setTargetDAGCombine(ISD::SELECT);
 }
 
@@ -137,11 +142,58 @@ static SDValue expandSmallConstantMultiply(SDValue Value, int64_t Multiplier,
   return Product;
 }
 
+static bool matchShiftChain(SDValue Value, unsigned GenericOpcode,
+                            unsigned TargetOpcode, unsigned Amount,
+                            SDValue &Source) {
+  while (Amount) {
+    unsigned Opcode = Value.getOpcode();
+    if (Opcode == GenericOpcode || Opcode == TargetOpcode) {
+      const auto *C = dyn_cast<ConstantSDNode>(Value.getOperand(1));
+      if (!C || C->getZExtValue() == 0 ||
+          C->getZExtValue() > Amount)
+        return false;
+      Amount -= C->getZExtValue();
+      Value = Value.getOperand(0);
+      continue;
+    }
+
+    // Min lowers a one-bit left shift to add(x, x).
+    if (GenericOpcode == ISD::SHL && Opcode == ISD::ADD &&
+        Value.getOperand(0) == Value.getOperand(1)) {
+      --Amount;
+      Value = Value.getOperand(0);
+      continue;
+    }
+    return false;
+  }
+  Source = Value;
+  return true;
+}
+
 SDValue
 RISCCTargetLowering::PerformDAGCombine(SDNode *N,
                                        DAGCombinerInfo &DCI) const {
   SelectionDAG &DAG = DCI.DAG;
   SDLoc DL(N);
+
+  if (N->getOpcode() == ISD::OR && !STI.isNano() &&
+      N->getValueType(0) == MVT::i16) {
+    SDValue A = N->getOperand(0);
+    SDValue B = N->getOperand(1);
+    SDValue High;
+    SDValue Low;
+    if ((matchShiftChain(A, ISD::SHL, RISCCISD::SHL, 1, High) &&
+         matchShiftChain(B, ISD::SRL, RISCCISD::SRL, 15, Low)) ||
+        (matchShiftChain(B, ISD::SHL, RISCCISD::SHL, 1, High) &&
+         matchShiftChain(A, ISD::SRL, RISCCISD::SRL, 15, Low)))
+      return DAG.getNode(RISCCISD::FSL1, DL, MVT::i16, High, Low);
+
+    if ((matchShiftChain(A, ISD::SRL, RISCCISD::SRL, 1, Low) &&
+         matchShiftChain(B, ISD::SHL, RISCCISD::SHL, 15, High)) ||
+        (matchShiftChain(B, ISD::SRL, RISCCISD::SRL, 1, Low) &&
+         matchShiftChain(A, ISD::SHL, RISCCISD::SHL, 15, High)))
+      return DAG.getNode(RISCCISD::FSR1, DL, MVT::i16, Low, High);
+  }
 
   if (N->getOpcode() == ISD::MUL && !STI.hasMul() &&
       N->getValueType(0) == MVT::i16) {
@@ -210,6 +262,9 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
   case ISD::SRL:
   case ISD::SRA:
     return lowerShift(Op, DAG);
+  case ISD::FSHL:
+  case ISD::FSHR:
+    return lowerFunnelShift(Op, DAG);
   case ISD::SIGN_EXTEND_INREG: {
     assert(STI.isNano() &&
            cast<VTSDNode>(Op.getOperand(1))->getVT() == MVT::i8);
@@ -240,6 +295,61 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
   default:
     llvm_unreachable("unexpected custom RISC-C lowering");
   }
+}
+
+SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
+                                              SelectionDAG &DAG) const {
+  bool IsLeft = Op.getOpcode() == ISD::FSHL;
+  SDValue High = Op.getOperand(0);
+  SDValue Low = Op.getOperand(1);
+  SDValue Amount = Op.getOperand(2);
+  SDLoc DL(Op);
+  if (Amount.getValueType() != MVT::i16)
+    Amount = DAG.getZExtOrTrunc(Amount, DL, MVT::i16);
+
+  auto Shift = [&](unsigned Opcode, SDValue Value, SDValue Count) {
+    return lowerShift(DAG.getNode(Opcode, DL, MVT::i16, Value, Count), DAG);
+  };
+
+  if (const auto *C = dyn_cast<ConstantSDNode>(Amount)) {
+    unsigned Count = C->getZExtValue() & 15;
+    if (Count == 0)
+      return IsLeft ? High : Low;
+    if (Count == 1)
+      return DAG.getNode(IsLeft ? RISCCISD::FSL1 : RISCCISD::FSR1, DL,
+                         MVT::i16, IsLeft ? High : Low,
+                         IsLeft ? Low : High);
+    if (Count == 15)
+      return DAG.getNode(IsLeft ? RISCCISD::FSR1 : RISCCISD::FSL1, DL,
+                         MVT::i16, IsLeft ? Low : High,
+                         IsLeft ? High : Low);
+
+    SDValue CountValue = DAG.getConstant(Count, DL, MVT::i16);
+    SDValue Inverse = DAG.getConstant(16 - Count, DL, MVT::i16);
+    SDValue ShiftedHigh =
+        Shift(ISD::SHL, High, IsLeft ? CountValue : Inverse);
+    SDValue ShiftedLow =
+        Shift(ISD::SRL, Low, IsLeft ? Inverse : CountValue);
+    return DAG.getNode(ISD::OR, DL, MVT::i16, ShiftedHigh, ShiftedLow);
+  }
+
+  // Masking makes both variable counts modulo 16.  The two-step side of
+  // each expansion avoids ever expressing a shift by 16.
+  SDValue Mask = DAG.getConstant(15, DL, MVT::i16);
+  Amount = DAG.getNode(ISD::AND, DL, MVT::i16, Amount, Mask);
+  SDValue Inverse = DAG.getNode(
+      ISD::AND, DL, MVT::i16, DAG.getNOT(DL, Amount, MVT::i16), Mask);
+  SDValue One = DAG.getConstant(1, DL, MVT::i16);
+  SDValue ShiftedHigh;
+  SDValue ShiftedLow;
+  if (IsLeft) {
+    ShiftedHigh = Shift(ISD::SHL, High, Amount);
+    ShiftedLow = Shift(ISD::SRL, Shift(ISD::SRL, Low, One), Inverse);
+  } else {
+    ShiftedHigh = Shift(ISD::SHL, Shift(ISD::SHL, High, One), Inverse);
+    ShiftedLow = Shift(ISD::SRL, Low, Amount);
+  }
+  return DAG.getNode(ISD::OR, DL, MVT::i16, ShiftedHigh, ShiftedLow);
 }
 
 SDValue RISCCTargetLowering::lowerVASTART(SDValue Op,

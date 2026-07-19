@@ -8,6 +8,12 @@ mul r1, r2, r3
 # SYS: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
 # NANO: :[[@LINE-3]]:1: error: invalid operand for RISC-C instruction
 
+fsl1 r1, r2, r3
+# NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
+
+fsr1 r1, r2, r3
+# NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
+
 shli r1, r2, 1
 # MIN: :[[@LINE-1]]:1: error: instruction or shift count is unavailable in this profile
 # NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
