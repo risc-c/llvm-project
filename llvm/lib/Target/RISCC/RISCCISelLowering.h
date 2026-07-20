@@ -54,6 +54,7 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerShiftLibCall(SDValue, unsigned Opcode, unsigned Amount,
                             SelectionDAG &) const;
   SDValue lowerMULLOHI(SDValue, SelectionDAG &, bool Signed) const;
+  SDValue lowerDivRem(SDValue, SelectionDAG &) const;
   SDValue lowerVASTART(SDValue, SelectionDAG &) const;
   SDValue lowerCallResult(SDValue, SDValue, CallingConv::ID, bool,
                           const SmallVectorImpl<ISD::InputArg> &,
@@ -63,6 +64,8 @@ class RISCCTargetLowering final : public TargetLowering {
 public:
   RISCCTargetLowering(const TargetMachine &, const RISCCSubtarget &);
   SDValue LowerOperation(SDValue, SelectionDAG &) const override;
+  void ReplaceNodeResults(SDNode *, SmallVectorImpl<SDValue> &,
+                          SelectionDAG &) const override;
   SDValue PerformDAGCombine(SDNode *, DAGCombinerInfo &) const override;
   SDValue LowerFormalArguments(
       SDValue, CallingConv::ID, bool,

@@ -74,10 +74,15 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
   for (unsigned Op : {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
     setOperationAction(Op, MVT::i16, LibCall);
-  for (MVT VT : {MVT::i16, MVT::i32, MVT::i64}) {
+  for (MVT VT : {MVT::i16, MVT::i64}) {
     setOperationAction(ISD::SDIVREM, VT, Expand);
     setOperationAction(ISD::UDIVREM, VT, Expand);
   }
+  // Keep an illegal i32 div/rem pair together so the DAG combiner can select
+  // the ABI's single __{u}divmodsi4 call instead of dividing and reconstructing
+  // the remainder with quotient * denominator.
+  setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
+  setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
   for (MVT VT : {MVT::i32, MVT::i64}) {
     for (unsigned Op : {ISD::MUL, ISD::SHL, ISD::SRL, ISD::SRA,
                         ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
@@ -113,6 +118,7 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setTargetDAGCombine(ISD::MUL);
   setTargetDAGCombine(ISD::OR);
   setTargetDAGCombine(ISD::SELECT);
+  setTargetDAGCombine(ISD::SUB);
 }
 
 //===----------------------------------------------------------------------===//
@@ -236,6 +242,37 @@ RISCCTargetLowering::PerformDAGCombine(SDNode *N,
     return DAG.getNode(ISD::AND, DL, MVT::i16, Value, Mask);
   }
 
+  /*
+   * InstCombine canonicalizes a paired div/rem to
+   *   quotient = x / y; remainder = x - quotient * y
+   * before target lowering.  Re-form the pair because one restoring divide is
+   * far cheaper than a divide followed by a 32-bit multiply and subtraction.
+   */
+  if (N->getOpcode() == ISD::SUB && N->getValueType(0) == MVT::i32) {
+    SDValue Dividend = N->getOperand(0);
+    SDValue Product = N->getOperand(1);
+    if (Product.getOpcode() == ISD::MUL) {
+      SDValue Div = Product.getOperand(0);
+      SDValue Divisor = Product.getOperand(1);
+      if (Div.getOpcode() != ISD::SDIV && Div.getOpcode() != ISD::UDIV) {
+        std::swap(Div, Divisor);
+      }
+      if ((Div.getOpcode() == ISD::SDIV ||
+           Div.getOpcode() == ISD::UDIV) &&
+          Div.getOperand(0) == Dividend &&
+          Div.getOperand(1) == Divisor) {
+        unsigned Opcode = Div.getOpcode() == ISD::SDIV
+                              ? ISD::SDIVREM
+                              : ISD::UDIVREM;
+        SDValue DivRem = DAG.getNode(
+            Opcode, DL, DAG.getVTList(MVT::i32, MVT::i32),
+            Dividend, Divisor);
+        DCI.CombineTo(Div.getNode(), DivRem.getValue(0));
+        return DivRem.getValue(1);
+      }
+    }
+  }
+
   return {};
 }
 
@@ -281,6 +318,9 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerMULLOHI(Op, DAG, false);
   case ISD::SMUL_LOHI:
     return lowerMULLOHI(Op, DAG, true);
+  case ISD::SDIVREM:
+  case ISD::UDIVREM:
+    return lowerDivRem(Op, DAG);
   case ISD::VASTART:
     return lowerVASTART(Op, DAG);
   case ISD::DYNAMIC_STACKALLOC: {
@@ -295,6 +335,16 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
   default:
     llvm_unreachable("unexpected custom RISC-C lowering");
   }
+}
+
+void RISCCTargetLowering::ReplaceNodeResults(
+    SDNode *N, SmallVectorImpl<SDValue> &Results,
+    SelectionDAG &DAG) const {
+  SDValue Res = LowerOperation(SDValue(N, 0), DAG);
+  if (!Res)
+    return;
+  for (unsigned I = 0, E = Res->getNumValues(); I != E; ++I)
+    Results.push_back(Res.getValue(I));
 }
 
 SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
@@ -474,6 +524,70 @@ SDValue RISCCTargetLowering::lowerShiftLibCall(
       .setLibCallee(CallingConv::C, I16, Callee, std::move(Args))
       .setIsPostTypeLegalization(true);
   return LowerCallTo(CLI).first;
+}
+
+SDValue RISCCTargetLowering::lowerDivRem(
+    SDValue Op, SelectionDAG &DAG) const {
+  bool IsSigned = Op.getOpcode() == ISD::SDIVREM;
+  assert((IsSigned || Op.getOpcode() == ISD::UDIVREM) &&
+         Op.getValueType() == MVT::i32);
+
+  Type *I32 = Type::getInt32Ty(*DAG.getContext());
+  ArgListTy Args;
+  for (SDValue Value : Op->op_values()) {
+    ArgListEntry Entry(Value, I32);
+    Entry.IsSExt = IsSigned;
+    Entry.IsZExt = !IsSigned;
+    Args.push_back(Entry);
+  }
+
+  bool QuotientUnused = Op.getValue(0).use_empty();
+  bool RemainderUnused = Op.getValue(1).use_empty();
+  if (QuotientUnused || RemainderUnused) {
+    const char *Name;
+    if (QuotientUnused)
+      Name = IsSigned ? "__modsi3" : "__umodsi3";
+    else
+      Name = IsSigned ? "__divsi3" : "__udivsi3";
+    SDValue Callee =
+        DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
+    SDLoc DL(Op);
+    CallLoweringInfo CLI(DAG);
+    CLI.setDebugLoc(DL)
+        .setChain(DAG.getEntryNode())
+        .setLibCallee(CallingConv::C, I32, Callee, std::move(Args))
+        .setSExtResult(IsSigned)
+        .setZExtResult(!IsSigned);
+    SDValue Result = LowerCallTo(CLI).first;
+    SDValue Unused = DAG.getPOISON(MVT::i32);
+    return QuotientUnused
+               ? DAG.getMergeValues({Unused, Result}, DL)
+               : DAG.getMergeValues({Result, Unused}, DL);
+  }
+
+  SDValue RemPtr = DAG.CreateStackTemporary(MVT::i32);
+  ArgListEntry RemArg(
+      RemPtr, PointerType::getUnqual(*DAG.getContext()));
+  Args.push_back(RemArg);
+
+  SDValue Callee = DAG.getExternalSymbol(
+      IsSigned ? "__divmodsi4" : "__udivmodsi4",
+      getPointerTy(DAG.getDataLayout()));
+  SDLoc DL(Op);
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, I32, Callee, std::move(Args))
+      .setSExtResult(IsSigned)
+      .setZExtResult(!IsSigned);
+  std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
+
+  int FI = cast<FrameIndexSDNode>(RemPtr)->getIndex();
+  MachinePointerInfo PtrInfo =
+      MachinePointerInfo::getFixedStack(DAG.getMachineFunction(), FI);
+  SDValue Rem =
+      DAG.getLoad(MVT::i32, DL, CallInfo.second, RemPtr, PtrInfo);
+  return DAG.getMergeValues({CallInfo.first, Rem}, DL);
 }
 
 SDValue RISCCTargetLowering::lowerGlobalAddress(SDValue Op,
