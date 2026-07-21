@@ -83,11 +83,18 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   // the remainder with quotient * denominator.
   setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
-  for (MVT VT : {MVT::i32, MVT::i64}) {
+  // Wide multiplication is size-first: expanding an i32 multiply around the
+  // call site duplicates a sizeable six-MUL sequence, while __mulsi3 is a
+  // compact shared helper.  Keep i16 MUL native above.
+  setOperationAction(ISD::MUL, MVT::i32, Custom);
+  for (MVT VT : {MVT::i64}) {
     for (unsigned Op : {ISD::MUL, ISD::SHL, ISD::SRL, ISD::SRA,
                         ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
       setOperationAction(Op, VT, LibCall);
   }
+  for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA, ISD::SDIV, ISD::UDIV,
+                      ISD::SREM, ISD::UREM})
+    setOperationAction(Op, MVT::i32, LibCall);
 
   setOperationAction(ISD::GlobalAddress, MVT::i16, Custom);
   setOperationAction(ISD::GlobalTLSAddress, MVT::i16, Custom);
@@ -318,6 +325,8 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerMULLOHI(Op, DAG, false);
   case ISD::SMUL_LOHI:
     return lowerMULLOHI(Op, DAG, true);
+  case ISD::MUL:
+    return lowerMul(Op, DAG);
   case ISD::SDIVREM:
   case ISD::UDIVREM:
     return lowerDivRem(Op, DAG);
@@ -468,6 +477,24 @@ SDValue RISCCTargetLowering::lowerMULLOHI(SDValue Op, SelectionDAG &DAG,
   }
   SDValue Results[] = {Lo, Hi};
   return DAG.getMergeValues(Results, DL);
+}
+
+SDValue RISCCTargetLowering::lowerMul(SDValue Op, SelectionDAG &DAG) const {
+  assert(Op.getOpcode() == ISD::MUL && Op.getValueType() == MVT::i32);
+
+  Type *I32 = Type::getInt32Ty(*DAG.getContext());
+  ArgListTy Args;
+  for (SDValue Value : Op->op_values())
+    Args.emplace_back(Value, I32);
+
+  SDLoc DL(Op);
+  SDValue Callee =
+      DAG.getExternalSymbol("__mulsi3", getPointerTy(DAG.getDataLayout()));
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, I32, Callee, std::move(Args));
+  return LowerCallTo(CLI).first;
 }
 
 SDValue RISCCTargetLowering::lowerShift(SDValue Op,
