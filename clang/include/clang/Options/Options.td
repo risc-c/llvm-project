@@ -6142,6 +6142,12 @@ def msoft_float : Flag<["-"], "msoft-float">, Group<m_Group>,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Use software floating point">,
   MarshallingInfoFlag<CodeGenOpts<"SoftFloat">>;
+let Flags = [TargetSpecific] in {
+def mmdu : Flag<["-"], "mmdu">, Group<m_Group>,
+  HelpText<"Enable the RISC-C multiply-divide extension">;
+def mno_mdu : Flag<["-"], "mno-mdu">, Group<m_Group>,
+  HelpText<"Disable the RISC-C multiply-divide extension">;
+}
 def mno_fmv : Flag<["-"], "mno-fmv">, Group<f_clang_Group>,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Disable function multiversioning">;

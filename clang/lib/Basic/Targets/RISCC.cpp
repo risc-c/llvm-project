@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCC.h"
+#include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/MacroBuilder.h"
 #include "llvm/ADT/StringSwitch.h"
 
@@ -37,7 +38,8 @@ ArrayRef<TargetInfo::GCCRegAlias> RISCCTargetInfo::getGCCRegAliases() const {
 }
 
 bool RISCCTargetInfo::isValidCPUName(StringRef Name) const {
-  return Name == "nano" || Name == "min" || Name == "sys" || Name == "full";
+  return Name == "nano" || Name == "min" || Name == "sys" ||
+         Name == "full";
 }
 
 void RISCCTargetInfo::fillValidCPUList(
@@ -62,10 +64,33 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("nano", CPU == "nano")
       .Case("min", CPU == "min")
       .Case("full", CPU == "full")
-      .Cases({"sys", "system", "jal16"}, CPU == "sys" || CPU == "full")
-      .Cases({"wide-shift", "wide-shifts"}, CPU == "sys" || CPU == "full")
+      .Case("mdu", HasMdu)
+      .Case("mulhu", HasMdu)
+      .Case("divu", HasMdu)
+      .Cases({"sys", "system", "jal16"},
+             CPU == "sys" || CPU == "full")
+      .Cases({"wide-shift", "wide-shifts"},
+             CPU == "sys" || CPU == "full")
       .Case("mul", CPU == "full")
       .Default(false);
+}
+
+bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
+                                           DiagnosticsEngine &Diags) {
+  HasMdu = false;
+  for (StringRef Feature : Features) {
+    if (Feature == "+mdu")
+      HasMdu = true;
+    else if (Feature == "-mdu")
+      HasMdu = false;
+  }
+
+  if (HasMdu && CPU != "full") {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "mdu requires -mcpu=full";
+    return false;
+  }
+  return true;
 }
 
 void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
@@ -78,6 +103,13 @@ void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__RISCC_MIN__");
   else if (CPU == "sys")
     Builder.defineMacro("__RISCC_SYS__");
-  else
+  else {
     Builder.defineMacro("__RISCC_FULL__");
+    Builder.defineMacro("__RISCC_MUL__");
+    if (HasMdu) {
+      Builder.defineMacro("__RISCC_MDU__");
+      Builder.defineMacro("__RISCC_MULHU__");
+      Builder.defineMacro("__RISCC_DIVU__");
+    }
+  }
 }

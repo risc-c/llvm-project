@@ -13,6 +13,11 @@
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
 // RUN:   -target-cpu full < /dev/null | FileCheck %s \
 // RUN:   --check-prefixes=COMMON,FULL --implicit-check-not=__RISCC_MIN__ \
+// RUN:   --implicit-check-not=__RISCC_SYS__ --implicit-check-not=__RISCC_MDU__ \
+// RUN:   --implicit-check-not=__RISCC_MULHU__ --implicit-check-not=__RISCC_DIVU__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu full -target-feature +mdu < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL,MDU --implicit-check-not=__RISCC_MIN__ \
 // RUN:   --implicit-check-not=__RISCC_SYS__
 
 // COMMON-DAG: #define __RISCC__ 1
@@ -32,3 +37,7 @@
 // NANO-DAG: #define __RISCC_NANO__ 1
 // SYS-DAG: #define __RISCC_SYS__ 1
 // FULL-DAG: #define __RISCC_FULL__ 1
+// FULL-DAG: #define __RISCC_MUL__ 1
+// MDU-DAG: #define __RISCC_MDU__ 1
+// MDU-DAG: #define __RISCC_MULHU__ 1
+// MDU-DAG: #define __RISCC_DIVU__ 1

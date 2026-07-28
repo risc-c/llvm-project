@@ -6,6 +6,10 @@
 // RUN:   FileCheck %s --check-prefix=SYS
 // RUN: %clang -### --target=riscc-none-elf -mcpu=nano -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=NANO
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mmdu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=MDU
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mno-mdu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=NO-MDU
 // RUN: %clang -### --target=riscc-none-elf -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=DEFAULT
 // RUN: not %clang --target=riscc-none-elf -mcpu=invalid -c %s -o %t.o 2>&1 | \
@@ -25,6 +29,14 @@
 
 // NANO: "-cc1"
 // NANO-SAME: "-target-cpu" "nano"
+
+// MDU: "-cc1"
+// MDU-SAME: "-target-cpu" "full"
+// MDU-SAME: "-target-feature" "+mdu"
+
+// NO-MDU: "-cc1"
+// NO-MDU-SAME: "-target-cpu" "full"
+// NO-MDU-SAME: "-target-feature" "-mdu"
 
 // DEFAULT: "-cc1"
 // DEFAULT-SAME: "-target-cpu" "full"

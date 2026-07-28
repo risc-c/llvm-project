@@ -18,6 +18,11 @@ def FeatureWideShift : SubtargetFeature<"wide-shift", "HasWideShift", "true",
   "Enable shift counts from 2 through 8">;
 def FeatureMul : SubtargetFeature<"mul", "HasMul", "true",
   "Enable the low-half multiply instruction">;
+def FeatureMulhu : SubtargetFeature<"mulhu", "HasMulhu", "true",
+  "Enable paired unsigned multiply-high/low">;
+def FeatureMdu : SubtargetFeature<"mdu", "HasDivu", "true",
+  "Enable paired unsigned multiply-high/low and divide/remainder",
+  [FeatureMul, FeatureMulhu]>;
 def FeatureNano : SubtargetFeature<"nano", "IsNano", "true",
   "Select the incompatible Nano register and instruction profile">;
 

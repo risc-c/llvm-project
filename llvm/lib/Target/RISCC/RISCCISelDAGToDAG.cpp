@@ -85,6 +85,15 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
   }
   SDLoc DL(N);
   switch (N->getOpcode()) {
+  case RISCCISD::DIVU:
+    CurDAG->SelectNodeTo(N, RISCC::DIVU, N->getVTList(),
+                         {N->getOperand(0), N->getOperand(1),
+                          N->getOperand(2)});
+    return;
+  case RISCCISD::MULHU:
+    CurDAG->SelectNodeTo(N, RISCC::MULHU, N->getVTList(),
+                         {N->getOperand(0), N->getOperand(1)});
+    return;
   case ISD::Constant: {
     if (N->getValueType(0) != MVT::i16)
       break;

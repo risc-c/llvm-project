@@ -21,6 +21,8 @@ def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
 def HasMulPred : Predicate<"Subtarget->hasMul()">,
                  AssemblerPredicate<(all_of FeatureMul)>;
+def HasMduPred : Predicate<"Subtarget->hasMulhu() && Subtarget->hasDivu()">,
+                 AssemblerPredicate<(all_of FeatureMdu)>;
 def IsNanoPred : Predicate<"Subtarget->isNano()">,
                  AssemblerPredicate<(all_of FeatureNano)>;
 def NoNanoPred : Predicate<"!Subtarget->isNano()">,
@@ -185,6 +187,21 @@ def XOR : RR<0x06, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
 let Predicates = [HasMulPred] in
 def MUL : RR<0x07, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "mul\t$rd, $ra, $rb", [(set i16:$rd, (mul i16:$ra, i16:$rb))]>;
+}
+
+// MDU writes architecturally paired results. The corresponding target DAG
+// nodes select these directly; the tied inputs model the input register values
+// that the ISA overwrites with the two results.
+let Predicates = [HasMduPred], hasSideEffects = 1 in {
+def DIVU : RRMdu<0x10, (outs GPR:$rr, GPR:$rq),
+             (ins GPR:$rr_in, GPR:$rq_in, GPR:$rb),
+             "divu\t$rr, $rq, $rb"> {
+  let Constraints = "$rr = $rr_in,$rq = $rq_in,@earlyclobber $rr,@earlyclobber $rq";
+}
+def MULHU : RRMdu<0x14, (outs GPR:$rr, GPR:$rq),
+              (ins GPR:$rq_in, GPR:$rb), "mulhu\t$rr, $rq, $rb"> {
+  let Constraints = "$rq = $rq_in,@earlyclobber $rr";
+}
 }
 
 let Predicates = [NoNanoPred] in {

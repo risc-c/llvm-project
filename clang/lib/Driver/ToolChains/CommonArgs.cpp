@@ -889,6 +889,12 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   case llvm::Triple::riscv64be:
     riscv::getRISCVTargetFeatures(D, Triple, Args, Features);
     break;
+  case llvm::Triple::riscc:
+    if (const Arg *A = Args.getLastArg(options::OPT_mmdu,
+                                       options::OPT_mno_mdu))
+      Features.push_back(A->getOption().matches(options::OPT_mmdu) ? "+mdu"
+                                                                  : "-mdu");
+    break;
   case llvm::Triple::systemz:
     systemz::getSystemZTargetFeatures(D, Args, Features);
     break;

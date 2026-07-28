@@ -49,6 +49,21 @@ class RR<bits<5> func, dag outs, dag ins, string asm,
   let Inst{2-0} = rb;
 }
 
+// Paired-result MDU instructions use the ordinary three-register encoding,
+// but their fields name the architectural result roles rather than a generic
+// single destination/source pair.
+class RRMdu<bits<5> func, dag outs, dag ins, string asm,
+            list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
+  bits<3> rr;
+  bits<3> rq;
+  bits<3> rb;
+  let Inst{15-14} = 0b11;
+  let Inst{13-11} = rr;
+  let Inst{10-8} = rq;
+  let Inst{7-3} = func;
+  let Inst{2-0} = rb;
+}
+
 class RM<bits<2> major, dag outs, dag ins, string asm,
          list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
   bits<3> rd;

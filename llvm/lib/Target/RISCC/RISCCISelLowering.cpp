@@ -63,7 +63,8 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
                      STI.hasMul() ? Custom : Expand);
   setOperationAction(ISD::SMUL_LOHI, MVT::i16,
                      STI.hasMul() ? Custom : Expand);
-  setOperationAction(ISD::MULHU, MVT::i16, Expand);
+  setOperationAction(ISD::MULHU, MVT::i16,
+                     STI.hasMulhu() ? Custom : Expand);
   setOperationAction(ISD::MULHS, MVT::i16, Expand);
   for (unsigned Op : {ISD::ROTL, ISD::ROTR})
     setOperationAction(Op, MVT::i16, Expand);
@@ -72,11 +73,15 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i16,
                      STI.isNano() ? Custom : Expand);
   setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
-  for (unsigned Op : {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
+  for (unsigned Op : {ISD::SDIV, ISD::SREM})
     setOperationAction(Op, MVT::i16, LibCall);
+  for (unsigned Op : {ISD::UDIV, ISD::UREM})
+    setOperationAction(Op, MVT::i16,
+                       STI.hasDivu() ? Custom : LibCall);
   for (MVT VT : {MVT::i16, MVT::i64}) {
     setOperationAction(ISD::SDIVREM, VT, Expand);
-    setOperationAction(ISD::UDIVREM, VT, Expand);
+    setOperationAction(ISD::UDIVREM, VT,
+                       VT == MVT::i16 && STI.hasDivu() ? Custom : Expand);
   }
   // Keep an illegal i32 div/rem pair together so the DAG combiner can select
   // the ABI's single __{u}divmodsi4 call instead of dividing and reconstructing
@@ -253,9 +258,12 @@ RISCCTargetLowering::PerformDAGCombine(SDNode *N,
    * InstCombine canonicalizes a paired div/rem to
    *   quotient = x / y; remainder = x - quotient * y
    * before target lowering.  Re-form the pair because one restoring divide is
-   * far cheaper than a divide followed by a 32-bit multiply and subtraction.
+   * far cheaper than a divide followed by a multiply and subtraction.
    */
-  if (N->getOpcode() == ISD::SUB && N->getValueType(0) == MVT::i32) {
+  if (N->getOpcode() == ISD::SUB && N->getValueType(0).isSimple() &&
+      (N->getValueType(0).getSimpleVT() == MVT::i32 ||
+       (N->getValueType(0).getSimpleVT() == MVT::i16 && STI.hasDivu()))) {
+    MVT VT = N->getValueType(0).getSimpleVT();
     SDValue Dividend = N->getOperand(0);
     SDValue Product = N->getOperand(1);
     if (Product.getOpcode() == ISD::MUL) {
@@ -268,12 +276,15 @@ RISCCTargetLowering::PerformDAGCombine(SDNode *N,
            Div.getOpcode() == ISD::UDIV) &&
           Div.getOperand(0) == Dividend &&
           Div.getOperand(1) == Divisor) {
+        // The MDU has only unsigned division. Keep signed i16 division on
+        // the normal helper path; i32 retains its existing paired libcall.
+        if (VT == MVT::i16 && Div.getOpcode() != ISD::UDIV)
+          return {};
         unsigned Opcode = Div.getOpcode() == ISD::SDIV
                               ? ISD::SDIVREM
                               : ISD::UDIVREM;
         SDValue DivRem = DAG.getNode(
-            Opcode, DL, DAG.getVTList(MVT::i32, MVT::i32),
-            Dividend, Divisor);
+            Opcode, DL, DAG.getVTList(VT, VT), Dividend, Divisor);
         DCI.CombineTo(Div.getNode(), DivRem.getValue(0));
         return DivRem.getValue(1);
       }
@@ -325,10 +336,23 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerMULLOHI(Op, DAG, false);
   case ISD::SMUL_LOHI:
     return lowerMULLOHI(Op, DAG, true);
+  case ISD::MULHU: {
+    SDLoc DL(Op);
+    SDValue Product = DAG.getNode(ISD::UMUL_LOHI, DL,
+                                  DAG.getVTList(MVT::i16, MVT::i16),
+                                  Op.getOperand(0), Op.getOperand(1));
+    return lowerMULLOHI(Product, DAG, false).getValue(1);
+  }
   case ISD::MUL:
     return lowerMul(Op, DAG);
-  case ISD::SDIVREM:
+  case ISD::UDIV:
+  case ISD::UREM:
+    return lowerUDivRem(Op, DAG);
   case ISD::UDIVREM:
+    if (Op.getValueType() == MVT::i16)
+      return lowerUDivRem(Op, DAG);
+    return lowerDivRem(Op, DAG);
+  case ISD::SDIVREM:
     return lowerDivRem(Op, DAG);
   case ISD::VASTART:
     return lowerVASTART(Op, DAG);
@@ -426,10 +450,18 @@ SDValue RISCCTargetLowering::lowerVASTART(SDValue Op,
 SDValue RISCCTargetLowering::lowerMULLOHI(SDValue Op, SelectionDAG &DAG,
                                            bool Signed) const {
   SDLoc DL(Op);
+  SDValue LHS = Op.getOperand(0), RHS = Op.getOperand(1);
+  if (!Signed && STI.hasMulhu()) {
+    SDValue Product = DAG.getNode(RISCCISD::MULHU, DL,
+                                  DAG.getVTList(MVT::i16, MVT::i16), LHS,
+                                  RHS);
+    return DAG.getMergeValues({Product.getValue(0), Product.getValue(1)},
+                              DL);
+  }
+
   SDValue C8 = DAG.getConstant(8, DL, MVT::i16);
   SDValue C15 = DAG.getConstant(15, DL, MVT::i16);
   SDValue ByteMask = DAG.getConstant(0xff, DL, MVT::i16);
-  SDValue LHS = Op.getOperand(0), RHS = Op.getOperand(1);
 
   // Compute the full unsigned product from four 8x8 products.  Every node is
   // i16: introducing an illegal i32 from custom operation legalization would
@@ -495,6 +527,24 @@ SDValue RISCCTargetLowering::lowerMul(SDValue Op, SelectionDAG &DAG) const {
       .setChain(DAG.getEntryNode())
       .setLibCallee(CallingConv::C, I32, Callee, std::move(Args));
   return LowerCallTo(CLI).first;
+}
+
+SDValue RISCCTargetLowering::lowerUDivRem(SDValue Op,
+                                           SelectionDAG &DAG) const {
+  assert(STI.hasDivu() && Op.getValueType() == MVT::i16 &&
+         (Op.getOpcode() == ISD::UDIV || Op.getOpcode() == ISD::UREM ||
+          Op.getOpcode() == ISD::UDIVREM));
+
+  SDLoc DL(Op);
+  SDValue Zero = DAG.getConstant(0, DL, MVT::i16);
+  SDValue Div = DAG.getNode(RISCCISD::DIVU, DL,
+                            DAG.getVTList(MVT::i16, MVT::i16), Zero,
+                            Op.getOperand(0), Op.getOperand(1));
+  if (Op.getOpcode() == ISD::UDIV)
+    return Div.getValue(1);
+  if (Op.getOpcode() == ISD::UREM)
+    return Div.getValue(0);
+  return DAG.getMergeValues({Div.getValue(1), Div.getValue(0)}, DL);
 }
 
 SDValue RISCCTargetLowering::lowerShift(SDValue Op,

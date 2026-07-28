@@ -35,6 +35,8 @@ enum NodeType {
   SRA,
   FSL1,
   FSR1,
+  MULHU,
+  DIVU,
 };
 }
 
@@ -55,6 +57,7 @@ class RISCCTargetLowering final : public TargetLowering {
                             SelectionDAG &) const;
   SDValue lowerMULLOHI(SDValue, SelectionDAG &, bool Signed) const;
   SDValue lowerMul(SDValue, SelectionDAG &) const;
+  SDValue lowerUDivRem(SDValue, SelectionDAG &) const;
   SDValue lowerDivRem(SDValue, SelectionDAG &) const;
   SDValue lowerVASTART(SDValue, SelectionDAG &) const;
   SDValue lowerCallResult(SDValue, SDValue, CallingConv::ID, bool,
