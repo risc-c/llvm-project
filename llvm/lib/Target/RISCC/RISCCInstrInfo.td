@@ -8,7 +8,6 @@
 
 include "RISCCInstrFormats.td"
 
-def : MnemonicAlias<"ldi16", "li">;
 def : MnemonicAlias<"ldi8", "ldi">;
 def : MnemonicAlias<"lui8", "lui">;
 def : MnemonicAlias<"addi8", "addi">;
@@ -116,6 +115,10 @@ def shiftimm : Operand<i16>, ImmLeaf<i16,
 }
 def u16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
   let ParserMatchClass = U16AsmOperand;
+}
+def ldi16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
+  let ParserMatchClass = U16AsmOperand;
+  let EncoderMethod = "getImm16Encoding";
 }
 def brtarget : Operand<OtherVT> {
   let PrintMethod = "printBranchOperand";
@@ -277,6 +280,18 @@ def JAL_NANO : SYS<1, (outs GPR:$sd), (ins GPR:$ra),
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
 def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 7; }
 
+let Predicates = [HasSysPred] in
+def LDI16 : RISCCInst32<(outs GPR:$rd), (ins ldi16imm:$imm),
+                        "ldi16\t$rd, $imm"> {
+  bits<3> rd;
+  bits<16> imm;
+  let Inst{15-14} = 0b11;
+  let Inst{13-11} = rd;
+  let Inst{10-8} = 0;
+  let Inst{7-3} = 0x1d;
+  let Inst{2-0} = 4;
+  let Inst{31-16} = imm;
+}
 let Predicates = [HasSysPred] in
 def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
                         "jal16\t$sd, $target"> {

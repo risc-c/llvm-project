@@ -78,7 +78,7 @@ sti
 # ENC: sti{{ *}}; encoding: [0xfe,0xf8]
 
 li r0, 4660
-# ENC: li	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
+# ENC: li	r0, 4660{{ *}}; encoding: [0xec,0xc0,0x34,0x12]
 call r1
 # ENC: call	r1{{ *}}; encoding: [0xf9,0xf9]
 call16 4660
@@ -95,7 +95,7 @@ halt
 # ENC: halt{{ *}}; encoding: [0xff,0xa7]
 
 # Spot-check that the emitted object can be decoded, including the two-word
-# JAL16 format.  Pseudos intentionally disassemble to canonical instructions.
+# long formats.  Pseudos intentionally disassemble to canonical instructions.
 # DIS: ldw	r1, [r2 + 127]
 # DIS: mul	r7, r0, r1
 # DIS: fsl1	r5, r3, r2
@@ -104,8 +104,7 @@ halt
 # DIS: jal16	s7, 4660
 # DIS: cli
 # DIS: sti
-# DIS: lui	r0, 18
-# DIS-NEXT: ori	r0, 52
+# DIS: ldi16	r0, 4660
 # DIS: jal16	s7, 4660
 # DIS: jal16	s0, 4660
 # DIS: ret	s7

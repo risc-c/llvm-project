@@ -54,6 +54,9 @@ class RISCCMCCodeEmitter final : public MCCodeEmitter {
   uint64_t getBranchTargetEncoding(const MCInst &MI, unsigned OpNo,
                                    SmallVectorImpl<MCFixup> &Fixups,
                                    const MCSubtargetInfo &STI) const;
+  uint64_t getImm16Encoding(const MCInst &MI, unsigned OpNo,
+                            SmallVectorImpl<MCFixup> &Fixups,
+                            const MCSubtargetInfo &STI) const;
   uint64_t getCodeTargetEncoding(const MCInst &MI, unsigned OpNo,
                                  SmallVectorImpl<MCFixup> &Fixups,
                                  const MCSubtargetInfo &STI) const;
@@ -185,6 +188,13 @@ uint64_t RISCCMCCodeEmitter::getBranchTargetEncoding(
   return branchImmediate(MI.getOperand(OpNo), Fixups, MI.getLoc());
 }
 
+uint64_t RISCCMCCodeEmitter::getImm16Encoding(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &) const {
+  return immediate(MI.getOperand(OpNo), Fixups, 2, RISCC::fixup_abs16,
+                   MI.getLoc());
+}
+
 uint64_t RISCCMCCodeEmitter::getCodeTargetEncoding(
     const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
     const MCSubtargetInfo &) const {
@@ -252,6 +262,28 @@ void RISCCMCCodeEmitter::encodeInstruction(
   }
   case RISCC::LI: {
     const MCOperand &Imm = MI.getOperand(1);
+    bool UseLDI16 = STI.hasFeature(RISCC::FeatureSys);
+    if (Imm.isExpr()) {
+      if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Imm.getExpr())) {
+        RISCCMCExpr::VariantKind Variant = TargetExpr->getKind();
+        if (Variant != RISCCMCExpr::VK_None &&
+            Variant != RISCCMCExpr::VK_CODE &&
+            Variant != RISCCMCExpr::VK_TPOFF) {
+          Ctx.reportError(
+              MI.getLoc(),
+              "LI accepts only an unmodified, code(), or tpoff() expression");
+          return;
+        }
+        UseLDI16 &= Variant != RISCCMCExpr::VK_TPOFF;
+      }
+    }
+    if (UseLDI16) {
+      Encode(MCInstBuilder(RISCC::LDI16)
+                 .addOperand(MI.getOperand(0))
+                 .addOperand(Imm));
+      return;
+    }
+
     MCOperand Hi, Lo;
     if (Imm.isImm()) {
       const unsigned Value = Imm.getImm();
