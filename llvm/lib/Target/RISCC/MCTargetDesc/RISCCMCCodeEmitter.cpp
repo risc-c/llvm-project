@@ -171,7 +171,9 @@ uint64_t RISCCMCCodeEmitter::getMachineOpValue(
   RISCC::Fixups Kind = RISCC::fixup_lo8;
   if (MI.getOpcode() == RISCC::LUI)
     Kind = RISCC::fixup_hi8;
-  else if (MI.getOpcode() == RISCC::LDW || MI.getOpcode() == RISCC::STW)
+  else if (MI.getOpcode() == RISCC::LDW || MI.getOpcode() == RISCC::STW ||
+           MI.getOpcode() == RISCC::LDW_NANO ||
+           MI.getOpcode() == RISCC::STW_NANO)
     Kind = RISCC::fixup_abs8;
   return immediate(Op, Fixups, 0, Kind, MI.getLoc());
 }

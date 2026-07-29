@@ -132,12 +132,18 @@ def codeaddr : Operand<i16> {
 def condcode : Operand<i16>;
 
 // Loads and stores.  Word displacements are signed bytes.
-let mayLoad = 1 in
-def LDW : RM<0b00, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
-             "ldw\t$rd, [$base + $disp]">;
-let mayStore = 1 in
-def STW : RM<0b01, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
-             "stw\t$rd, [$base + $disp]">;
+let Predicates = [NoNanoPred], mayLoad = 1 in
+def LDW : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
+                    "ldw\t$rd, [$base + $disp]">;
+let Predicates = [NoNanoPred], mayStore = 1 in
+def STW : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
+                    "stw\t$rd, [$base + $disp]">;
+let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayLoad = 1 in
+def LDW_NANO : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
+                         "ldw\t$rd, [$base + $disp]">;
+let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayStore = 1 in
+def STW_NANO : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
+                         "stw\t$rd, [$base + $disp]">;
 
 // Immediate operations.
 def LDI : RI<0b000, (outs GPR:$rd), (ins u8imm:$imm),

@@ -57,7 +57,8 @@ RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
   int64_t Displacement = 0;
   if (Ptr.getOpcode() == ISD::ADD) {
     if (auto *C = dyn_cast<ConstantSDNode>(Ptr.getOperand(1));
-        C && isInt<8>(C->getSExtValue())) {
+        C && isInt<8>(C->getSExtValue()) &&
+        !(C->getSExtValue() & 1)) {
       Base = Ptr.getOperand(0);
       Displacement = C->getSExtValue();
     }
@@ -129,7 +130,9 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
         CurDAG->SelectNodeTo(N, RISCC::LDWX, MVT::i16, MVT::Other,
                              {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
       else
-        CurDAG->SelectNodeTo(N, RISCC::LDW, MVT::i16, MVT::Other,
+        CurDAG->SelectNodeTo(N,
+                             Subtarget->isNano() ? RISCC::LDW_NANO : RISCC::LDW,
+                             MVT::i16, MVT::Other,
                              {Base, Disp, Chain});
       return;
     }
@@ -155,7 +158,9 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     SDValue Chain = ST->getChain(), Val = ST->getValue(), Ptr = ST->getBasePtr();
     if (ST->getMemoryVT() == MVT::i16) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
-      CurDAG->SelectNodeTo(N, RISCC::STW, MVT::Other,
+      CurDAG->SelectNodeTo(N,
+                           Subtarget->isNano() ? RISCC::STW_NANO : RISCC::STW,
+                           MVT::Other,
                            {Val, Base, Disp, Chain});
       return;
     }

@@ -110,7 +110,8 @@ void RISCCInstrInfo::storeRegToStackSlot(
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOStore,
       MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
-  BuildMI(MBB, I, DebugLoc(), get(RISCC::STW))
+  BuildMI(MBB, I, DebugLoc(),
+          get(STI.isNano() ? RISCC::STW_NANO : RISCC::STW))
       .addReg(Src, getKillRegState(Kill)).addFrameIndex(FI).addImm(0)
       .addMemOperand(MMO).setMIFlag(Flags);
 }
@@ -126,7 +127,8 @@ void RISCCInstrInfo::loadRegFromStackSlot(
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOLoad,
       MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
-  BuildMI(MBB, I, DebugLoc(), get(RISCC::LDW), Dst)
+  BuildMI(MBB, I, DebugLoc(),
+          get(STI.isNano() ? RISCC::LDW_NANO : RISCC::LDW), Dst)
       .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
 }
 

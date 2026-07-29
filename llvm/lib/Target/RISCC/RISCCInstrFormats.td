@@ -75,6 +75,18 @@ class RM<bits<2> major, dag outs, dag ins, string asm,
   let Inst{7-0} = disp;
 }
 
+class CompactRM<bits<1> store, dag outs, dag ins, string asm,
+                list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
+  bits<3> rd;
+  bits<3> base;
+  bits<8> disp;
+  let Inst{15-14} = 0b01;
+  let Inst{13-11} = rd;
+  let Inst{10-8} = base;
+  let Inst{7-1} = disp{7-1};
+  let Inst{0} = store;
+}
+
 class RB<bits<3> cc, dag outs, dag ins, string asm,
          list<dag> pattern = []> : RISCCInst16<outs, ins, asm, pattern> {
   bits<8> target;

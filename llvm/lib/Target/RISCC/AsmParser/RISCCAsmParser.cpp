@@ -298,6 +298,13 @@ bool RISCCAsmParser::matchAndEmitInstruction(
   unsigned Result = MatchInstructionImpl(Operands, Inst, ErrorInfo,
                                          MatchingInlineAsm);
   if (Result == Match_Success) {
+    if ((Inst.getOpcode() == RISCC::LDW ||
+         Inst.getOpcode() == RISCC::STW ||
+         Inst.getOpcode() == RISCC::LDW_NANO ||
+         Inst.getOpcode() == RISCC::STW_NANO) &&
+        Inst.getOperand(Inst.getNumOperands() - 1).isImm() &&
+        (Inst.getOperand(Inst.getNumOperands() - 1).getImm() & 1))
+      return Error(Loc, "word displacement must be even");
     if ((Inst.getOpcode() == RISCC::SHLI &&
          !STI->hasFeature(RISCC::FeatureWideShift)) ||
         ((Inst.getOpcode() == RISCC::SHRI || Inst.getOpcode() == RISCC::SARI) &&
