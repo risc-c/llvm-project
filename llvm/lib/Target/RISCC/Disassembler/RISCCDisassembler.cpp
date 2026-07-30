@@ -107,10 +107,9 @@ DecodeStatus RISCCDisassembler::getInstruction(
   if (Result != Fail)
     return Result;
 
-  // Only the LDI16 and JAL16 prefixes can begin a 32-bit instruction. Avoid
-  // consuming the following instruction after an unrelated invalid encoding.
-  uint16_t Prefix = Instruction & 0xc7ff;
-  if ((Prefix != 0xc0ec && Prefix != 0xc0fd) || Bytes.size() < 4)
+  // Only the defined JAL16 head can begin a 32-bit instruction. Avoid
+  // consuming the following instruction after a reserved 00 encoding.
+  if ((Instruction & 0xc7ff) != 0x0700 || Bytes.size() < 4)
     return Fail;
   MI.clear();
   uint32_t LongInstruction = support::endian::read32le(Bytes.data());

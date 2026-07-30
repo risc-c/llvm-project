@@ -6,10 +6,10 @@
 # the boundary immediates.  Keep these bytes in sync with the ISA assembler
 # oracle in tools/riscc_asm.py.
 
-ldw r1, [r2 + 127]
-# ENC: ldw	r1, [r2 + 127]{{ *}}; encoding: [0x7f,0x0a]
+ldw r1, [r2 + 126]
+# ENC: ldw	r1, [r2 + 126]{{ *}}; encoding: [0x7e,0x4a]
 stw r7, [r0 + -128]
-# ENC: stw	r7, [r0 + -128]{{ *}}; encoding: [0x80,0x78]
+# ENC: stw	r7, [r0 + -128]{{ *}}; encoding: [0x81,0x78]
 ldi r0, 0
 # ENC: ldi	r0, 0{{ *}}; encoding: [0x00,0x80]
 lui r7, 255
@@ -71,20 +71,22 @@ mts s2, r1
 reti s0
 # ENC: reti	s0{{ *}}; encoding: [0xf8,0xf8]
 jal16 s7, 4660
-# ENC: jal16	s7, 4660{{ *}}; encoding: [0xfd,0xf8,0x1a,0x09]
+# ENC: jal16	s7, 4660{{ *}}; encoding: [0x00,0x3f,0x1a,0x09]
 cli
 # ENC: cli{{ *}}; encoding: [0xfe,0xc0]
 sti
 # ENC: sti{{ *}}; encoding: [0xfe,0xf8]
 
 li r0, 4660
-# ENC: li	r0, 4660{{ *}}; encoding: [0xec,0xc0,0x34,0x12]
+# ENC: li	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
+ldi16 r0, 4660
+# ENC: ldi16	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
 call r1
 # ENC: call	r1{{ *}}; encoding: [0xf9,0xf9]
 call16 4660
-# ENC: call16	4660{{ *}}; encoding: [0xfd,0xf8,0x1a,0x09]
+# ENC: call16	4660{{ *}}; encoding: [0x00,0x3f,0x1a,0x09]
 jmp16 4660
-# ENC: jmp16	4660{{ *}}; encoding: [0xfd,0xc0,0x1a,0x09]
+# ENC: jmp16	4660{{ *}}; encoding: [0x00,0x07,0x1a,0x09]
 rets
 # ENC: rets{{ *}}; encoding: [0xf8,0xc7]
 mov r2, r3
@@ -96,7 +98,7 @@ halt
 
 # Spot-check that the emitted object can be decoded, including the two-word
 # long formats.  Pseudos intentionally disassemble to canonical instructions.
-# DIS: ldw	r1, [r2 + 127]
+# DIS: ldw	r1, [r2 + 126]
 # DIS: mul	r7, r0, r1
 # DIS: fsl1	r5, r3, r2
 # DIS: fsr1	r5, r3, r2
@@ -104,7 +106,10 @@ halt
 # DIS: jal16	s7, 4660
 # DIS: cli
 # DIS: sti
-# DIS: ldi16	r0, 4660
+# DIS: lui	r0, 18
+# DIS: ori	r0, 52
+# DIS: lui	r0, 18
+# DIS: ori	r0, 52
 # DIS: jal16	s7, 4660
 # DIS: jal16	s0, 4660
 # DIS: ret	s7

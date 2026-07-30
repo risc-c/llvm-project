@@ -30,10 +30,6 @@ jal16 s7, 4
 # MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
 # NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
 
-ldi16 r7, 4660
-# MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
-# NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
-
 reti s7
 # MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
 # NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction

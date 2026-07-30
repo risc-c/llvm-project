@@ -40,13 +40,23 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# JAL16 reserves the A field, even in a profile which implements JAL16.
-0xfd 0xc1 0x00 0x00
+# Long opcode 010 is reserved.
+0x00 0x02 0x00 0x00
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+
+# The former LDI16 long opcode 000 is reserved.
+0x00 0x00 0x34 0x12
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+
+# The unused long-head byte must be zero.
+0x01 0x00 0x34 0x12
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
 # A JAL16 payload is a 15-bit word index.
-0xfd 0xc0 0x00 0x80
+0x00 0x07 0x00 0x80
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
