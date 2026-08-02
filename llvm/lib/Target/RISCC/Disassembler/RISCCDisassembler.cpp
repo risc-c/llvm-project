@@ -73,7 +73,7 @@ static DecodeStatus decodeShiftAmount(MCInst &MI, uint64_t Value, uint64_t,
                                       const MCDisassembler *Decoder) {
   bool HasWideShift =
       Decoder->getSubtargetInfo().hasFeature(RISCC::FeatureWideShift);
-  if (!HasWideShift && (MI.getOpcode() == RISCC::SHLI || Value != 0))
+  if (!HasWideShift && (MI.getOpcode() == RISCC::SLLI || Value != 0))
     return MCDisassembler::Fail;
   MI.addOperand(MCOperand::createImm(Value + 1));
   return MCDisassembler::Success;

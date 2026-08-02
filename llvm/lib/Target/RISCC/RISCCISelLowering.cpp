@@ -1395,9 +1395,9 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
         .addReg(ShiftPhi)
         .addReg(ShiftPhi);
   else {
-    const unsigned Opcode = MI.getOpcode() == RISCC::PseudoSHL   ? RISCC::SHLI
-                            : MI.getOpcode() == RISCC::PseudoSRL ? RISCC::SHRI
-                                                                : RISCC::SARI;
+    const unsigned Opcode = MI.getOpcode() == RISCC::PseudoSHL   ? RISCC::SLLI
+                            : MI.getOpcode() == RISCC::PseudoSRL ? RISCC::SRLI
+                                                                : RISCC::SRAI;
     BuildMI(*Loop, Loop->end(), DL, TII.get(Opcode), ShiftNext)
         .addReg(ShiftPhi)
         .addImm(1);

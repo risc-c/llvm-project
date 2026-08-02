@@ -233,21 +233,21 @@ def STB : RR<0x0b, (outs), (ins GPR:$rd, GPR:$ra),
   let rb = 0;
 }
 
-def SHRI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
-              "shri\t$rd, $ra, $amount",
+def SRLI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
+              "srli\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCsrl GPR:$ra, shiftimm:$amount))]> {
   bits<3> amount;
   let rb = amount;
 }
-def SARI : RR<0x0d, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
-              "sari\t$rd, $ra, $amount",
+def SRAI : RR<0x0d, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
+              "srai\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCsra GPR:$ra, shiftimm:$amount))]> {
   bits<3> amount;
   let rb = amount;
 }
 let Predicates = [NoNanoPred] in
-def SHLI : RR<0x0f, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
-              "shli\t$rd, $ra, $amount",
+def SLLI : RR<0x0f, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
+              "slli\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCshl GPR:$ra, shiftimm:$amount))]> {
   bits<3> amount;
   let rb = amount;
@@ -270,15 +270,15 @@ let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
 def RET : SYS<0, (outs), (ins SREG:$ra), "ret\t$ra"> { let sd = 0; }
 let Predicates = [NoNanoPred], isBranch = 1, isIndirectBranch = 1,
     isTerminator = 1, isBarrier = 1 in
-def JAL : SYS<1, (outs SREG:$sd), (ins GPR:$ra), "jal\t$sd, $ra">;
+def JALR : SYS<1, (outs SREG:$sd), (ins GPR:$ra), "jalr\t$sd, $ra">;
 let Predicates = [NoNanoPred] in {
 def MFS : SYS<2, (outs GPR:$sd), (ins SREG:$ra), "mfs\t$sd, $ra">;
 def MTS : SYS<3, (outs SREG:$sd), (ins GPR:$ra), "mts\t$sd, $ra">;
 }
 let Predicates = [IsNanoPred], isBranch = 1, isIndirectBranch = 1,
     isTerminator = 1, isBarrier = 1, DecoderNamespace = "Nano" in
-def JAL_NANO : SYS<1, (outs GPR:$sd), (ins GPR:$ra),
-                   "jal\t$sd, $ra">;
+def JALR_NANO : SYS<1, (outs GPR:$sd), (ins GPR:$ra),
+                    "jalr\t$sd, $ra">;
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
 def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 7; }
 

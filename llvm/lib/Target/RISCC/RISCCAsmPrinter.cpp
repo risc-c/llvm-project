@@ -53,7 +53,7 @@ public:
     unsigned Opcode = MI->getOpcode();
 
     MCRegister Link;
-    unsigned TransferOpcode = RISCC::JAL;
+    unsigned TransferOpcode = RISCC::JALR;
     switch (Opcode) {
     default:
       break;
@@ -74,11 +74,11 @@ public:
       break;
     case RISCC::CALL_NANO:
       Link = RISCC::R6;
-      TransferOpcode = RISCC::JAL_NANO;
+      TransferOpcode = RISCC::JALR_NANO;
       break;
     case RISCC::TAIL_NANO:
       Link = RISCC::R0;
-      TransferOpcode = RISCC::JAL_NANO;
+      TransferOpcode = RISCC::JALR_NANO;
       break;
     case RISCC::LINK_S3_CALL16:
     case RISCC::LINK_S3_TAIL16:

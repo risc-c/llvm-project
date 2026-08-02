@@ -34,7 +34,7 @@ define i16 @mul16(i16 %a, i16 %b) {
 
 define i16 @shl16(i16 %a) {
 ; CHECK-LABEL: shl16:
-; CHECK:       shli r1, r1, 7
+; CHECK:       slli r1, r1, 7
 ; CHECK-NEXT:  rets
   %v = shl i16 %a, 7
   ret i16 %v
@@ -42,7 +42,7 @@ define i16 @shl16(i16 %a) {
 
 define i16 @lshr16(i16 %a) {
 ; CHECK-LABEL: lshr16:
-; CHECK:       shri r1, r1, 3
+; CHECK:       srli r1, r1, 3
 ; CHECK-NEXT:  rets
   %v = lshr i16 %a, 3
   ret i16 %v
@@ -50,7 +50,7 @@ define i16 @lshr16(i16 %a) {
 
 define i16 @ashr16(i16 %a) {
 ; CHECK-LABEL: ashr16:
-; CHECK:       sari r1, r1, 8
+; CHECK:       srai r1, r1, 8
 ; CHECK-NEXT:  rets
   %v = ashr i16 %a, 8
   ret i16 %v

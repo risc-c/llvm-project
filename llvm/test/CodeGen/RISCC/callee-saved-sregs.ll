@@ -54,7 +54,7 @@ define i16 @shift_call_clobber_r5_r6(i16 %value) minsize {
 ; CHECK:       mts s3, r5
 ; CHECK-NEXT:  mts s4, r6
 ; MIN:         li r0, code(__riscc_shlhi11)
-; MIN-NEXT:    jal s7, r0
+; MIN-NEXT:    jalr s7, r0
 ; CHECK:       mfs r6, s4
 ; CHECK-NEXT:  mfs r5, s3
 ; CHECK:       rets

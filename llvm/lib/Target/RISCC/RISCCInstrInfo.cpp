@@ -276,10 +276,10 @@ void RISCCInstrInfo::insertIndirectBranch(
       *BuildMI(MBB, MBB.end(), DL, get(RISCC::LI), VirtualScratch)
            .addMBB(&DestBB, RISCCII::MO_CODE);
   if (STI.isNano())
-    BuildMI(MBB, MBB.end(), DL, get(RISCC::JAL_NANO), RISCC::R0)
+    BuildMI(MBB, MBB.end(), DL, get(RISCC::JALR_NANO), RISCC::R0)
         .addReg(VirtualScratch, RegState::Kill);
   else
-    BuildMI(MBB, MBB.end(), DL, get(RISCC::JAL), RISCC::S0)
+    BuildMI(MBB, MBB.end(), DL, get(RISCC::JALR), RISCC::S0)
         .addReg(VirtualScratch, RegState::Kill);
 
   RS->enterBasicBlockEnd(MBB);

@@ -11,9 +11,9 @@ ldi r0, 256
 # RANGE: error: immediate must be in the range 0..255
 addi r1, -129
 # RANGE: error: immediate must be in the range -128..127
-shri r2, r3, 0
+srli r2, r3, 0
 # RANGE: error: shift amount must be in the range 1..8
-shli r2, r3, 9
+slli r2, r3, 9
 # RANGE: error: shift amount must be in the range 1..8
 
 #--- address.s

@@ -17,7 +17,7 @@ define i16 @call_private(i16 %value) {
 ; CHECK-LABEL: call_private:
 ; SYS:         jal16 s3, code(private_leaf)
 ; MIN:         li r0, code(private_leaf)
-; MIN-NEXT:    jal s3, r0
+; MIN-NEXT:    jalr s3, r0
   %result = call i16 @private_leaf(i16 %value)
   ret i16 %result
 }
@@ -28,7 +28,7 @@ define i16 @musttail_private(i16 %value) {
 ; CHECK-NEXT:  mts s3, r0
 ; SYS-NEXT:    jal16 s0, code(private_leaf)
 ; MIN-NEXT:    li r0, code(private_leaf)
-; MIN-NEXT:    jal s0, r0
+; MIN-NEXT:    jalr s0, r0
 ; CHECK-NOT:   ret
   %result = musttail call i16 @private_leaf(i16 %value)
   ret i16 %result
@@ -39,7 +39,7 @@ define internal void @private_nonleaf() {
 ; CHECK:       mfs r0, s3
 ; CHECK:       stw r0,
 ; SYS:         call16 code(external)
-; MIN:         jal s7,
+; MIN:         jalr s7,
 ; CHECK:       ldw r0,
 ; CHECK-NEXT:  mts s3, r0
 ; CHECK:       ret s3
@@ -51,7 +51,7 @@ define void @call_private_nonleaf() {
 ; CHECK-LABEL: call_private_nonleaf:
 ; SYS:         jal16 s3, code(private_nonleaf)
 ; MIN:         li r0, code(private_nonleaf)
-; MIN-NEXT:    jal s3, r0
+; MIN-NEXT:    jalr s3, r0
   call void @private_nonleaf()
   ret void
 }
@@ -67,7 +67,7 @@ define internal i16 @private_tail_caller(i16 %value) {
 ; CHECK-LABEL: private_tail_caller:
 ; SYS:         jal16 s0, code(private_tail_target)
 ; MIN:         li r0, code(private_tail_target)
-; MIN-NEXT:    jal s0, r0
+; MIN-NEXT:    jalr s0, r0
 ; CHECK-NOT:   ret
   %result = tail call i16 @private_tail_target(i16 %value)
   ret i16 %result

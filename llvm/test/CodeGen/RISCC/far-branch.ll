@@ -17,7 +17,7 @@ define i16 @far_conditional(i16 %a, i16 %b) {
 ; SYS:         jmp16 [[FAR:.LBB[0-9_]+]]
 ; MIN-NEXT:    bnez [[NEAR:.LBB[0-9_]+]]
 ; MIN:         li r0, code([[FAR:.LBB[0-9_]+]])
-; MIN:         jal s0, r0
+; MIN:         jalr s0, r0
 ; CHECK:       .zero 300
 ; CHECK:       [[FAR]]:
 ; OBJ:         sub r0, r1, r2

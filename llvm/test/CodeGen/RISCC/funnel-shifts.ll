@@ -159,7 +159,7 @@ define i16 @right_shift_pair(i16 %low, i16 %high) {
 define i32 @shift_left_i32_one(i32 %value) {
 ; MAIN-LABEL: shift_left_i32_one:
 ; MAIN:       fsl1 r2, r2, r1
-; MAIN-NEXT:  {{add|shli}} r1, r1
+; MAIN-NEXT:  {{add|slli}} r1, r1
 ; NANO-LABEL: shift_left_i32_one:
 ; NANO-NOT:   fsl1
   %result = shl i32 %value, 1
@@ -169,7 +169,7 @@ define i32 @shift_left_i32_one(i32 %value) {
 define i32 @shift_right_i32_one(i32 %value) {
 ; MAIN-LABEL: shift_right_i32_one:
 ; MAIN:       fsr1 r1, r1, r2
-; MAIN-NEXT:  shri r2, r2, 1
+; MAIN-NEXT:  srli r2, r2, 1
 ; NANO-LABEL: shift_right_i32_one:
 ; NANO-NOT:   fsr1
   %result = lshr i32 %value, 1
@@ -179,7 +179,7 @@ define i32 @shift_right_i32_one(i32 %value) {
 define i32 @shift_arithmetic_i32_one(i32 %value) {
 ; MAIN-LABEL: shift_arithmetic_i32_one:
 ; MAIN:       fsr1 r1, r1, r2
-; MAIN-NEXT:  sari r2, r2, 1
+; MAIN-NEXT:  srai r2, r2, 1
 ; NANO-LABEL: shift_arithmetic_i32_one:
 ; NANO-NOT:   fsr1
   %result = ashr i32 %value, 1

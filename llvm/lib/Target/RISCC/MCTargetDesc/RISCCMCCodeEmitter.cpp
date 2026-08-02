@@ -211,14 +211,14 @@ void RISCCMCCodeEmitter::encodeInstruction(
   }
   case RISCC::CALL:
   case RISCC::TAIL_REG: {
-    Encode(MCInstBuilder(RISCC::JAL)
+    Encode(MCInstBuilder(RISCC::JALR)
                .addReg(Opcode == RISCC::CALL ? RISCC::S7 : RISCC::S0)
                .addOperand(MI.getOperand(0)));
     return;
   }
   case RISCC::CALL_NANO_REG:
   case RISCC::TAIL_NANO_REG: {
-    Encode(MCInstBuilder(RISCC::JAL_NANO)
+    Encode(MCInstBuilder(RISCC::JALR_NANO)
                .addReg(Opcode == RISCC::CALL_NANO_REG ? RISCC::R6 : RISCC::R0)
                .addOperand(MI.getOperand(0)));
     return;
@@ -228,7 +228,7 @@ void RISCCMCCodeEmitter::encodeInstruction(
     return;
   }
   case RISCC::RET_NANO: {
-    Encode(MCInstBuilder(RISCC::JAL_NANO)
+    Encode(MCInstBuilder(RISCC::JALR_NANO)
                .addReg(RISCC::R0)
                .addOperand(MI.getOperand(0)));
     return;

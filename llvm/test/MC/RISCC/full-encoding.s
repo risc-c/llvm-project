@@ -53,17 +53,17 @@ ldbs r2, [r3 + r4]
 # ENC: ldbs	r2, [r3 + r4]{{ *}}; encoding: [0x74,0xd3]
 stb r3, [r4]
 # ENC: stb	r3, [r4]{{ *}}; encoding: [0x58,0xdc]
-shri r4, r5, 1
-# ENC: shri	r4, r5, 1{{ *}}; encoding: [0x60,0xe5]
-sari r5, r6, 4
-# ENC: sari	r5, r6, 4{{ *}}; encoding: [0x6b,0xee]
-shli r6, r7, 8
-# ENC: shli	r6, r7, 8{{ *}}; encoding: [0x7f,0xf7]
+srli r4, r5, 1
+# ENC: srli	r4, r5, 1{{ *}}; encoding: [0x60,0xe5]
+srai r5, r6, 4
+# ENC: srai	r5, r6, 4{{ *}}; encoding: [0x6b,0xee]
+slli r6, r7, 8
+# ENC: slli	r6, r7, 8{{ *}}; encoding: [0x7f,0xf7]
 
 ret s7
 # ENC: ret	s7{{ *}}; encoding: [0xf8,0xc7]
-jal s6, r5
-# ENC: jal	s6, r5{{ *}}; encoding: [0xf9,0xf5]
+jalr s6, r5
+# ENC: jalr	s6, r5{{ *}}; encoding: [0xf9,0xf5]
 mfs r4, s3
 # ENC: mfs	r4, s3{{ *}}; encoding: [0xfa,0xe3]
 mts s2, r1

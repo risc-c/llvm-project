@@ -9,7 +9,7 @@ define i16 @non_leaf(i16 %value) {
 ; CHECK-LABEL: non_leaf:
 ; CHECK:       stw r6,
 ; CHECK:       li r0, code(callee)
-; CHECK-NEXT:  jal r6, r0
+; CHECK-NEXT:  jalr r6, r0
 ; CHECK:       ldw r6,
 ; CHECK:       ret r6
   %result = call i16 @callee(i16 %value)
@@ -23,7 +23,7 @@ define i16 @large_frame(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; CHECK:       sub r7, r7, [[SIZE]]
 ; CHECK:       stw r6,
 ; CHECK:       li r0, code(callee)
-; CHECK-NEXT:  jal r6, r0
+; CHECK-NEXT:  jalr r6, r0
 ; CHECK:       ldw r6,
 ; CHECK:       li [[RESTORE:r[0-6]]], 3{{[0-9][0-9]}}
 ; CHECK:       add r7, r7, [[RESTORE]]
