@@ -25,13 +25,23 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# STB reserves its low register field.
-0x59 0xc0
+# The old LDPH fffff=01_001 slot is reserved, including encodings whose aaa
+# field the former decoder ignored.
+0x4f 0xc0
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+0x48 0xc1
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# RR function 9 is unassigned.
-0x48 0xc0
+# Direct data-memory operations reserve their other low-register selectors.
+0x51 0xc0
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+0x59 0xc0
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+0x71 0xc0
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 

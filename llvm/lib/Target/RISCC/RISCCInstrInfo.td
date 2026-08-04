@@ -15,6 +15,7 @@ def : MnemonicAlias<"cmpi8", "cmpi">;
 def : MnemonicAlias<"andi8", "andi">;
 def : MnemonicAlias<"ori8", "ori">;
 def : MnemonicAlias<"xori8", "xori">;
+def : MnemonicAlias<"ldp", "ldph">;
 
 def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
@@ -221,17 +222,18 @@ def FSR1 : RR<0x12, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
 let mayLoad = 1 in {
 def LDWX : RR<0x08, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
               "ldwx\t$rd, [$ra + $rb]">;
-def LDB : RR<0x0a, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "ldb\t$rd, [$ra + $rb]">;
 let Predicates = [NoNanoPred] in
-def LDBS : RR<0x0e, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-              "ldbs\t$rd, [$ra + $rb]">;
+def LDPH : RRDirectA<0x0a, 0b011, (outs GPR:$rd), (ins GPR:$ra),
+                     "ldph\t$rd, [$ra]">;
+def LDB : RRDirectA<0x0a, 0b000, (outs GPR:$rd), (ins GPR:$ra),
+                    "ldb\t$rd, [$ra]">;
+let Predicates = [NoNanoPred] in
+def LDBS : RRDirectA<0x0e, 0b000, (outs GPR:$rd), (ins GPR:$ra),
+                     "ldbs\t$rd, [$ra]">;
 }
 let mayStore = 1 in
-def STB : RR<0x0b, (outs), (ins GPR:$rd, GPR:$ra),
-             "stb\t$rd, [$ra]"> {
-  let rb = 0;
-}
+def STB : RRDirectA<0x0b, 0b000, (outs), (ins GPR:$rd, GPR:$ra),
+                    "stb\t$rd, [$ra]">;
 
 def SRLI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "srli\t$rd, $ra, $amount",

@@ -164,8 +164,8 @@ define i16 @load_word_index(ptr %base, i16 %index) {
 
 define i16 @load_byte_index(ptr %base, i16 %index) {
 ; COMMON-LABEL: load_byte_index:
-; COMMON-NOT:   add
-; COMMON:       ldb
+; COMMON:       add [[BYTE_ADDRESS:r[0-6]]], r1, r2
+; COMMON-NEXT:  ldb r1, {{\[}}[[BYTE_ADDRESS]]{{\]}}
   %address = getelementptr i8, ptr %base, i16 %index
   %value = load i8, ptr %address
   %result = zext i8 %value to i16

@@ -19,6 +19,16 @@ slli r2, r3, 9
 #--- address.s
 ldw r0, [r1 + r2]
 # ADDRESS: error: register-indexed word loads use LDWX
+ldwx r0, [r1]
+# ADDRESS: error: LDWX address requires two registers
+ldb r0, [r1 + r2]
+# ADDRESS: error: direct address requires a single register
+ldbs r0, [r1 + r2]
+# ADDRESS: error: direct address requires a single register
+ldph r0, [r1 + r2]
+# ADDRESS: error: direct address requires a single register
+ldp r0, [r1 + r2]
+# ADDRESS: error: direct address requires a single register
 
 #--- encoding.s
 jal16 s7, 3

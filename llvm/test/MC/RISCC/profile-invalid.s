@@ -14,6 +14,12 @@ fsl1 r1, r2, r3
 fsr1 r1, r2, r3
 # NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
 
+ldph r1, [r2]
+# NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
+
+ldp r1, [r2]
+# NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
+
 slli r1, r2, 1
 # MIN: :[[@LINE-1]]:1: error: instruction or shift count is unavailable in this profile
 # NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction

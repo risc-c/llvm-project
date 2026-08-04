@@ -47,10 +47,14 @@ fsr1 r5, r3, r2
 # ENC: fsr1	r5, r3, r2{{ *}}; encoding: [0x92,0xeb]
 ldwx r0, [r1 + r2]
 # ENC: ldwx	r0, [r1 + r2]{{ *}}; encoding: [0x42,0xc1]
-ldb r1, [r2 + r3]
-# ENC: ldb	r1, [r2 + r3]{{ *}}; encoding: [0x53,0xca]
-ldbs r2, [r3 + r4]
-# ENC: ldbs	r2, [r3 + r4]{{ *}}; encoding: [0x74,0xd3]
+ldph r0, [r7]
+# ENC: ldph	r0, [r7]{{ *}}; encoding: [0x53,0xc7]
+ldp r7, [r0]
+# ENC: ldph	r7, [r0]{{ *}}; encoding: [0x53,0xf8]
+ldb r1, [r2]
+# ENC: ldb	r1, [r2]{{ *}}; encoding: [0x50,0xca]
+ldbs r2, [r3]
+# ENC: ldbs	r2, [r3]{{ *}}; encoding: [0x70,0xd3]
 stb r3, [r4]
 # ENC: stb	r3, [r4]{{ *}}; encoding: [0x58,0xdc]
 srli r4, r5, 1
@@ -102,6 +106,12 @@ halt
 # DIS: mul	r7, r0, r1
 # DIS: fsl1	r5, r3, r2
 # DIS: fsr1	r5, r3, r2
+# DIS: ldwx	r0, [r1 + r2]
+# DIS: ldph	r0, [r7]
+# DIS: ldph	r7, [r0]
+# DIS: ldb	r1, [r2]
+# DIS: ldbs	r2, [r3]
+# DIS: stb	r3, [r4]
 # DIS: reti	s0
 # DIS: jal16	s7, 4660
 # DIS: cli

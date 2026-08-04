@@ -139,16 +139,7 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     if (LD->getMemoryVT() == MVT::i8) {
       unsigned Opc = LD->getExtensionType() == ISD::SEXTLOAD ? RISCC::LDBS
                                                               : RISCC::LDB;
-      if (Ptr.getOpcode() == ISD::ADD) {
-        CurDAG->SelectNodeTo(N, Opc, MVT::i16, MVT::Other,
-                             {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
-        return;
-      }
-      SDNode *Zero = CurDAG->getMachineNode(
-          RISCC::LDI, DL, MVT::i16,
-          CurDAG->getTargetConstant(0, DL, MVT::i16));
-      CurDAG->SelectNodeTo(N, Opc, MVT::i16, MVT::Other,
-                           {Ptr, SDValue(Zero, 0), Chain});
+      CurDAG->SelectNodeTo(N, Opc, MVT::i16, MVT::Other, {Ptr, Chain});
       return;
     }
     break;

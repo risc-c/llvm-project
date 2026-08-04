@@ -49,6 +49,13 @@ class RR<bits<5> func, dag outs, dag ins, string asm,
   let Inst{2-0} = rb;
 }
 
+// Compact direct memory operations take their sole address from aaa and use
+// bbb as a fixed operation selector.
+class RRDirectA<bits<5> func, bits<3> subop, dag outs, dag ins, string asm,
+                list<dag> pattern = []> : RR<func, outs, ins, asm, pattern> {
+  let rb = subop;
+}
+
 // Paired-result MDU instructions use the ordinary three-register encoding,
 // but their fields name the architectural result roles rather than a generic
 // single destination/source pair.

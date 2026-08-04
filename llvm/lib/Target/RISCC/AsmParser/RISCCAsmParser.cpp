@@ -145,6 +145,11 @@ public:
 
 static MCRegister MatchRegisterName(StringRef Name);
 
+static bool isDirectMemoryMnemonic(StringRef Mnemonic) {
+  return Mnemonic == "ldph" || Mnemonic == "ldp" || Mnemonic == "ldb" ||
+         Mnemonic == "ldbs" || Mnemonic == "stb";
+}
+
 bool RISCCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
   if (Parser.getTok().is(AsmToken::Identifier) &&
       Parser.getLexer().peekTok().is(AsmToken::LParen)) {
@@ -198,7 +203,9 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
   Operands.push_back(RISCCOperand::reg(Base, S, E));
 
   if (Parser.getTok().is(AsmToken::RBrac)) {
-    if (CurrentMnemonic != "stb") {
+    if (CurrentMnemonic == "ldwx")
+      return Error(LBracLoc, "LDWX address requires two registers");
+    if (!isDirectMemoryMnemonic(CurrentMnemonic)) {
       Operands.push_back(RISCCOperand::token("+", E));
       Operands.push_back(RISCCOperand::imm(
           MCConstantExpr::create(0, getContext()), E, E));
@@ -209,11 +216,12 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
       return Error(Parser.getTok().getLoc(), "expected '+' or ']' in address");
     SMLoc ES = Parser.getTok().getLoc();
     Parser.Lex();
+    if (isDirectMemoryMnemonic(CurrentMnemonic))
+      return Error(ES, "direct address requires a single register");
     // Normalize both `[base + expr]` and `[base - expr]` to the token stream
     // described by the TableGen spelling: `[`, base, `+`, displacement, `]`.
     Operands.push_back(RISCCOperand::token("+", ES));
-    if (CurrentMnemonic == "ldwx" || CurrentMnemonic == "ldb" ||
-        CurrentMnemonic == "ldbs") {
+    if (CurrentMnemonic == "ldwx") {
       if (Negative)
         return Error(ES, "indexed address requires '+' and a register");
       MCRegister Index;
