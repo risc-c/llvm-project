@@ -8,10 +8,10 @@ mul r1, r2, r3
 # SYS: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
 # NANO: :[[@LINE-3]]:1: error: invalid operand for RISC-C instruction
 
-fsl1 r1, r2, r3
+fsl1 r1, r2
 # NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
 
-fsr1 r1, r2, r3
+fsr1 r1, r2
 # NANO: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
 
 ldph r1, [r2]

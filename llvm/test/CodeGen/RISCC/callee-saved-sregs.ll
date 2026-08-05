@@ -28,7 +28,7 @@ define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
 ; CHECK:       mts s4, r5
 ; CHECK-NEXT:  mts s5, r6
 ; CHECK:       mts s3,
-; CHECK-NOT:   stw
+; CHECK-NOT:   {{(^|[[:space:]])st[[:space:]]}}
 ; CHECK:       mfs r1, s3
 ; CHECK:       mfs r6, s5
 ; CHECK-NEXT:  mfs r5, s4
@@ -69,10 +69,10 @@ define void @ordinary_call_clobber_r5_r6() {
 ; CHECK-LABEL: ordinary_call_clobber_r5_r6:
 ; CHECK-NOT:   mts s3, r5
 ; CHECK-NOT:   mts s4, r6
-; CHECK:       stw r5,
-; CHECK:       stw r6,
-; CHECK:       ldw r6,
-; CHECK:       ldw r5,
+; CHECK:       st r5,
+; CHECK:       st r6,
+; CHECK:       ld r6,
+; CHECK:       ld r5,
 ; CHECK:       rets
   call void asm sideeffect "", "~{r5},~{r6}"()
   call void @external()

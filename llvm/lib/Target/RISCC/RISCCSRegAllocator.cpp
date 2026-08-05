@@ -49,8 +49,8 @@ static bool referencesFrameIndex(const MachineInstr &MI, int FI) {
 }
 
 static bool isSimpleSpillAccess(const MachineInstr &MI, int FI) {
-  return (MI.getOpcode() == RISCC::STW ||
-          MI.getOpcode() == RISCC::LDW) &&
+  return (MI.getOpcode() == RISCC::ST ||
+          MI.getOpcode() == RISCC::LD) &&
          MI.getNumOperands() >= 3 && MI.getOperand(1).isFI() &&
          MI.getOperand(1).getIndex() == FI && MI.getOperand(2).isImm() &&
          MI.getOperand(2).getImm() == 0;
@@ -71,8 +71,8 @@ static bool analyzeSpillSlot(const MachineFunction &MF, int FI,
       if (!isSimpleSpillAccess(MI, FI))
         return false;
 
-      HasStore |= MI.getOpcode() == RISCC::STW;
-      HasLoad |= MI.getOpcode() == RISCC::LDW;
+      HasStore |= MI.getOpcode() == RISCC::ST;
+      HasLoad |= MI.getOpcode() == RISCC::LD;
       Weight = SaturatingAdd(Weight, Frequency);
     }
   }
@@ -88,12 +88,12 @@ static void moveSpillToSReg(MachineFunction &MF, int FI, MCRegister SReg,
           MI.getOperand(1).getIndex() != FI)
         continue;
 
-      if (MI.getOpcode() == RISCC::STW)
+      if (MI.getOpcode() == RISCC::ST)
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::MTS), SReg)
             .addReg(MI.getOperand(0).getReg(),
                     getKillRegState(MI.getOperand(0).isKill()));
       else {
-        assert(MI.getOpcode() == RISCC::LDW &&
+        assert(MI.getOpcode() == RISCC::LD &&
                "S-register candidate contains a non-spill reference");
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::MFS),
                 MI.getOperand(0).getReg())

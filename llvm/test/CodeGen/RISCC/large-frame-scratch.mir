@@ -8,10 +8,10 @@
 # CHECK-LABEL: name: large_frame_spill
 # CHECK:       $r0 = LDI 202
 # CHECK-NEXT:  $r0 = ADD $r7, killed $r0
-# CHECK-NEXT:  STW killed $r1, $r0, 0
+# CHECK-NEXT:  ST killed $r1, $r0, 0
 # CHECK-NEXT:  $r0 = LDI 202
 # CHECK-NEXT:  $r0 = ADD $r7, killed $r0
-# CHECK-NEXT:  $r1 = LDW $r0, 0
+# CHECK-NEXT:  $r1 = LD $r0, 0
 
 --- |
   target triple = "riscc-none-elf"
@@ -37,7 +37,7 @@ body:             |
   bb.0.entry:
     liveins: $r1
 
-    STW killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
-    $r1 = LDW %stack.0, 0 :: (load (s16) from %stack.0)
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
     RETS implicit $s7, implicit killed $r1
 ...

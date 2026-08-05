@@ -3,5 +3,5 @@
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -filetype=null < %s
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=null < %s
 
-fsl1 r1, r2, r3
-fsr1 r4, r5, r6
+fsl1 r1, r2
+fsr1 r4, r5

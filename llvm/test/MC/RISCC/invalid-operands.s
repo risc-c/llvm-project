@@ -5,6 +5,7 @@
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/encoding.s 2>&1 | FileCheck %s --check-prefix=ENCODING
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/far-branch.s 2>&1 | FileCheck %s --check-prefix=BRANCH
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/alignment.s 2>&1 | FileCheck %s --check-prefix=ALIGN
+# RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=null < %t/funnel.s 2>&1 | FileCheck %s --check-prefix=FUNNEL
 
 #--- ranges.s
 ldi r0, 256
@@ -17,10 +18,10 @@ slli r2, r3, 9
 # RANGE: error: shift amount must be in the range 1..8
 
 #--- address.s
-ldw r0, [r1 + r2]
-# ADDRESS: error: register-indexed word loads use LDWX
-ldwx r0, [r1]
-# ADDRESS: error: LDWX address requires two registers
+ld r0, [r1 + r2]
+# ADDRESS: error: register-indexed word loads use LDX
+ldx r0, [r1]
+# ADDRESS: error: LDX address requires two registers
 ldb r0, [r1 + r2]
 # ADDRESS: error: direct address requires a single register
 ldbs r0, [r1 + r2]
@@ -53,3 +54,13 @@ nop
 .byte 0
 nop
 # ALIGN: error: instruction must be 2-byte aligned
+
+#--- funnel.s
+fsl1 r1, r2, r3
+# FUNNEL: error: invalid operand for RISC-C instruction
+fsl1 r1
+# FUNNEL: error: invalid operand for RISC-C instruction
+fsr1 r1, r2, r3
+# FUNNEL: error: invalid operand for RISC-C instruction
+fsr1 r1
+# FUNNEL: error: invalid operand for RISC-C instruction

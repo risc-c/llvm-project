@@ -27,23 +27,23 @@ unsigned add_immediate(unsigned value) {
 
 unsigned load_memory(const unsigned *address) {
   unsigned result;
-  __asm__("ldw %0, %1" : "=r"(result) : "m"(*address));
+  __asm__("ld %0, %1" : "=r"(result) : "m"(*address));
   return result;
 }
 
 // IR-LABEL: define{{.*}} i16 @load_memory
-// IR: call{{.*}} i16 asm "ldw $0, $1", "=r,*m"
+// IR: call{{.*}} i16 asm "ld $0, $1", "=r,*m"
 // ASM-LABEL: load_memory:
-// ASM: ldw r1, [r1 + 0]
+// ASM: ld r1, [r1 + 0]
 
 void store_memory(unsigned *address, unsigned value) {
-  __asm__ volatile("stw %1, %0" : "=m"(*address) : "r"(value));
+  __asm__ volatile("st %1, %0" : "=m"(*address) : "r"(value));
 }
 
 // IR-LABEL: define{{.*}} void @store_memory
-// IR: call{{.*}} void asm sideeffect "stw $1, $0", "=*m,r"
+// IR: call{{.*}} void asm sideeffect "st $1, $0", "=*m,r"
 // ASM-LABEL: store_memory:
-// ASM: stw r2, [r1 + 0]
+// ASM: st r2, [r1 + 0]
 
 unsigned add_registers(unsigned lhs, unsigned rhs) {
   unsigned result;

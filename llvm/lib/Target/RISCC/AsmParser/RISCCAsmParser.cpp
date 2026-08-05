@@ -203,8 +203,8 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
   Operands.push_back(RISCCOperand::reg(Base, S, E));
 
   if (Parser.getTok().is(AsmToken::RBrac)) {
-    if (CurrentMnemonic == "ldwx")
-      return Error(LBracLoc, "LDWX address requires two registers");
+    if (CurrentMnemonic == "ldx")
+      return Error(LBracLoc, "LDX address requires two registers");
     if (!isDirectMemoryMnemonic(CurrentMnemonic)) {
       Operands.push_back(RISCCOperand::token("+", E));
       Operands.push_back(RISCCOperand::imm(
@@ -221,7 +221,7 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
     // Normalize both `[base + expr]` and `[base - expr]` to the token stream
     // described by the TableGen spelling: `[`, base, `+`, displacement, `]`.
     Operands.push_back(RISCCOperand::token("+", ES));
-    if (CurrentMnemonic == "ldwx") {
+    if (CurrentMnemonic == "ldx") {
       if (Negative)
         return Error(ES, "indexed address requires '+' and a register");
       MCRegister Index;
@@ -237,7 +237,7 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
     }
     if (Parser.getTok().is(AsmToken::Identifier) &&
         MatchRegisterName(Parser.getTok().getIdentifier().lower()))
-      return Error(ES, "register-indexed word loads use LDWX");
+      return Error(ES, "register-indexed word loads use LDX");
     const MCExpr *Expr;
     if (Parser.parseExpression(Expr))
       return true;
@@ -306,10 +306,10 @@ bool RISCCAsmParser::matchAndEmitInstruction(
   unsigned Result = MatchInstructionImpl(Operands, Inst, ErrorInfo,
                                          MatchingInlineAsm);
   if (Result == Match_Success) {
-    if ((Inst.getOpcode() == RISCC::LDW ||
-         Inst.getOpcode() == RISCC::STW ||
-         Inst.getOpcode() == RISCC::LDW_NANO ||
-         Inst.getOpcode() == RISCC::STW_NANO) &&
+    if ((Inst.getOpcode() == RISCC::LD ||
+         Inst.getOpcode() == RISCC::ST ||
+         Inst.getOpcode() == RISCC::LD_NANO ||
+         Inst.getOpcode() == RISCC::ST_NANO) &&
         Inst.getOperand(Inst.getNumOperands() - 1).isImm() &&
         (Inst.getOperand(Inst.getNumOperands() - 1).getImm() & 1))
       return Error(Loc, "word displacement must be even");

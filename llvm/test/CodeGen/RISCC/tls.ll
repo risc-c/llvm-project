@@ -11,9 +11,9 @@ define i16 @read_tls() {
 ; CHECK-LABEL: read_tls:
 ; CHECK:       mfs{{.*}}s2
 ; CHECK:       li{{.*}}tpoff(tls_zeroed)
-; CHECK-NEXT:  ldwx
+; CHECK-NEXT:  ldx
 ; CHECK:       li{{.*}}tpoff(tls_initialized)
-; CHECK-NEXT:  ldwx
+; CHECK-NEXT:  ldx
 ; CHECK-NEXT:  add
   %a = load i16, ptr @tls_initialized, align 2
   %b = load i16, ptr @tls_zeroed, align 2

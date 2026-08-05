@@ -57,7 +57,7 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
     BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
         .addReg(FuncInfo.getReturnAddressReg())
         .setMIFlag(MachineInstr::FrameSetup);
-    BuildMI(MBB, I, DL, TII.get(RISCC::STW))
+    BuildMI(MBB, I, DL, TII.get(RISCC::ST))
         .addReg(RISCC::R0, RegState::Kill)
         .addFrameIndex(FI)
         .addImm(0)
@@ -73,7 +73,7 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   int FI = FuncInfo.getLRSpillFI();
   if (!STI.isNano() && FI >= 0) {
-    BuildMI(MBB, I, DL, TII.get(RISCC::LDW), RISCC::R0)
+    BuildMI(MBB, I, DL, TII.get(RISCC::LD), RISCC::R0)
         .addFrameIndex(FI)
         .addImm(0)
         .setMIFlag(MachineInstr::FrameDestroy);

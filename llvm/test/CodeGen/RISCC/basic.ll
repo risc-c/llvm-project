@@ -65,7 +65,7 @@ define i16 @constant16() {
 
 define i16 @load16(ptr %p) {
 ; CHECK-LABEL: load16:
-; CHECK:       ldw r1, [r1 + 0]
+; CHECK:       ld r1, [r1 + 0]
 ; CHECK-NEXT:  rets
   %v = load i16, ptr %p, align 2
   ret i16 %v
@@ -73,7 +73,7 @@ define i16 @load16(ptr %p) {
 
 define void @store16(ptr %p, i16 %v) {
 ; CHECK-LABEL: store16:
-; CHECK:       stw r2, [r1 + 0]
+; CHECK:       st r2, [r1 + 0]
 ; CHECK-NEXT:  rets
   store i16 %v, ptr %p, align 2
   ret void
@@ -82,7 +82,7 @@ define void @store16(ptr %p, i16 %v) {
 define i16 @load_global() {
 ; CHECK-LABEL: load_global:
 ; CHECK:       li [[ADDR:r[0-6]]], word
-; CHECK-NEXT:  ldw r1, {{\[}}[[ADDR]] + 0]
+; CHECK-NEXT:  ld r1, {{\[}}[[ADDR]] + 0]
 ; CHECK-NEXT:  rets
   %v = load i16, ptr @word, align 2
   ret i16 %v

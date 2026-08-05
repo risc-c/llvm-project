@@ -13,8 +13,8 @@ define i16 @take_one(i16 %fixed, ...) {
 ; CHECK:       addi r7, -4
 ; CHECK:       mov [[AP:r[0-6]]], r7
 ; CHECK-NEXT:  addi [[AP]], 4
-; CHECK-NEXT:  stw [[AP]], [r7 + 2]
-; CHECK-NEXT:  ldw r1, [r7 + 4]
+; CHECK-NEXT:  st [[AP]], [r7 + 2]
+; CHECK-NEXT:  ld r1, [r7 + 4]
 ; CHECK:       addi r7, 4
 ; CHECK:       rets
   %ap = alloca ptr, align 2
@@ -26,12 +26,12 @@ define i16 @take_one(i16 %fixed, ...) {
 
 ; CHECK-LABEL: call_take_one:
 ; CHECK:       addi r7, -4
-; CHECK:       stw r0, [r7 + 2]
+; CHECK:       st r0, [r7 + 2]
 ; CHECK:       ldi [[VARARG:r[0-6]]], 9
-; CHECK-NEXT:  stw [[VARARG]], [r7 + 0]
+; CHECK-NEXT:  st [[VARARG]], [r7 + 0]
 ; CHECK:       ldi r1, 7
 ; CHECK:       call16 code(take_one)
-; CHECK:       ldw r0, [r7 + 2]
+; CHECK:       ld r0, [r7 + 2]
 ; CHECK:       addi r7, 4
 define i16 @call_take_one() {
   %value = call i16 (i16, ...) @take_one(i16 7, i16 9)

@@ -6,10 +6,10 @@
 # the boundary immediates.  Keep these bytes in sync with the ISA assembler
 # oracle in tools/riscc_asm.py.
 
-ldw r1, [r2 + 126]
-# ENC: ldw	r1, [r2 + 126]{{ *}}; encoding: [0x7e,0x4a]
-stw r7, [r0 + -128]
-# ENC: stw	r7, [r0 + -128]{{ *}}; encoding: [0x81,0x78]
+ld r1, [r2 + 126]
+# ENC: ld	r1, [r2 + 126]{{ *}}; encoding: [0x7e,0x4a]
+st r7, [r0 + -128]
+# ENC: st	r7, [r0 + -128]{{ *}}; encoding: [0x81,0x78]
 ldi r0, 0
 # ENC: ldi	r0, 0{{ *}}; encoding: [0x00,0x80]
 lui r7, 255
@@ -41,12 +41,12 @@ xor r6, r7, r0
 # ENC: xor	r6, r7, r0{{ *}}; encoding: [0x30,0xf7]
 mul r7, r0, r1
 # ENC: mul	r7, r0, r1{{ *}}; encoding: [0x39,0xf8]
-fsl1 r5, r3, r2
-# ENC: fsl1	r5, r3, r2{{ *}}; encoding: [0x9a,0xeb]
-fsr1 r5, r3, r2
-# ENC: fsr1	r5, r3, r2{{ *}}; encoding: [0x92,0xeb]
-ldwx r0, [r1 + r2]
-# ENC: ldwx	r0, [r1 + r2]{{ *}}; encoding: [0x42,0xc1]
+fsl1 r5, r3
+# ENC: fsl1	r5, r3{{ *}}; encoding: [0x88,0xeb]
+fsr1 r5, r3
+# ENC: fsr1	r5, r3{{ *}}; encoding: [0x89,0xeb]
+ldx r0, [r1 + r2]
+# ENC: ldx	r0, [r1 + r2]{{ *}}; encoding: [0x42,0xc1]
 ldph r0, [r7]
 # ENC: ldph	r0, [r7]{{ *}}; encoding: [0x53,0xc7]
 ldp r7, [r0]
@@ -73,13 +73,13 @@ mfs r4, s3
 mts s2, r1
 # ENC: mts	s2, r1{{ *}}; encoding: [0xfb,0xd1]
 reti s0
-# ENC: reti	s0{{ *}}; encoding: [0xf8,0xf8]
+# ENC: reti	s0{{ *}}; encoding: [0xf8,0xe8]
 jal16 s7, 4660
 # ENC: jal16	s7, 4660{{ *}}; encoding: [0x00,0x3f,0x1a,0x09]
 cli
-# ENC: cli{{ *}}; encoding: [0xfe,0xc0]
+# ENC: cli{{ *}}; encoding: [0xf8,0xd0]
 sti
-# ENC: sti{{ *}}; encoding: [0xfe,0xf8]
+# ENC: sti{{ *}}; encoding: [0xf8,0xf8]
 
 li r0, 4660
 # ENC: li	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
@@ -102,11 +102,12 @@ halt
 
 # Spot-check that the emitted object can be decoded, including the two-word
 # long formats.  Pseudos intentionally disassemble to canonical instructions.
-# DIS: ldw	r1, [r2 + 126]
+# DIS: ld	r1, [r2 + 126]
+# DIS: st	r7, [r0 + -128]
 # DIS: mul	r7, r0, r1
-# DIS: fsl1	r5, r3, r2
-# DIS: fsr1	r5, r3, r2
-# DIS: ldwx	r0, [r1 + r2]
+# DIS: fsl1	r5, r3
+# DIS: fsr1	r5, r3
+# DIS: ldx	r0, [r1 + r2]
 # DIS: ldph	r0, [r7]
 # DIS: ldph	r7, [r0]
 # DIS: ldb	r1, [r2]

@@ -127,11 +127,11 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     if (LD->getMemoryVT() == MVT::i16) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
       if (Base == Ptr && Ptr.getOpcode() == ISD::ADD)
-        CurDAG->SelectNodeTo(N, RISCC::LDWX, MVT::i16, MVT::Other,
+        CurDAG->SelectNodeTo(N, RISCC::LDX, MVT::i16, MVT::Other,
                              {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
       else
         CurDAG->SelectNodeTo(N,
-                             Subtarget->isNano() ? RISCC::LDW_NANO : RISCC::LDW,
+                             Subtarget->isNano() ? RISCC::LD_NANO : RISCC::LD,
                              MVT::i16, MVT::Other,
                              {Base, Disp, Chain});
       return;
@@ -150,7 +150,7 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     if (ST->getMemoryVT() == MVT::i16) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
       CurDAG->SelectNodeTo(N,
-                           Subtarget->isNano() ? RISCC::STW_NANO : RISCC::STW,
+                           Subtarget->isNano() ? RISCC::ST_NANO : RISCC::ST,
                            MVT::Other,
                            {Val, Base, Disp, Chain});
       return;

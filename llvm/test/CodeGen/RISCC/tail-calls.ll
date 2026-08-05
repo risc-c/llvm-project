@@ -35,8 +35,8 @@ define i16 @reject_indirect_tail(ptr addrspace(1) %callee_ptr, i16 %x) {
 define i16 @framed_tail(i16 %x) {
 ; CHECK-LABEL: framed_tail:
 ; CHECK:       addi r7, -2
-; CHECK-NEXT:  stw r1, [r7 + 0]
-; CHECK-NEXT:  ldw r1, [r7 + 0]
+; CHECK-NEXT:  st r1, [r7 + 0]
+; CHECK-NEXT:  ld r1, [r7 + 0]
 ; CHECK-NEXT:  addi r7, 2
 ; SYS-NEXT:    tail code(callee)
 ; MIN-NEXT:    li r0, code(callee)
@@ -59,7 +59,7 @@ define i16 @call_then_tail(i16 %x) {
 ; MIN:         mts s7,
 ; MIN:         jalr s0,
 ; NANO:        jalr r6,
-; NANO:        ldw r6,
+; NANO:        ld r6,
 ; NANO:        jalr r0,
   %first = call i16 @callee(i16 %x)
   %result = tail call i16 @callee(i16 %first)

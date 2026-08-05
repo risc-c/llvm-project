@@ -7,12 +7,12 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# The old RETI system sub-op is reserved.
+# The former control-group selector is reserved.
 0xfc 0xc0
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# CLI/STI reserve the other selectors and the source field.
+# The former CLI/STI sub-op is reserved.
 0xfe 0xc8
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
@@ -20,7 +20,7 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# The old STI system sub-op is reserved.
+# The former STI selector is reserved.
 0xff 0xc0
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
@@ -42,6 +42,19 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 0x71 0xc0
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+
+# The compact two-operand group reserves ooo=101..111.
+0x8d 0xeb
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+
+# The former three-register FSL1 and FSR1 f5 slots are reserved.
+0x9a 0xeb
+# FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+0x92 0xeb
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
@@ -76,12 +89,12 @@
 # MIN: warning: invalid instruction encoding
 
 # RETI, CLI, and STI are structurally valid but unavailable in min.
-0xf8 0xf8
+0xf8 0xe8
 # FULL: reti s0
 # MIN: warning: invalid instruction encoding
-0xfe 0xc0
+0xf8 0xd0
 # FULL: cli
 # MIN: warning: invalid instruction encoding
-0xfe 0xf8
+0xf8 0xf8
 # FULL: sti
 # MIN: warning: invalid instruction encoding

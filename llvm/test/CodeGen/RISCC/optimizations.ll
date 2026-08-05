@@ -155,7 +155,7 @@ no:
 
 define i16 @load_word_index(ptr %base, i16 %index) {
 ; COMMON-LABEL: load_word_index:
-; COMMON:       ldwx
+; COMMON:       ldx
 ; COMMON-NOT:   add
   %address = getelementptr i16, ptr %base, i16 %index
   %value = load i16, ptr %address, align 2
@@ -229,8 +229,8 @@ define i16 @zero_or_select(i1 %condition, i16 %value) {
 define i16 @small_frame_word(i16 %value) {
 ; COMMON-LABEL: small_frame_word:
 ; COMMON:       addi r7, -2
-; COMMON-NEXT:  stw r1, [r7 + 0]
-; COMMON-NEXT:  ldw r1, [r7 + 0]
+; COMMON-NEXT:  st r1, [r7 + 0]
+; COMMON-NEXT:  ld r1, [r7 + 0]
 ; COMMON-NEXT:  addi r7, 2
   %slot = alloca i16, align 2
   store volatile i16 %value, ptr %slot, align 2

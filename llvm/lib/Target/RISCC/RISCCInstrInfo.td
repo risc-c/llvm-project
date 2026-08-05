@@ -130,17 +130,17 @@ def condcode : Operand<i16>;
 
 // Loads and stores.  Word displacements are signed bytes.
 let Predicates = [NoNanoPred], mayLoad = 1 in
-def LDW : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
-                    "ldw\t$rd, [$base + $disp]">;
+def LD : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
+                    "ld\t$rd, [$base + $disp]">;
 let Predicates = [NoNanoPred], mayStore = 1 in
-def STW : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
-                    "stw\t$rd, [$base + $disp]">;
+def ST : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
+                    "st\t$rd, [$base + $disp]">;
 let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayLoad = 1 in
-def LDW_NANO : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
-                         "ldw\t$rd, [$base + $disp]">;
+def LD_NANO : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
+                        "ld\t$rd, [$base + $disp]">;
 let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayStore = 1 in
-def STW_NANO : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
-                         "stw\t$rd, [$base + $disp]">;
+def ST_NANO : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
+                        "st\t$rd, [$base + $disp]">;
 
 // Immediate operations.
 def LDI : RI<0b000, (outs GPR:$rd), (ins u8imm:$imm),
@@ -210,18 +210,24 @@ def MULHU : RRMdu<0x14, (outs GPR:$rr, GPR:$rq),
 }
 }
 
-let Predicates = [NoNanoPred] in {
-def FSL1 : RR<0x13, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-              "fsl1\t$rd, $ra, $rb",
-              [(set i16:$rd, (RISCCfsl1 GPR:$ra, GPR:$rb))]>;
-def FSR1 : RR<0x12, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-              "fsr1\t$rd, $ra, $rb",
-              [(set i16:$rd, (RISCCfsr1 GPR:$ra, GPR:$rb))]>;
+// Compact funnel shifts destructively shift rd while ra supplies the endpoint.
+// They share f5=10_001; ooo=000 selects left and ooo=001 selects right.
+let Predicates = [NoNanoPred], Constraints = "$rd = $rd_in" in {
+def FSL1 : RR<0x11, (outs GPR:$rd), (ins GPR:$rd_in, GPR:$ra),
+              "fsl1\t$rd, $ra",
+              [(set i16:$rd, (RISCCfsl1 GPR:$rd_in, GPR:$ra))]> {
+  let rb = 0b000;
+}
+def FSR1 : RR<0x11, (outs GPR:$rd), (ins GPR:$rd_in, GPR:$ra),
+              "fsr1\t$rd, $ra",
+              [(set i16:$rd, (RISCCfsr1 GPR:$rd_in, GPR:$ra))]> {
+  let rb = 0b001;
+}
 }
 
 let mayLoad = 1 in {
-def LDWX : RR<0x08, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-              "ldwx\t$rd, [$ra + $rb]">;
+def LDX : RR<0x08, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
+              "ldx\t$rd, [$ra + $rb]">;
 let Predicates = [NoNanoPred] in
 def LDPH : RRDirectA<0x0a, 0b011, (outs GPR:$rd), (ins GPR:$ra),
                      "ldph\t$rd, [$ra]">;
@@ -282,7 +288,7 @@ let Predicates = [IsNanoPred], isBranch = 1, isIndirectBranch = 1,
 def JALR_NANO : SYS<1, (outs GPR:$sd), (ins GPR:$ra),
                     "jalr\t$sd, $ra">;
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
-def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 7; }
+def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 5; }
 
 def LDI16 : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm),
                      "ldi16\t$rd, $imm", 4>;
@@ -299,8 +305,8 @@ def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
   let Inst{31} = 0;
 }
 let Predicates = [HasSysPred] in {
-def CLI : SYS<6, (outs), (ins), "cli"> { let sd = 0; let ra = 0; }
-def STI : SYS<6, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
+def CLI : SYS<0, (outs), (ins), "cli"> { let sd = 2; let ra = 0; }
+def STI : SYS<0, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
 }
 
 // Assembler and code-generation aliases are expanded by the MC emitter.

@@ -33,12 +33,12 @@ define i16 @stack_call() {
 ; The maximum outgoing area is reserved once in the prologue.  S7 is saved
 ; above the two stack arguments, and SP is not adjusted around the call.
 ; ASM:       addi r7, -6
-; ASM:       stw r0, [r7 + 4]
-; ASM:       stw {{r[0-6]}}, [r7 + 2]
-; ASM:       stw {{r[0-6]}}, [r7 + 0]
+; ASM:       st r0, [r7 + 4]
+; ASM:       st {{r[0-6]}}, [r7 + 2]
+; ASM:       st {{r[0-6]}}, [r7 + 0]
 ; ASM-NOT:   addi r7
 ; ASM:       call16 code(six_args)
-; ASM-NEXT:  ldw r0, [r7 + 4]
+; ASM-NEXT:  ld r0, [r7 + 4]
 ; ASM:       addi r7, 6
   %v = call i16 @six_args(i16 1, i16 2, i16 3, i16 4, i16 5, i16 6)
   ret i16 %v

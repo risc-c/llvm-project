@@ -37,10 +37,10 @@ define i16 @musttail_private(i16 %value) {
 define internal void @private_nonleaf() {
 ; CHECK-LABEL: private_nonleaf:
 ; CHECK:       mfs r0, s3
-; CHECK:       stw r0,
+; CHECK:       st r0,
 ; SYS:         call16 code(external)
 ; MIN:         jalr s7,
-; CHECK:       ldw r0,
+; CHECK:       ld r0,
 ; CHECK-NEXT:  mts s3, r0
 ; CHECK:       ret s3
   call void @external()
@@ -78,8 +78,8 @@ define internal i16 @private_tail_caller(i16 %value) {
 define void @clobber_public_link() {
 ; CHECK-LABEL: clobber_public_link:
 ; CHECK:       mfs r0, s7
-; CHECK-NEXT:  stw r0,
-; CHECK:       ldw r0,
+; CHECK-NEXT:  st r0,
+; CHECK:       ld r0,
 ; CHECK-NEXT:  mts s7, r0
 ; CHECK:       rets
   call void asm sideeffect "", "~{s7}"()
