@@ -5,6 +5,9 @@
 # RUN: ld.lld -m elf32lriscc -T split.ld input.o -o split
 # RUN: llvm-objdump --full-contents --section=.text split | FileCheck %s --check-prefix=SPLIT
 # RUN: llvm-readobj -S split | FileCheck %s --check-prefix=SECTIONS
+# RUN: yaml2obj input32.yaml -o input32.o
+# RUN: ld.lld -m elf32lriscc -T unified.ld input32.o -o input32
+# RUN: llvm-objdump --full-contents --section=.text input32 | FileCheck %s --check-prefix=RC32
 # RUN: yaml2obj invalid.yaml -o invalid.o
 # RUN: not ld.lld -m elf32lriscc -T unified.ld invalid.o -o invalid 2>&1 | FileCheck %s --check-prefix=NOT-TLS
 # RUN: yaml2obj overflow.yaml -o overflow.o
@@ -15,6 +18,8 @@
 # UNIFIED-NEXT: 0000 00000200
 # SPLIT: Contents of section .text:
 # SPLIT-NEXT: 0000 00000200
+# RC32: Contents of section .text:
+# RC32-NEXT: 0000 02000000
 # SECTIONS: Name: .tdata
 # SECTIONS: SHF_TLS
 # SECTIONS: Name: .tbss
@@ -30,7 +35,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -72,7 +77,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -103,7 +108,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -145,3 +150,38 @@ SECTIONS {
   .tdata 0x10020 : { *(.tdata) }
   .tbss : { *(.tbss) }
 }
+
+#--- input32.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 00000000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: tls_zeroed
+        Type:   R_RISCC_TPOFF32
+  - Name:    .tdata
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE, SHF_TLS ]
+    Content: 3412
+  - Name:    .tbss
+    Type:    SHT_NOBITS
+    Flags:   [ SHF_ALLOC, SHF_WRITE, SHF_TLS ]
+    Size:    4
+Symbols:
+  - Name:    tls_zeroed
+    Type:    STT_TLS
+    Binding: STB_GLOBAL
+    Section: .tbss

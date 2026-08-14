@@ -10,14 +10,14 @@ declare i16 @callee(i16)
 
 define i16 @multiply(i16 %a, i16 %b) {
 ; NANO-LABEL: multiply:
-; NANO:       li r0, code(__mulhi3)
+; NANO:       li r0, __mulhi3
 ; NANO-NEXT:  jalr r6, r0
 ; NANO:       ret r{{[0-6]}}
 ; MIN-LABEL: multiply:
-; MIN:       li r0, code(__mulhi3)
+; MIN:       li r0, __mulhi3
 ; MIN-NEXT:  jalr s7, r0
 ; SYS-LABEL: multiply:
-; SYS:       call16 code(__mulhi3)
+; SYS:       call16 __mulhi3
 ; FULL-LABEL: multiply:
 ; FULL:       mul
   %result = mul i16 %a, %b
@@ -58,8 +58,9 @@ define i16 @shift_right_five(i16 %value) {
 
 define i16 @shift_left_eleven_size(i16 %value) minsize {
 ; SMALL-LABEL: shift_left_eleven_size:
-; SMALL:       li r0, code(__riscc_shlhi11)
+; NANO:        li r0, __riscc_shlhi11
 ; NANO-NEXT:   jalr r6, r0
+; MIN:         li r0, __riscc_shlhi11
 ; MIN-NEXT:    jalr s7, r0
 ; WIDE-LABEL:  shift_left_eleven_size:
 ; WIDE:        slli [[HALF:r[0-7]]], {{r[0-7]}}, 8
@@ -70,8 +71,9 @@ define i16 @shift_left_eleven_size(i16 %value) minsize {
 
 define i16 @shift_right_twelve_size(i16 %value) minsize {
 ; SMALL-LABEL: shift_right_twelve_size:
-; SMALL:       li r0, code(__riscc_lshrhi12)
+; NANO:        li r0, __riscc_lshrhi12
 ; NANO-NEXT:   jalr r6, r0
+; MIN:         li r0, __riscc_lshrhi12
 ; MIN-NEXT:    jalr s7, r0
 ; WIDE-LABEL:  shift_right_twelve_size:
 ; WIDE:        srli [[HALF:r[0-7]]], {{r[0-7]}}, 8
@@ -82,8 +84,9 @@ define i16 @shift_right_twelve_size(i16 %value) minsize {
 
 define i16 @shift_arithmetic_fifteen_size(i16 %value) minsize {
 ; SMALL-LABEL: shift_arithmetic_fifteen_size:
-; SMALL:       li r0, code(__riscc_ashrhi15)
+; NANO:        li r0, __riscc_ashrhi15
 ; NANO-NEXT:   jalr r6, r0
+; MIN:         li r0, __riscc_ashrhi15
 ; MIN-NEXT:    jalr s7, r0
 ; WIDE-LABEL:  shift_arithmetic_fifteen_size:
 ; WIDE:        srai [[HALF:r[0-7]]], {{r[0-7]}}, 8
@@ -129,16 +132,16 @@ define i16 @shift_right_fifteen_fast(i16 %value) {
 
 define i16 @direct_call(i16 %value) {
 ; NANO-LABEL: direct_call:
-; NANO:       li r0, code(callee)
+; NANO:       li r0, callee
 ; NANO-NEXT:  jalr r6, r0
 ; NANO:       ret r{{[0-6]}}
 ; MIN-LABEL: direct_call:
-; MIN:       li r0, code(callee)
+; MIN:       li r0, callee
 ; MIN-NEXT:  jalr s7, r0
 ; SYS-LABEL: direct_call:
-; SYS:       call16 code(callee)
+; SYS:       call16 callee
 ; FULL-LABEL: direct_call:
-; FULL:       call16 code(callee)
+; FULL:       call16 callee
   %result = call i16 @callee(i16 %value)
   ret i16 %result
 }

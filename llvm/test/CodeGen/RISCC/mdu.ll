@@ -3,7 +3,7 @@
 
 define i16 @quotient(i16 %a, i16 %b) {
 ; BASE-LABEL: quotient:
-; BASE: call16 code(__udivhi3)
+; BASE: call16 __udivhi3
 ; MDU-LABEL: quotient:
 ; MDU: ldi r0, 0
 ; MDU-NEXT: divu r0, r1, r2
@@ -14,7 +14,7 @@ define i16 @quotient(i16 %a, i16 %b) {
 
 define i16 @remainder(i16 %a, i16 %b) {
 ; BASE-LABEL: remainder:
-; BASE: call16 code(__umodhi3)
+; BASE: call16 __umodhi3
 ; MDU-LABEL: remainder:
 ; MDU: ldi r0, 0
 ; MDU-NEXT: divu r0, r1, r2

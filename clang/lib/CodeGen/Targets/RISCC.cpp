@@ -15,8 +15,11 @@ using namespace clang::CodeGen;
 namespace {
 
 class RISCCABIInfo : public DefaultABIInfo {
-  static constexpr unsigned ReturnSlots = 4;
-  static constexpr unsigned SlotBits = 16;
+  static constexpr unsigned ReturnSlots = 3;
+
+  unsigned getSlotBits() const {
+    return getDataLayout().getPointerSizeInBits();
+  }
 
   ABIArgInfo coerceAggregateToSlots(QualType Ty) const {
     const unsigned Size = getContext().getTypeSize(Ty);
@@ -30,7 +33,7 @@ class RISCCABIInfo : public DefaultABIInfo {
     // the stack.  Padding the final partial word also makes byte-field
     // records such as {u8, u8} consume one slot rather than two.
     llvm::Type *CoerceTy = llvm::IntegerType::get(
-        getVMContext(), llvm::alignTo(Size, SlotBits));
+        getVMContext(), llvm::alignTo(Size, getSlotBits()));
     return ABIArgInfo::getDirect(CoerceTy);
   }
 
@@ -39,14 +42,12 @@ class RISCCABIInfo : public DefaultABIInfo {
       return ABIArgInfo::getIgnore();
 
     const unsigned Size = getContext().getTypeSize(Ty);
-    if (Size > ReturnSlots * SlotBits)
+    if (Size > ReturnSlots * getSlotBits())
       return getNaturalAlignIndirect(Ty,
                                      getDataLayout().getAllocaAddrSpace());
 
-    // Small aggregates are returned as low-word-first 16-bit slots in
-    // r1..r4.  Explicit coercion is important: leaving the source aggregate
-    // direct would flatten {u8, u8} into two byte values and consume two
-    // registers.
+    // Small aggregates are returned as low-slot-first native slots in r1..r3.
+    // Explicit coercion avoids flattening {u8, u8} into two byte values.
     if (isAggregateTypeForABI(Ty))
       return coerceAggregateToSlots(Ty);
 
@@ -63,9 +64,9 @@ class RISCCABIInfo : public DefaultABIInfo {
     if (Ty->isIntegralOrEnumerationType() && Size <= 8)
       return ABIArgInfo::getExtend(Ty);
 
-    // C aggregates are passed by value, either wholly in r1..r4 or wholly on
-    // the stack, with a partial final word padded to one full slot.  Indirect
-    // arguments are reserved for a future C++ ABI.
+    // C aggregates are passed by value, either wholly in r1..r3 or wholly on
+    // the stack, with a partial final word padded to one full slot.
+    // Indirect arguments are reserved for a future C++ ABI.
     if (isAggregateTypeForABI(Ty))
       return coerceAggregateToSlots(Ty);
     return ABIArgInfo::getDirect();
@@ -86,7 +87,7 @@ public:
                    AggValueSlot Slot) const override {
     return emitVoidPtrVAArg(CGF, VAListAddr, Ty, /*IsIndirect=*/false,
                             getContext().getTypeInfoInChars(Ty),
-                            CharUnits::fromQuantity(SlotBits / 8),
+                            CharUnits::fromQuantity(getSlotBits() / 8),
                             /*AllowHigherAlign=*/false, Slot);
   }
 };

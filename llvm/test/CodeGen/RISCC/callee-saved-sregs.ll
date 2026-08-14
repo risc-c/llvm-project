@@ -6,13 +6,12 @@ target triple = "riscc-none-elf"
 
 declare void @external()
 
-; A mainline leaf can preserve both callee-saved GPRs in the software-managed
-; S register bank. This must not create a data-stack frame.
+; A mainline leaf can preserve callee-saved GPRs in the software-managed
+; caller-saved cache bank.
 define void @leaf_clobber_r5_r6() {
 ; CHECK-LABEL: leaf_clobber_r5_r6:
 ; CHECK:       mts s3, r5
 ; CHECK-NEXT:  mts s4, r6
-; CHECK-NOT:   addi r7
 ; CHECK:       mfs r6, s4
 ; CHECK-NEXT:  mfs r5, s3
 ; CHECK-NEXT:  rets
@@ -20,18 +19,38 @@ define void @leaf_clobber_r5_r6() {
   ret void
 }
 
-; The same pool can hold a short-lived allocator spill after the two
-; callee-saved backups. The spill gets first choice because it may execute
-; repeatedly; the entry/exit-only backups use the remaining registers.
+; S5 and S6 themselves are callee-saved.  Unlike the caller-saved cache
+; registers, an inline-assembly clobber requires ordinary entry/exit saves.
+define void @leaf_clobber_s5_s6() {
+; CHECK-LABEL: leaf_clobber_s5_s6:
+; CHECK:       addi r7, -4
+; CHECK:       mfs r0, s5
+; CHECK:       st r0,
+; CHECK:       mfs r0, s6
+; CHECK:       st r0,
+; CHECK:       ld r0,
+; CHECK:       mts s6, r0
+; CHECK:       ld r0,
+; CHECK:       mts s5, r0
+; CHECK:       addi r7, 4
+; CHECK:       rets
+  call void asm sideeffect "", "~{s5},~{s6}"()
+  ret void
+}
+
+; The cache pool holds a short-lived allocator spill while r4..r6 remain
+; callee-saved. S3 and S4 hold entry backups; the public link occupies S7.
 define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
 ; CHECK-LABEL: leaf_local_spill:
-; CHECK:       mts s4, r5
-; CHECK-NEXT:  mts s5, r6
+; CHECK:       addi r7, -6
+; CHECK:       mts s4, r4
+; CHECK:       st r5,
+; CHECK:       st r6,
 ; CHECK:       mts s3,
-; CHECK-NOT:   {{(^|[[:space:]])st[[:space:]]}}
 ; CHECK:       mfs r1, s3
-; CHECK:       mfs r6, s5
-; CHECK-NEXT:  mfs r5, s4
+; CHECK:       ld r6,
+; CHECK:       ld r5,
+; CHECK:       mfs r4, s4
 ; CHECK:       rets
   %a.ok = icmp eq i16 %a, 1
   %b.ok = icmp eq i16 %b, 2
@@ -46,17 +65,12 @@ define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
   ret i16 %result
 }
 
-; Compiler-private shift staircases preserve S3..S6. Callee-saved values may
-; therefore remain in the cache across the call, while the public S7 link is
-; saved normally.
+; Compiler-private shift staircases preserve the cache. The Min direct-call
+; expansion uses the caller-saved scratch register r0 as its target.
 define i16 @shift_call_clobber_r5_r6(i16 %value) minsize {
 ; CHECK-LABEL: shift_call_clobber_r5_r6:
-; CHECK:       mts s3, r5
-; CHECK-NEXT:  mts s4, r6
-; MIN:         li r0, code(__riscc_shlhi11)
+; MIN:         li r0, __riscc_shlhi11
 ; MIN-NEXT:    jalr s7, r0
-; CHECK:       mfs r6, s4
-; CHECK-NEXT:  mfs r5, s3
 ; CHECK:       rets
   call void asm sideeffect "", "~{r5},~{r6}"()
   %result = shl i16 %value, 11

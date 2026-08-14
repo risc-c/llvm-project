@@ -18,9 +18,11 @@
 # RUN: %python patch-flags.py full.o missing-abi.o 0x10
 # RUN: %python patch-flags.py full.o unknown-abi.o 0x12
 # RUN: %python patch-flags.py full.o nano.o 0x41
+# RUN: %python patch-flags.py full.o rc32.o 0x111
+# RUN: %python patch-flags.py full.o rc32x.o 0x311
 # RUN: %python patch-flags.py full.o missing-profile.o 0x1
 # RUN: %python patch-flags.py full.o unknown-profile.o 0x51
-# RUN: %python patch-flags.py full.o unknown-bits.o 0x111
+# RUN: %python patch-flags.py full.o unknown-bits.o 0x411
 # RUN: not ld.lld -m elf32lriscc -e 0 missing-abi.o -o bad 2>&1 | \
 # RUN:   FileCheck %s --check-prefix=MISSING-ABI
 # RUN: not ld.lld -m elf32lriscc -e 0 unknown-abi.o -o bad 2>&1 | \
@@ -29,6 +31,10 @@
 # RUN: llvm-readobj --file-headers nano | FileCheck %s --check-prefix=NANO
 # RUN: not ld.lld -m elf32lriscc -e 0 nano.o min.o -o bad 2>&1 | \
 # RUN:   FileCheck %s --check-prefix=MIXED-NANO
+# RUN: not ld.lld -m elf32lriscc -e 0 full.o rc32.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=MIXED-CONFIG
+# RUN: not ld.lld -m elf32lriscc -e 0 rc32x.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=RC32X
 # RUN: not ld.lld -m elf32lriscc -e 0 missing-profile.o -o bad 2>&1 | \
 # RUN:   FileCheck %s --check-prefix=MISSING-PROFILE
 # RUN: not ld.lld -m elf32lriscc -e 0 unknown-profile.o -o bad 2>&1 | \
@@ -36,10 +42,9 @@
 # RUN: not ld.lld -m elf32lriscc -e 0 unknown-bits.o -o bad 2>&1 | \
 # RUN:   FileCheck %s --check-prefix=UNKNOWN-BITS
 # RUN: yaml2obj domains.yaml -o domains.o
-# RUN: not ld.lld -m elf32lriscc -T domains-unified.ld domains.o \
-# RUN:   -o domains-unified 2>&1 | FileCheck %s --check-prefix=UNIFIED-DOMAINS
-# RUN: not ld.lld -m elf32lriscc -T domains-split.ld domains.o \
-# RUN:   -o domains-split 2>&1 | FileCheck %s --check-prefix=SPLIT-DOMAINS
+# RUN: ld.lld -m elf32lriscc -T domains.ld domains.o -o domains
+# RUN: llvm-objdump --full-contents --section=.refs domains | \
+# RUN:   FileCheck %s --check-prefix=DOMAINS
 # RUN: yaml2obj debug.yaml -o debug.o
 # RUN: ld.lld -m elf32lriscc -T debug.ld debug.o -o debug
 # RUN: llvm-objdump --full-contents --section=.debug_info debug | \
@@ -56,51 +61,36 @@
 # RUN: not ld.lld -m elf32lriscc -Ttext=0 -e data_entry layout.o \
 # RUN:   -o entry-data 2>&1 | FileCheck %s --check-prefix=ENTRY-DATA
 
-# RELOCS-DAG: error: {{.*}}relocation R_RISCC_CODE16 cannot encode tagged data-space or out-of-range address 0x10000
+# RELOCS-DAG: error: {{.*}}relocation R_RISCC_CODE16 cannot encode out-of-range byte address 0x10000
 # RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_CODE16: 0x101 is not aligned to 2 bytes
 # RELOCS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD out of range: {{.*}} is not in [-128, 127]
-# RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_PCREL8_WORD: 0x101 is not aligned to 2 bytes
+# RELOCS-DAG: error: {{.*}}improper alignment for relocation R_RISCC_PCREL8_WORD: 0xFB is not aligned to 2 bytes
 
-# ET-DYN: error: RISC-C ABI v1 does not support shared objects or
+# ET-DYN: error: RISC-C ABI v0 does not support shared objects or
 # ET-DYN-SAME: position-independent executables
 
 # MERGED-FULL: Flags [ (0x11)
-# MERGED-FULL: EF_RISCC_ABI_V1 (0x1)
+# MERGED-FULL: EF_RISCC_ABI_V0 (0x1)
 # MERGED-FULL: EF_RISCC_PROFILE_FULL (0x10)
 
 # MERGED-SYS: Flags [ (0x31)
-# MERGED-SYS: EF_RISCC_ABI_V1 (0x1)
+# MERGED-SYS: EF_RISCC_ABI_V0 (0x1)
 # MERGED-SYS: EF_RISCC_PROFILE_SYS (0x30)
 
-# MISSING-ABI: error: missing-abi.o: unsupported RISC-C ABI flags 0x0 (expected ABI v1)
-# UNKNOWN-ABI: error: unknown-abi.o: unsupported RISC-C ABI flags 0x2 (expected ABI v1)
+# MISSING-ABI: error: missing-abi.o: unsupported RISC-C ABI flags 0x0 (expected ABI v0)
+# UNKNOWN-ABI: error: unknown-abi.o: unsupported RISC-C ABI flags 0x2 (expected ABI v0)
 # NANO: Flags [ (0x41)
-# NANO: EF_RISCC_ABI_V1 (0x1)
+# NANO: EF_RISCC_ABI_V0 (0x1)
 # NANO: EF_RISCC_PROFILE_NANO (0x40)
 # MIXED-NANO: error: cannot link incompatible RISC-C Nano and mainline profiles
+# MIXED-CONFIG: error: cannot link RISC-C objects with different RC16, RC32, or RC32X ABIs
+# RC32X: error: rc32x.o: RC32X is not implemented
 # MISSING-PROFILE: error: missing-profile.o: unsupported RISC-C ISA profile flags 0x0
 # UNKNOWN-PROFILE: error: unknown-profile.o: unsupported RISC-C ISA profile flags 0x50
-# UNKNOWN-BITS: error: unknown-bits.o: unsupported RISC-C ELF flags 0x100
+# UNKNOWN-BITS: error: unknown-bits.o: unsupported RISC-C ELF flags 0x400
 
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE16 against data requires a code symbol, but the symbol is defined in non-executable section .data
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_LO8 against data requires a code symbol, but the symbol is defined in non-executable section .data
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_HI8 against data requires a code symbol, but the symbol is defined in non-executable section .data
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD against data requires a code symbol, but the symbol is defined in non-executable section .data
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS8 against func requires a data symbol, but the symbol is defined in executable section .text
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS16 against func requires a data symbol, but the symbol is defined in executable section .text
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS32 against func requires a data symbol, but the symbol is defined in executable section .text
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_LO8 against func requires a data symbol, but the symbol is defined in executable section .text
-# UNIFIED-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_HI8 against func requires a data symbol, but the symbol is defined in executable section .text
-
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE16 against data requires a code symbol, but the symbol is defined in non-executable section .data
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_LO8 against data requires a code symbol, but the symbol is defined in non-executable section .data
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_CODE_HI8 against data requires a code symbol, but the symbol is defined in non-executable section .data
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_PCREL8_WORD against data requires a code symbol, but the symbol is defined in non-executable section .data
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS8 against func requires a data symbol, but the symbol is defined in executable section .text
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS16 against func requires a data symbol, but the symbol is defined in executable section .text
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_ABS32 against func requires a data symbol, but the symbol is defined in executable section .text
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_LO8 against func requires a data symbol, but the symbol is defined in executable section .text
-# SPLIT-DOMAINS-DAG: error: {{.*}}relocation R_RISCC_HI8 against func requires a data symbol, but the symbol is defined in executable section .text
+# DOMAINS: Contents of section .refs:
+# DOMAINS-NEXT: 0020 00000000 db808000 80000000 80000000
 
 # DEBUG: Contents of section .debug_info:
 # DEBUG-NEXT: 0000 0001
@@ -120,7 +110,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -171,7 +161,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text.full
     Type:    SHT_PROGBITS
@@ -185,7 +175,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_SYS ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_SYS ]
 Sections:
   - Name:    .text.sys
     Type:    SHT_PROGBITS
@@ -199,7 +189,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_MIN ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN ]
 Sections:
   - Name:    .text.min
     Type:    SHT_PROGBITS
@@ -213,7 +203,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -229,31 +219,31 @@ Sections:
     Info:    .refs
     Relocations:
       - Offset: 0x0
-        Symbol: data
+        Symbol: func
         Type:   R_RISCC_CODE16
       - Offset: 0x2
-        Symbol: data
+        Symbol: func
         Type:   R_RISCC_CODE_LO8
       - Offset: 0x3
-        Symbol: data
+        Symbol: func
         Type:   R_RISCC_CODE_HI8
       - Offset: 0x4
-        Symbol: data
+        Symbol: func
         Type:   R_RISCC_PCREL8_WORD
       - Offset: 0x5
-        Symbol: func
+        Symbol: data
         Type:   R_RISCC_ABS8
       - Offset: 0x6
-        Symbol: func
+        Symbol: data
         Type:   R_RISCC_ABS16
       - Offset: 0x8
-        Symbol: func
+        Symbol: data
         Type:   R_RISCC_ABS32
       - Offset: 0xc
-        Symbol: func
+        Symbol: data
         Type:   R_RISCC_LO8
       - Offset: 0xd
-        Symbol: func
+        Symbol: data
         Type:   R_RISCC_HI8
   - Name:    .data
     Type:    SHT_PROGBITS
@@ -269,18 +259,11 @@ Symbols:
     Binding: STB_GLOBAL
     Section: .data
 
-#--- domains-unified.ld
+#--- domains.ld
 SECTIONS {
   .text 0 : { *(.text) }
   .refs 0x20 : { *(.refs) }
-  .data 0x100 : { *(.data) }
-}
-
-#--- domains-split.ld
-SECTIONS {
-  .text 0 : { *(.text) }
-  .refs 0x20 : { *(.refs) }
-  .data 0x10000 : { *(.data) }
+  .data 0x80 : { *(.data) }
 }
 
 #--- debug.yaml
@@ -290,7 +273,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -326,7 +309,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS

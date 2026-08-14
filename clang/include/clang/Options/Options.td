@@ -6147,6 +6147,14 @@ def mmdu : Flag<["-"], "mmdu">, Group<m_Group>,
   HelpText<"Enable the RISC-C multiply-divide extension">;
 def mno_mdu : Flag<["-"], "mno-mdu">, Group<m_Group>,
   HelpText<"Disable the RISC-C multiply-divide extension">;
+def mrc32 : Flag<["-"], "mrc32">, Group<m_Group>,
+  HelpText<"Select the 32-bit RISC-C base ISA">;
+def mno_rc32 : Flag<["-"], "mno-rc32">, Group<m_Group>,
+  HelpText<"Select the 16-bit RISC-C base ISA">;
+def mrc32x : Flag<["-"], "mrc32x">, Group<m_Group>,
+  HelpText<"Select the RC32X extension">;
+def mno_rc32x : Flag<["-"], "mno-rc32x">, Group<m_Group>,
+  HelpText<"Disable the RC32X extension">;
 }
 def mno_fmv : Flag<["-"], "mno-fmv">, Group<f_clang_Group>,
   Visibility<[ClangOption, CC1Option]>,

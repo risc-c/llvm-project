@@ -15,7 +15,8 @@ def : MnemonicAlias<"cmpi8", "cmpi">;
 def : MnemonicAlias<"andi8", "andi">;
 def : MnemonicAlias<"ori8", "ori">;
 def : MnemonicAlias<"xori8", "xori">;
-def : MnemonicAlias<"ldp", "ldph">;
+def : MnemonicAlias<"jal16", "jall">;
+def : MnemonicAlias<"jmp16", "jmpl">;
 
 def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
@@ -23,10 +24,16 @@ def HasMulPred : Predicate<"Subtarget->hasMul()">,
                  AssemblerPredicate<(all_of FeatureMul)>;
 def HasMduPred : Predicate<"Subtarget->hasMulhu() && Subtarget->hasDivu()">,
                  AssemblerPredicate<(all_of FeatureMdu)>;
+def HasMulhuPred : Predicate<"Subtarget->hasMulhu()">,
+                   AssemblerPredicate<(all_of FeatureMulhu)>;
 def IsNanoPred : Predicate<"Subtarget->isNano()">,
                  AssemblerPredicate<(all_of FeatureNano)>;
 def NoNanoPred : Predicate<"!Subtarget->isNano()">,
                  AssemblerPredicate<(not FeatureNano)>;
+def IsRC32Pred : Predicate<"Subtarget->isRC32()">,
+                 AssemblerPredicate<(all_of FeatureRC32)>;
+def IsRC16Pred : Predicate<"!Subtarget->isRC32()">,
+                 AssemblerPredicate<(not FeatureRC32)>;
 def IsMinPred : Predicate<"!Subtarget->hasSys() && !Subtarget->isNano()">,
                 AssemblerPredicate<(all_of (not FeatureSys),
                                            (not FeatureNano))>;
@@ -88,6 +95,12 @@ def S8AsmOperand : AsmOperandClass {
   let RenderMethod = "addImmOperands";
   let DiagnosticType = "InvalidS8Imm";
 }
+def RC32WordDispAsmOperand : AsmOperandClass {
+  let Name = "RC32WordDisp";
+  let PredicateMethod = "isRC32WordDisp";
+  let RenderMethod = "addImmOperands";
+  let DiagnosticType = "InvalidRC32WordDisp";
+}
 def ShiftAsmOperand : AsmOperandClass {
   let Name = "ShiftImm";
   let PredicateMethod = "isShiftImm";
@@ -108,6 +121,19 @@ def s8imm : Operand<i16>, ImmLeaf<i16, [{ return isInt<8>(Imm); }]> {
   let ParserMatchClass = S8AsmOperand;
   let DecoderMethod = "decodeSigned8";
 }
+def u8imm32 : Operand<i32>, ImmLeaf<i32, [{ return isUInt<8>(Imm); }]> {
+  let ParserMatchClass = U8AsmOperand;
+}
+def s8imm32 : Operand<i32>, ImmLeaf<i32, [{ return isInt<8>(Imm); }]> {
+  let ParserMatchClass = S8AsmOperand;
+  let DecoderMethod = "decodeSigned8";
+}
+def rc32worddisp : Operand<i32>, ImmLeaf<i32,
+  [{ return isInt<9>(Imm) && !(Imm & 3); }]> {
+  let ParserMatchClass = RC32WordDispAsmOperand;
+  let EncoderMethod = "getRC32WordDispEncoding";
+  let DecoderMethod = "decodeRC32WordDisp";
+}
 def shiftimm : Operand<i16>, ImmLeaf<i16,
   [{ return Imm >= 1 && Imm <= 8; }]> {
   let ParserMatchClass = ShiftAsmOperand;
@@ -120,7 +146,13 @@ def u16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
 def brtarget : Operand<OtherVT> {
   let PrintMethod = "printBranchOperand";
   let EncoderMethod = "getBranchTargetEncoding";
-  let DecoderMethod = "decodeSigned8";
+  let DecoderMethod = "decodeBranch8";
+}
+def pcrel8word : Operand<i32> {
+  let ParserMatchClass = S8AsmOperand;
+  let PrintMethod = "printBranchOperand";
+  let EncoderMethod = "getBranchTargetEncoding";
+  let DecoderMethod = "decodeBranch8";
 }
 def codeaddr : Operand<i16> {
   let EncoderMethod = "getCodeTargetEncoding";
@@ -129,10 +161,12 @@ def codeaddr : Operand<i16> {
 def condcode : Operand<i16>;
 
 // Loads and stores.  Word displacements are signed bytes.
-let Predicates = [NoNanoPred], mayLoad = 1 in
+let Predicates = [NoNanoPred, IsRC16Pred], DecoderNamespace = "RC16",
+    mayLoad = 1 in
 def LD : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
                     "ld\t$rd, [$base + $disp]">;
-let Predicates = [NoNanoPred], mayStore = 1 in
+let Predicates = [NoNanoPred, IsRC16Pred], DecoderNamespace = "RC16",
+    mayStore = 1 in
 def ST : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
                     "st\t$rd, [$base + $disp]">;
 let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayLoad = 1 in
@@ -141,12 +175,27 @@ def LD_NANO : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
 let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayStore = 1 in
 def ST_NANO : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
                         "st\t$rd, [$base + $disp]">;
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in
+def LD32 : CompactRM32<0, (outs GPR32:$rd),
+                        (ins GPR32:$base, rc32worddisp:$disp),
+                        "ld\t$rd, [$base + $disp]">;
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayStore = 1 in
+def ST32 : CompactRM32<1, (outs),
+                        (ins GPR32:$rd, GPR32:$base, rc32worddisp:$disp),
+                        "st\t$rd, [$base + $disp]">;
 
 // Immediate operations.
 def LDI : RI<0b000, (outs GPR:$rd), (ins u8imm:$imm),
              "ldi\t$rd, $imm">;
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in
+def LDI32 : RI<0b000, (outs GPR32:$rd), (ins u8imm32:$imm),
+                "ldi\t$rd, $imm">;
+let Predicates = [IsRC16Pred], DecoderNamespace = "RC16" in
 def LUI : RI<0b001, (outs GPR:$rd), (ins u8imm:$imm),
              "lui\t$rd, $imm">;
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in
+def LDPC : RIPC<0b001, (outs GPR32:$rd), (ins pcrel8word:$target),
+                 "ldpc\t$rd, $target">;
 let Constraints = "$rd = $src" in {
 def ADDI : RI<0b010, (outs GPR:$rd), (ins GPR:$src, s8imm:$imm),
               "addi\t$rd, $imm", [(set i16:$rd, (add i16:$src, s8imm:$imm))]>;
@@ -156,6 +205,21 @@ def ORI : RI<0b101, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
              "ori\t$rd, $imm", [(set i16:$rd, (or i16:$src, u8imm:$imm))]>;
 def XORI : RI<0b110, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
               "xori\t$rd, $imm", [(set i16:$rd, (xor i16:$src, u8imm:$imm))]>;
+}
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32",
+    Constraints = "$rd = $src" in {
+def ADDI32 : RI<0b010, (outs GPR32:$rd), (ins GPR32:$src, s8imm32:$imm),
+                "addi\t$rd, $imm",
+                [(set i32:$rd, (add i32:$src, s8imm32:$imm))]>;
+def ANDI32 : RI<0b100, (outs GPR32:$rd), (ins GPR32:$src, u8imm32:$imm),
+                "andi\t$rd, $imm",
+                [(set i32:$rd, (and i32:$src, u8imm32:$imm))]>;
+def ORI32 : RI<0b101, (outs GPR32:$rd), (ins GPR32:$src, u8imm32:$imm),
+               "ori\t$rd, $imm",
+               [(set i32:$rd, (or i32:$src, u8imm32:$imm))]>;
+def XORI32 : RI<0b110, (outs GPR32:$rd), (ins GPR32:$src, u8imm32:$imm),
+                "xori\t$rd, $imm",
+                [(set i32:$rd, (xor i32:$src, u8imm32:$imm))]>;
 }
 let Predicates = [NoNanoPred], Defs = [R0] in
 def CMPI : RI<0b011, (outs), (ins GPR:$rd, s8imm:$imm),
@@ -194,20 +258,43 @@ let Predicates = [HasMulPred] in
 def MUL : RR<0x07, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
              "mul\t$rd, $ra, $rb", [(set i16:$rd, (mul i16:$ra, i16:$rb))]>;
 }
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in {
+def ADD32 : RR<0x00, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+               "add\t$rd, $ra, $rb",
+               [(set i32:$rd, (add i32:$ra, i32:$rb))]>;
+def SUB32 : RR<0x01, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+               "sub\t$rd, $ra, $rb",
+               [(set i32:$rd, (sub i32:$ra, i32:$rb))]>;
+def SLT32 : RR<0x02, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+               "slt\t$rd, $ra, $rb">;
+def SLTU32 : RR<0x03, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+                "sltu\t$rd, $ra, $rb">;
+let isCommutable = 1 in {
+def AND32 : RR<0x04, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+               "and\t$rd, $ra, $rb",
+               [(set i32:$rd, (and i32:$ra, i32:$rb))]>;
+def OR32 : RR<0x05, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+              "or\t$rd, $ra, $rb",
+              [(set i32:$rd, (or i32:$ra, i32:$rb))]>;
+def XOR32 : RR<0x06, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+               "xor\t$rd, $ra, $rb",
+               [(set i32:$rd, (xor i32:$ra, i32:$rb))]>;
+}
+}
 
 // MDU writes architecturally paired results. The corresponding target DAG
 // nodes select these directly; the tied inputs model the input register values
 // that the ISA overwrites with the two results.
-let Predicates = [HasMduPred], hasSideEffects = 1 in {
+let Predicates = [HasMduPred], hasSideEffects = 1 in
 def DIVU : RRMdu<0x10, (outs GPR:$rr, GPR:$rq),
              (ins GPR:$rr_in, GPR:$rq_in, GPR:$rb),
              "divu\t$rr, $rq, $rb"> {
   let Constraints = "$rr = $rr_in,$rq = $rq_in,@earlyclobber $rr,@earlyclobber $rq";
 }
+let Predicates = [HasMulhuPred], hasSideEffects = 1 in
 def MULHU : RRMdu<0x14, (outs GPR:$rr, GPR:$rq),
               (ins GPR:$rq_in, GPR:$rb), "mulhu\t$rr, $rq, $rb"> {
   let Constraints = "$rq = $rq_in,@earlyclobber $rr";
-}
 }
 
 // Compact funnel shifts destructively shift rd while ra supplies the endpoint.
@@ -228,18 +315,35 @@ def FSR1 : RR<0x11, (outs GPR:$rd), (ins GPR:$rd_in, GPR:$ra),
 let mayLoad = 1 in {
 def LDX : RR<0x08, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
               "ldx\t$rd, [$ra + $rb]">;
-let Predicates = [NoNanoPred] in
-def LDPH : RRDirectA<0x0a, 0b011, (outs GPR:$rd), (ins GPR:$ra),
-                     "ldph\t$rd, [$ra]">;
 def LDB : RRDirectA<0x0a, 0b000, (outs GPR:$rd), (ins GPR:$ra),
                     "ldb\t$rd, [$ra]">;
 let Predicates = [NoNanoPred] in
 def LDBS : RRDirectA<0x0e, 0b000, (outs GPR:$rd), (ins GPR:$ra),
                      "ldbs\t$rd, [$ra]">;
 }
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in {
+def LDX32 : RR<0x08, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+                "ldx\t$rd, [$ra + $rb]">;
+def LDB32 : RRDirectA<0x0a, 0b000, (outs GPR32:$rd), (ins GPR32:$ra),
+                     "ldb\t$rd, [$ra]">;
+def LDBS32 : RRDirectA<0x0e, 0b000, (outs GPR32:$rd), (ins GPR32:$ra),
+                      "ldbs\t$rd, [$ra]">;
+}
 let mayStore = 1 in
 def STB : RRDirectA<0x0b, 0b000, (outs), (ins GPR:$rd, GPR:$ra),
                     "stb\t$rd, [$ra]">;
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayStore = 1 in
+def STB32 : RRDirectA<0x0b, 0b000, (outs), (ins GPR32:$rd, GPR32:$ra),
+                     "stb\t$rd, [$ra]">;
+let Predicates = [IsRC32Pred], mayLoad = 1 in {
+def LDH : RRDirectA<0x0a, 0b010, (outs GPR32:$rd), (ins GPR32:$ra),
+                    "ldh\t$rd, [$ra]">;
+def LDHS : RRDirectA<0x0e, 0b010, (outs GPR32:$rd), (ins GPR32:$ra),
+                     "ldhs\t$rd, [$ra]">;
+}
+let Predicates = [IsRC32Pred], mayStore = 1 in
+def STH : RRDirectA<0x0b, 0b010, (outs), (ins GPR32:$rd, GPR32:$ra),
+                    "sth\t$rd, [$ra]">;
 
 def SRLI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "srli\t$rd, $ra, $amount",
@@ -294,15 +398,14 @@ def LDI16 : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm),
                      "ldi16\t$rd, $imm", 4>;
 let Predicates = [HasSysPred] in
 def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
-                        "jal16\t$sd, $target"> {
+                        "jall\t$sd, $target"> {
   bits<3> sd;
-  bits<15> target;
+  bits<21> target;
   let Inst{15-14} = 0b00;
   let Inst{13-11} = sd;
-  let Inst{10-8} = 0b111;
-  let Inst{7-0} = 0;
-  let Inst{30-16} = target;
-  let Inst{31} = 0;
+  let Inst{10-6} = target{20-16};
+  let Inst{5-0} = 0b110100;
+  let Inst{31-16} = target{15-0};
 }
 let Predicates = [HasSysPred] in {
 def CLI : SYS<0, (outs), (ins), "cli"> { let sd = 2; let ra = 0; }
@@ -312,25 +415,30 @@ def STI : SYS<0, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
 // Assembler and code-generation aliases are expanded by the MC emitter.
 def LI : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm), "li\t$rd, $imm", 4>;
 let Predicates = [HasSysPred], isCall = 1,
-    Defs = [S7, R0, R1, R2, R3, R4] in
+    Defs = [S7, R0, R1, R2, R3] in
 def CALL16 : MCPseudo<(outs), (ins codeaddr:$target), "call16\t$target", 4>;
 let Predicates = [IsMinPred], isCall = 1, isCodeGenOnly = 1,
-    Defs = [S7, R0, R1, R2, R3, R4] in
+    Defs = [S7, R0, R1, R2, R3] in
 def CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
 let Predicates = [IsNanoPred], isCall = 1, isCodeGenOnly = 1,
-    Defs = [R6, R0, R1, R2, R3, R4] in
+    Defs = [R6, R0, R1, R2, R3] in
 def CALL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
 let Predicates = [NoNanoPred], isCall = 1,
-    Defs = [S7, R0, R1, R2, R3, R4] in
+    Defs = [S7, R0, R1, R2, R3] in
 def CALL : MCPseudo<(outs), (ins GPR:$target), "call\t$target", 2> {
   let Pattern = [(RISCCcall GPR:$target)];
 }
+let Predicates = [IsRC32Pred], isCall = 1,
+    Defs = [S7, R0, R1, R2, R3] in
+def CALL32 : MCPseudo<(outs), (ins GPR32:$target), "call\t$target", 2> {
+  let Pattern = [(RISCCcall GPR32:$target)];
+}
 let Predicates = [IsNanoPred], isCall = 1,
-    Defs = [R6, R0, R1, R2, R3, R4] in
+    Defs = [R6, R0, R1, R2, R3] in
 def CALL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
                              "call\t$target", 2> {
   let Pattern = [(RISCCcall GPR:$target)];
@@ -341,12 +449,12 @@ def CALL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
 // call/return liveness remains exact.
 multiclass PrivateLink<Register link> {
   let Predicates = [HasSysPred], isCall = 1, isCodeGenOnly = 1,
-      Defs = [link, R0, R1, R2, R3, R4] in
+      Defs = [link, R0, R1, R2, R3] in
   def _CALL16 : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 4;
   }
   let Predicates = [IsMinPred], isCall = 1, isCodeGenOnly = 1,
-      Defs = [link, R0, R1, R2, R3, R4] in
+      Defs = [link, R0, R1, R2, R3] in
   def _CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 6;
   }
@@ -388,13 +496,17 @@ def TAIL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
 let Predicates = [NoNanoPred], Uses = [S7] in
 def TAIL_REG : MCPseudo<(outs), (ins GPR:$target),
                         "tail\t$target", 2>;
+let Predicates = [IsRC32Pred], Uses = [S7] in
+def TAIL32 : MCPseudo<(outs), (ins GPR32:$target), "tail\t$target", 2> {
+  let Pattern = [(RISCCTail GPR32:$target)];
+}
 let Predicates = [IsNanoPred], Uses = [R6] in
 def TAIL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
                              "tail\t$target", 2>;
 }
 let Predicates = [HasSysPred], isBranch = 1, isTerminator = 1,
     isBarrier = 1 in
-def JMP16 : MCPseudo<(outs), (ins codeaddr:$target), "jmp16\t$target", 4>;
+def JMP16 : MCPseudo<(outs), (ins codeaddr:$target), "jmpl\t$target", 4>;
 let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
     isBarrier = 1, Uses = [S7] in
 def RETS : MCPseudo<(outs), (ins), "rets", 2> {
@@ -405,7 +517,10 @@ let Predicates = [IsNanoPred], isReturn = 1, isTerminator = 1,
 def RET_NANO : MCPseudo<(outs), (ins GPR:$ra), "ret\t$ra", 2> {
   let Pattern = [(RISCCret GPR:$ra)];
 }
+let Predicates = [IsRC16Pred] in
 def MOV : MCPseudo<(outs GPR:$rd), (ins GPR:$rs), "mov\t$rd, $rs", 2>;
+let Predicates = [IsRC32Pred] in
+def MOV32 : MCPseudo<(outs GPR32:$rd), (ins GPR32:$rs), "mov\t$rd, $rs", 2>;
 def NOP : MCPseudo<(outs), (ins), "nop", 2>;
 let isTerminator = 1, isBarrier = 1 in
 def HALT : MCPseudo<(outs), (ins), "halt", 2>;
@@ -418,6 +533,8 @@ def ADJCALLSTACKUP : Pseudo<(outs), (ins i16imm:$amt1, i16imm:$amt2),
   [(callseq_end timm:$amt1, timm:$amt2)]>;
 }
 def FRAMEADDR : Pseudo<(outs GPR:$dst), (ins i16imm:$fi, i16imm:$offset)>;
+def FRAMEADDR32 : Pseudo<(outs GPR32:$dst),
+                         (ins i16imm:$fi, i16imm:$offset)>;
 
 // Nano has unsigned byte loads. Keep sign extension as one tied pseudo until
 // after register allocation, then expand it to three ordinary immediates.
@@ -430,24 +547,37 @@ def SEXT8_NANO : Pseudo<(outs GPR:$dst), (ins GPR:$src),
 let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
 def PseudoBRCC : Pseudo<(outs),
   (ins GPR:$lhs, GPR:$rhs, condcode:$cc, brtarget:$target),
-  [(RISCCbrcc GPR:$lhs, GPR:$rhs, imm:$cc, bb:$target)]>;
+  [(RISCCbrcc GPR:$lhs, GPR:$rhs, timm:$cc, bb:$target)]>;
 let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
 def PseudoBRCCImm : Pseudo<(outs),
   (ins GPR:$lhs, s8imm:$rhs, condcode:$cc, brtarget:$target),
-  [(RISCCbrccimm GPR:$lhs, s8imm:$rhs, imm:$cc, bb:$target)]>;
+  [(RISCCbrccimm GPR:$lhs, s8imm:$rhs, timm:$cc, bb:$target)]>;
 let usesCustomInserter = 1 in
 def PseudoSETCC : Pseudo<(outs GPR:$dst),
   (ins GPR:$lhs, GPR:$rhs, condcode:$cc),
-  [(set i16:$dst, (RISCCsetcc GPR:$lhs, GPR:$rhs, imm:$cc))]>;
+  [(set i16:$dst, (RISCCsetcc GPR:$lhs, GPR:$rhs, timm:$cc))]>;
 let usesCustomInserter = 1 in
 def PseudoSETCCImm : Pseudo<(outs GPR:$dst),
   (ins GPR:$lhs, u8imm:$rhs, condcode:$cc),
-  [(set i16:$dst, (RISCCsetccimm GPR:$lhs, u8imm:$rhs, imm:$cc))]>;
+  [(set i16:$dst, (RISCCsetccimm GPR:$lhs, u8imm:$rhs, timm:$cc))]>;
 let usesCustomInserter = 1 in
 def PseudoSELECTCC : Pseudo<(outs GPR:$dst),
   (ins GPR:$lhs, GPR:$rhs, GPR:$truev, GPR:$falsev, condcode:$cc),
   [(set i16:$dst, (RISCCselectcc GPR:$lhs, GPR:$rhs, GPR:$truev,
-                                     GPR:$falsev, imm:$cc))]>;
+                                     GPR:$falsev, timm:$cc))]>;
+let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
+def PseudoBRCC32 : Pseudo<(outs),
+  (ins GPR32:$lhs, GPR32:$rhs, condcode:$cc, brtarget:$target),
+  [(RISCCbrcc GPR32:$lhs, GPR32:$rhs, timm:$cc, bb:$target)]>;
+let usesCustomInserter = 1 in
+def PseudoSETCC32 : Pseudo<(outs GPR32:$dst),
+  (ins GPR32:$lhs, GPR32:$rhs, condcode:$cc),
+  [(set i32:$dst, (RISCCsetcc GPR32:$lhs, GPR32:$rhs, timm:$cc))]>;
+let usesCustomInserter = 1 in
+def PseudoSELECTCC32 : Pseudo<(outs GPR32:$dst),
+  (ins GPR32:$lhs, GPR32:$rhs, GPR32:$truev, GPR32:$falsev, condcode:$cc),
+  [(set i32:$dst, (RISCCselectcc GPR32:$lhs, GPR32:$rhs, GPR32:$truev,
+                                     GPR32:$falsev, timm:$cc))]>;
 let usesCustomInserter = 1 in {
 def PseudoSHL : Pseudo<(outs GPR:$dst), (ins GPR:$src, GPR:$amount),
   [(set i16:$dst, (RISCCshl GPR:$src, GPR:$amount))]>;

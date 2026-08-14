@@ -40,7 +40,7 @@ class RISCCMCCodeEmitter final : public MCCodeEmitter {
   unsigned branchImmediate(const MCOperand &Op,
                            SmallVectorImpl<MCFixup> &Fixups, SMLoc Loc) const;
   unsigned codeImmediate(const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
-                         unsigned Offset, SMLoc Loc) const;
+                         unsigned Offset, SMLoc Loc, bool IsRC32) const;
   uint64_t getBinaryCodeForInstr(const MCInst &MI,
                                  SmallVectorImpl<MCFixup> &Fixups,
                                  const MCSubtargetInfo &STI) const;
@@ -56,6 +56,9 @@ class RISCCMCCodeEmitter final : public MCCodeEmitter {
   uint64_t getCodeTargetEncoding(const MCInst &MI, unsigned OpNo,
                                  SmallVectorImpl<MCFixup> &Fixups,
                                  const MCSubtargetInfo &STI) const;
+  uint64_t getRC32WordDispEncoding(const MCInst &MI, unsigned OpNo,
+                                   SmallVectorImpl<MCFixup> &Fixups,
+                                   const MCSubtargetInfo &STI) const;
 
 public:
   RISCCMCCodeEmitter(const MCInstrInfo &MCII, MCContext &Ctx)
@@ -74,7 +77,8 @@ unsigned RISCCMCCodeEmitter::branchImmediate(
       Ctx.reportError(Loc, "branch displacement exceeds signed 8-bit range");
       return 0;
     }
-    return Op.getImm() & 0xff;
+    unsigned Rel = Op.getImm() & 0xff;
+    return ((Rel << 1) & 0xfe) | (Rel >> 7);
   }
   const MCExpr *Expr = Op.getExpr();
   if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Expr)) {
@@ -87,14 +91,15 @@ unsigned RISCCMCCodeEmitter::branchImmediate(
 
 unsigned RISCCMCCodeEmitter::codeImmediate(
     const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups, unsigned Offset,
-    SMLoc Loc) const {
+    SMLoc Loc, bool IsRC32) const {
   if (Op.isImm()) {
     int64_t Value = Op.getImm();
-    if ((Value & 1) || Value < 0 || Value > 0xfffe) {
-      Ctx.reportError(Loc, "direct target is not a 15-bit word address");
+    uint64_t Limit = IsRC32 ? 0x1fffff : 0xffff;
+    if ((Value & 1) || Value < 0 || uint64_t(Value) > Limit) {
+      Ctx.reportError(Loc, "direct target is not an aligned JALL byte address");
       return 0;
     }
-    return Value >> 1;
+    return Value;
   }
   const MCExpr *Expr = Op.getExpr();
   if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Expr)) {
@@ -102,7 +107,9 @@ unsigned RISCCMCCodeEmitter::codeImmediate(
       Ctx.reportError(Loc, "only code() is valid on a direct control target");
     Expr = TargetExpr->getSubExpr();
   }
-  Fixups.push_back(MCFixup::create(Offset, Expr, RISCC::fixup_code16));
+  Fixups.push_back(MCFixup::create(
+      IsRC32 ? 0 : Offset, Expr,
+      IsRC32 ? RISCC::fixup_jall21 : RISCC::fixup_code16));
   return 0;
 }
 
@@ -188,8 +195,22 @@ uint64_t RISCCMCCodeEmitter::getBranchTargetEncoding(
 
 uint64_t RISCCMCCodeEmitter::getCodeTargetEncoding(
     const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &STI) const {
+  return codeImmediate(MI.getOperand(OpNo), Fixups, 2, MI.getLoc(),
+                       STI.hasFeature(RISCC::FeatureRC32));
+}
+
+uint64_t RISCCMCCodeEmitter::getRC32WordDispEncoding(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &,
     const MCSubtargetInfo &) const {
-  return codeImmediate(MI.getOperand(OpNo), Fixups, 2, MI.getLoc());
+  const MCOperand &Op = MI.getOperand(OpNo);
+  if (!Op.isImm() || !isInt<9>(Op.getImm()) || (Op.getImm() & 3)) {
+    Ctx.reportError(MI.getLoc(),
+                    "RC32 word displacement must be a 4-byte-aligned signed 9-bit value");
+    return 0;
+  }
+  unsigned Words = static_cast<unsigned>(Op.getImm() >> 2) & 0x7f;
+  return ((Words & 0x3f) << 2) | ((Words & 0x40) >> 5);
 }
 
 void RISCCMCCodeEmitter::encodeInstruction(
@@ -210,9 +231,13 @@ void RISCCMCCodeEmitter::encodeInstruction(
     return;
   }
   case RISCC::CALL:
-  case RISCC::TAIL_REG: {
+  case RISCC::CALL32:
+  case RISCC::TAIL_REG:
+  case RISCC::TAIL32: {
     Encode(MCInstBuilder(RISCC::JALR)
-               .addReg(Opcode == RISCC::CALL ? RISCC::S7 : RISCC::S0)
+               .addReg(Opcode == RISCC::CALL || Opcode == RISCC::CALL32
+                           ? RISCC::S7
+                           : RISCC::S0)
                .addOperand(MI.getOperand(0)));
     return;
   }
@@ -233,8 +258,9 @@ void RISCCMCCodeEmitter::encodeInstruction(
                .addOperand(MI.getOperand(0)));
     return;
   }
-  case RISCC::MOV: {
-    Encode(MCInstBuilder(RISCC::OR)
+  case RISCC::MOV:
+  case RISCC::MOV32: {
+    Encode(MCInstBuilder(Opcode == RISCC::MOV32 ? RISCC::OR32 : RISCC::OR)
                .addOperand(MI.getOperand(0))
                .addOperand(MI.getOperand(1))
                .addOperand(MI.getOperand(1)));
@@ -253,6 +279,10 @@ void RISCCMCCodeEmitter::encodeInstruction(
   }
   case RISCC::LDI16:
   case RISCC::LI: {
+    if (STI.hasFeature(RISCC::FeatureRC32)) {
+      Ctx.reportError(MI.getLoc(), "LI is unavailable in RC32");
+      return;
+    }
     const MCOperand &Imm = MI.getOperand(1);
     if (Imm.isExpr()) {
       if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Imm.getExpr())) {

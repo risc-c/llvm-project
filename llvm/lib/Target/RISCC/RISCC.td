@@ -13,7 +13,7 @@ include "RISCCCallingConv.td"
 defm : RemapAllTargetPseudoPointerOperands<GPR>;
 
 def FeatureSys : SubtargetFeature<"sys", "HasSys", "true",
-  "Enable JAL16 and system instructions">;
+  "Enable JALL and system instructions">;
 def FeatureWideShift : SubtargetFeature<"wide-shift", "HasWideShift", "true",
   "Enable shift counts from 2 through 8">;
 def FeatureMul : SubtargetFeature<"mul", "HasMul", "true",
@@ -25,6 +25,8 @@ def FeatureMdu : SubtargetFeature<"mdu", "HasDivu", "true",
   [FeatureMul, FeatureMulhu]>;
 def FeatureNano : SubtargetFeature<"nano", "IsNano", "true",
   "Select the incompatible Nano register and instruction profile">;
+def FeatureRC32 : SubtargetFeature<"rc32", "IsRC32", "true",
+  "Select the 32-bit RISC-C base ISA">;
 
 include "RISCCInstrInfo.td"
 

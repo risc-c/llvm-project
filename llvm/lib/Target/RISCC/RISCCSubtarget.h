@@ -13,6 +13,7 @@
 #include "RISCCISelLowering.h"
 #include "RISCCInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
 
 #define GET_SUBTARGETINFO_HEADER
 #include "RISCCGenSubtargetInfo.inc"
@@ -25,6 +26,7 @@ class RISCCSubtarget final : public RISCCGenSubtargetInfo {
   bool HasMulhu = false;
   bool HasDivu = false;
   bool IsNano = false;
+  bool IsRC32 = false;
   RISCCInstrInfo InstrInfo;
   RISCCFrameLowering FrameLowering;
   RISCCTargetLowering TLInfo;
@@ -43,6 +45,16 @@ public:
   bool hasMulhu() const { return HasMulhu; }
   bool hasDivu() const { return HasDivu; }
   bool isNano() const { return IsNano; }
+  bool isRC32() const { return IsRC32; }
+  MVT getXLenVT() const { return IsRC32 ? MVT::i32 : MVT::i16; }
+  unsigned getSlotSize() const { return IsRC32 ? 4 : 2; }
+  Align getStackAlignment() const { return Align(getSlotSize()); }
+  const TargetRegisterClass *getGPRClass() const {
+    return IsRC32 ? &RISCC::GPR32RegClass : &RISCC::GPRRegClass;
+  }
+  const TargetRegisterClass *getSRegClass() const {
+    return IsRC32 ? &RISCC::SREG32RegClass : &RISCC::SREGRegClass;
+  }
   const RISCCInstrInfo *getInstrInfo() const override { return &InstrInfo; }
   const RISCCRegisterInfo *getRegisterInfo() const override;
   const RISCCFrameLowering *getFrameLowering() const override {

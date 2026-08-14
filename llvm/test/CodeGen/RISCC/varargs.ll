@@ -1,7 +1,7 @@
 ; REQUIRES: riscc-registered-target
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -verify-machineinstrs < %s | FileCheck %s
 
-target datalayout = "e-m:e-P1-p:16:16-p1:16:16-i8:8-i16:16-i32:16-i64:16-f32:16-f64:16-a:8:16-n8:16-S16"
+target datalayout = "e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-f32:16-f64:16-a:8:16-n8:16-S16"
 target triple = "riscc-none-elf"
 
 declare void @llvm.va_start(ptr)
@@ -30,7 +30,7 @@ define i16 @take_one(i16 %fixed, ...) {
 ; CHECK:       ldi [[VARARG:r[0-6]]], 9
 ; CHECK-NEXT:  st [[VARARG]], [r7 + 0]
 ; CHECK:       ldi r1, 7
-; CHECK:       call16 code(take_one)
+; CHECK:       call16 take_one
 ; CHECK:       ld r0, [r7 + 2]
 ; CHECK:       addi r7, 4
 define i16 @call_take_one() {

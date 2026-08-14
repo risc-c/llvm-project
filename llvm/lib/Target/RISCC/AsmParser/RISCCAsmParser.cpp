@@ -61,6 +61,12 @@ public:
   bool isMem() const override { return false; }
   bool isU8Imm() const { return isIntInRange(0, 255); }
   bool isS8Imm() const { return isIntInRange(-128, 127); }
+  bool isRC32WordDisp() const {
+    if (!isImm() || isa<RISCCMCExpr>(Expr))
+      return false;
+    int64_t V;
+    return Expr->evaluateAsAbsolute(V) && isInt<9>(V) && !(V & 3);
+  }
   bool isShiftImm() const { return isIntInRange(1, 8); }
   bool isU16Imm() const { return isIntInRange(0, 65535); }
 
@@ -146,8 +152,8 @@ public:
 static MCRegister MatchRegisterName(StringRef Name);
 
 static bool isDirectMemoryMnemonic(StringRef Mnemonic) {
-  return Mnemonic == "ldph" || Mnemonic == "ldp" || Mnemonic == "ldb" ||
-         Mnemonic == "ldbs" || Mnemonic == "stb";
+  return Mnemonic == "ldb" || Mnemonic == "ldbs" || Mnemonic == "stb" ||
+         Mnemonic == "ldh" || Mnemonic == "ldhs" || Mnemonic == "sth";
 }
 
 bool RISCCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
@@ -269,11 +275,15 @@ bool RISCCAsmParser::parseOperand(OperandVector &Operands) {
   const MCExpr *Expr;
   if (Parser.parseExpression(Expr))
     return Error(S, "expected register, immediate, or expression");
-  bool IsBranch = CurrentMnemonic == "beqz" || CurrentMnemonic == "bnez" ||
-                  CurrentMnemonic == "bltz" || CurrentMnemonic == "bgez" ||
-                  CurrentMnemonic == "jmp8";
+  bool IsPCRelative = CurrentMnemonic == "beqz" ||
+                      CurrentMnemonic == "bnez" ||
+                      CurrentMnemonic == "bltz" ||
+                      CurrentMnemonic == "bgez" ||
+                      CurrentMnemonic == "jmp8" || CurrentMnemonic == "ldpc";
+  int64_t Value;
+  bool KeepExpr = IsPCRelative && !Expr->evaluateAsAbsolute(Value);
   Operands.push_back(RISCCOperand::imm(Expr, S, Parser.getTok().getEndLoc(),
-                                       IsBranch));
+                                       KeepExpr));
   return false;
 }
 

@@ -66,7 +66,10 @@ public:
     else if (STI.hasFeature(RISCC::FeatureSys) ||
              STI.hasFeature(RISCC::FeatureWideShift))
       Profile = ELF::EF_RISCC_PROFILE_SYS;
-    ES.getWriter().setELFHeaderEFlags(ELF::EF_RISCC_ABI_V1 | Profile);
+    unsigned Config = STI.hasFeature(RISCC::FeatureRC32)
+                          ? static_cast<unsigned>(ELF::EF_RISCC_RC32)
+                          : 0u;
+    ES.getWriter().setELFHeaderEFlags(ELF::EF_RISCC_ABI_V0 | Profile | Config);
   }
 };
 }

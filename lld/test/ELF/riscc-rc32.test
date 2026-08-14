@@ -1,0 +1,237 @@
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: yaml2obj forward.yaml -o forward.o
+# RUN: ld.lld -m elf32lriscc -T forward.ld forward.o -o forward
+# RUN: llvm-objdump --full-contents --section=.text forward | FileCheck %s --check-prefix=FORWARD
+# RUN: yaml2obj pcrel.yaml -o pcrel.o
+# RUN: ld.lld -m elf32lriscc -T pcrel.ld pcrel.o -o pcrel
+# RUN: llvm-objdump --full-contents --section=.text pcrel | FileCheck %s --check-prefix=PCREL
+# RUN: yaml2obj high-code.yaml -o high-code.o
+# RUN: ld.lld -m elf32lriscc -T high-code.ld -e _start high-code.o -o high-code
+# RUN: llvm-readobj --file-headers high-code | FileCheck %s --check-prefix=HIGH
+# RUN: yaml2obj rc16.yaml -o rc16.o
+# RUN: yaml2obj rc32.yaml -o rc32.o
+# RUN: not ld.lld -m elf32lriscc -e 0 rc16.o rc32.o -o mixed 2>&1 | FileCheck %s --check-prefix=MIXED
+# RUN: yaml2obj jall.yaml -o jall.o
+# RUN: ld.lld -m elf32lriscc -T jall.ld -e _start jall.o -o jall
+# RUN: llvm-objdump --full-contents --section=.text jall | FileCheck %s --check-prefix=JALL
+# RUN: yaml2obj code16.yaml -o code16.o
+# RUN: not ld.lld -m elf32lriscc -T code16.ld -e _start code16.o -o code16 2>&1 | FileCheck %s --check-prefix=CODE16
+
+# FORWARD: Contents of section .text:
+# FORWARD-NEXT: 0000 fe89
+# PCREL: Contents of section .text:
+# PCREL-NEXT: 10000 0289
+
+# HIGH: Entry: 0x10000
+# HIGH: EF_RISCC_RC32 (0x100)
+
+# MIXED: error: cannot link RISC-C objects with different RC16, RC32, or RC32X ABIs
+# JALL: Contents of section .text:
+# JALL-NEXT: 0000 74380000
+# CODE16: error: {{.*}}relocation R_RISCC_CODE16 cannot encode out-of-range byte address 0x10000
+
+#--- forward.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0089
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: literal
+        Type:   R_RISCC_PCREL8_WORD
+  - Name:    .literal
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC ]
+    Content: 00000000
+Symbols:
+  - Name:    literal
+    Type:    STT_OBJECT
+    Binding: STB_GLOBAL
+    Section: .literal
+
+#--- forward.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .literal 0x100 : { *(.literal) }
+}
+
+#--- pcrel.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0089
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: target
+        Type:   R_RISCC_PCREL8_WORD
+  - Name:    .target
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+Symbols:
+  - Name:    target
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .target
+
+#--- pcrel.ld
+SECTIONS {
+  .text 0x10000 : { *(.text) }
+  .target 0x10004 : { *(.target) }
+}
+
+#--- high-code.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+Symbols:
+  - Name:    _start
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .text
+
+#--- high-code.ld
+SECTIONS { .text 0x10000 : { *(.text) } }
+
+#--- rc16.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+
+#--- rc32.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+
+#--- jall.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_SYS, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 34380000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: target
+        Type:   R_RISCC_JALL21
+  - Name:    .target
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+Symbols:
+  - Name:    _start
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .text
+  - Name:    target
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .target
+
+#--- jall.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .target 0x10000 : { *(.target) }
+}
+
+#--- code16.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_SYS, EF_RISCC_RC32 ]
+Sections:
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+  - Name:    .rela.text
+    Type:    SHT_RELA
+    Link:    .symtab
+    Info:    .text
+    Relocations:
+      - Offset: 0x0
+        Symbol: target
+        Type:   R_RISCC_CODE16
+  - Name:    .target
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: 0000
+Symbols:
+  - Name:    _start
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .text
+  - Name:    target
+    Type:    STT_FUNC
+    Binding: STB_GLOBAL
+    Section: .target
+
+#--- code16.ld
+SECTIONS {
+  .text 0 : { *(.text) }
+  .target 0x10000 : { *(.target) }
+}

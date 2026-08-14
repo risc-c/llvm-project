@@ -20,5 +20,5 @@ Target &llvm::getTheRISCCTarget() {
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
 LLVMInitializeRISCCTargetInfo() {
   RegisterTarget<Triple::riscc> X(getTheRISCCTarget(), "riscc",
-                                  "RISC-C 16-bit [experimental]", "RISCC");
+                                  "RISC-C [experimental]", "RISCC");
 }

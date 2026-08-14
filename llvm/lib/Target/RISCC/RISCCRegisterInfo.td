@@ -32,17 +32,25 @@ def S7 : RISCCReg<15, "s7">;
 
 def GPR : RegisterClass<"RISCC", [i16], 16,
   (add R0, R1, R2, R3, R4, R5, R6, R7)>;
+def GPR32 : RegisterClass<"RISCC", [i32], 32,
+  (add R0, R1, R2, R3, R4, R5, R6, R7)>;
+// Mainline caller-saved GPRs.  r0 is deliberately last in C slot order, but
+// remains generally allocatable and call-clobbered.
+def GPRCaller : RegisterClass<"RISCC", [i16], 16,
+  (add R0, R1, R2, R3)>;
 // Keep Nano's incoming link in caller-saved registers or a normal spill slot.
 // This avoids conflating the copied link with a callee-saved register's own
 // incoming value when the prologue/epilogue pass saves that register.
-def GPRCaller : RegisterClass<"RISCC", [i16], 16,
-  (add R0, R1, R2, R3, R4, R6)>;
+def GPRNanoCaller : RegisterClass<"RISCC", [i16], 16,
+  (add R0, R1, R2, R3, R6)>;
 def SREG : RegisterClass<"RISCC", [i16], 16,
   (add S0, S1, S2, S3, S4, S5, S6, S7)>;
+def SREG32 : RegisterClass<"RISCC", [i32], 32,
+  (add S0, S1, S2, S3, S4, S5, S6, S7)>;
 
-def CSR_RISCC : CalleeSavedRegs<(add R5, R6)>;
-def CSR_RISCC_CallPreserved : CalleeSavedRegs<(add R5, R6, R7)>;
+def CSR_RISCC : CalleeSavedRegs<(add R4, R5, R6, S5, S6)>;
+def CSR_RISCC_CallPreserved : CalleeSavedRegs<(add R4, R5, R6, R7, S5, S6)>;
 def CSR_RISCC_SRegPreservingCall :
-    CalleeSavedRegs<(add R5, R6, R7, S3, S4, S5, S6)>;
-def CSR_RISCC_Nano : CalleeSavedRegs<(add R5)>;
-def CSR_RISCC_Nano_CallPreserved : CalleeSavedRegs<(add R5, R7)>;
+    CalleeSavedRegs<(add R4, R5, R6, R7, S3, S4, S5, S6)>;
+def CSR_RISCC_Nano : CalleeSavedRegs<(add R4, R5)>;
+def CSR_RISCC_Nano_CallPreserved : CalleeSavedRegs<(add R4, R5, R7)>;

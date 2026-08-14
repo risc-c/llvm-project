@@ -8,7 +8,7 @@ caller:
   lui r1, hi8(data)
   li r2, data
   li r3, code(func)
-  jal16 s7, code(func)
+  jall s7, code(func)
   beqz external_target
   .byte data
   .short data

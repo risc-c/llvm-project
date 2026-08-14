@@ -1731,11 +1731,13 @@ constexpr auto ElfHeaderRISCVFlags =
     BUILD_ENUM_STRINGS(ElfHeaderRISCVFlagsDefs);
 
 constexpr EnumStringDef<unsigned, 2> ElfHeaderRISCCFlagsDefs[] = {
-    ENUM_ENT_1(EF_RISCC_ABI_V1),
+    ENUM_ENT_1(EF_RISCC_ABI_V0),
     ENUM_ENT_1(EF_RISCC_PROFILE_FULL),
     ENUM_ENT_1(EF_RISCC_PROFILE_MIN),
     ENUM_ENT_1(EF_RISCC_PROFILE_SYS),
     ENUM_ENT_1(EF_RISCC_PROFILE_NANO),
+    ENUM_ENT_1(EF_RISCC_RC32),
+    ENUM_ENT_1(EF_RISCC_RC32X),
 };
 constexpr auto ElfHeaderRISCCFlags =
     BUILD_ENUM_STRINGS(ElfHeaderRISCCFlagsDefs);

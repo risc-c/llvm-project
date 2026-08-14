@@ -31,6 +31,14 @@ RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
 void RISCCInstrInfo::materializeImmediate(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator I, const DebugLoc &DL,
     Register Destination, int64_t Value, MachineInstr::MIFlag Flag) const {
+  if (STI.isRC32()) {
+    if (!isUInt<8>(Value))
+      report_fatal_error("RC32 immediate requires a literal-pool load");
+    BuildMI(MBB, I, DL, get(RISCC::LDI32), Destination)
+        .addImm(Value)
+        .setMIFlag(Flag);
+    return;
+  }
   uint64_t Encoded = static_cast<uint16_t>(Value);
   if (isUInt<8>(Encoded)) {
     BuildMI(MBB, I, DL, get(RISCC::LDI), Destination)
@@ -81,17 +89,19 @@ void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  const DebugLoc &DL, Register Dst, Register Src,
                                  bool Kill, bool, bool) const {
-  if (RISCC::GPRRegClass.contains(Dst, Src)) {
-    BuildMI(MBB, I, DL, get(RISCC::MOV), Dst)
+  const TargetRegisterClass *GPR = STI.getGPRClass();
+  const TargetRegisterClass *SReg = STI.getSRegClass();
+  if (GPR->contains(Dst, Src)) {
+    BuildMI(MBB, I, DL, get(STI.isRC32() ? RISCC::MOV32 : RISCC::MOV), Dst)
         .addReg(Src, getKillRegState(Kill));
     return;
   }
-  if (RISCC::GPRRegClass.contains(Dst) && RISCC::SREGRegClass.contains(Src)) {
+  if (GPR->contains(Dst) && SReg->contains(Src)) {
     BuildMI(MBB, I, DL, get(RISCC::MFS), Dst)
         .addReg(Src, getKillRegState(Kill));
     return;
   }
-  if (RISCC::SREGRegClass.contains(Dst) && RISCC::GPRRegClass.contains(Src)) {
+  if (SReg->contains(Dst) && GPR->contains(Src)) {
     BuildMI(MBB, I, DL, get(RISCC::MTS), Dst)
         .addReg(Src, getKillRegState(Kill));
     return;
@@ -103,15 +113,26 @@ void RISCCInstrInfo::storeRegToStackSlot(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator I, Register Src,
     bool Kill, int FI, const TargetRegisterClass *RC, Register,
     MachineInstr::MIFlag Flags) const {
-  assert(RISCC::GPRRegClass.hasSubClassEq(RC) &&
-         "only GPR spills are supported");
+  const bool GPR = STI.getGPRClass()->hasSubClassEq(RC);
+  const bool SReg = STI.getSRegClass()->hasSubClassEq(RC);
+  assert((GPR || SReg) &&
+         "only GPR and S-register spills are supported");
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOStore,
       MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
+  if (SReg) {
+    BuildMI(MBB, I, DebugLoc(), get(RISCC::MFS), RISCC::R0)
+        .addReg(Src, getKillRegState(Kill));
+    BuildMI(MBB, I, DebugLoc(), get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
+        .addReg(RISCC::R0).addFrameIndex(FI).addImm(0)
+        .addMemOperand(MMO).setMIFlag(Flags);
+    return;
+  }
   BuildMI(MBB, I, DebugLoc(),
-          get(STI.isNano() ? RISCC::ST_NANO : RISCC::ST))
+          get(STI.isRC32() ? RISCC::ST32
+                           : STI.isNano() ? RISCC::ST_NANO : RISCC::ST))
       .addReg(Src, getKillRegState(Kill)).addFrameIndex(FI).addImm(0)
       .addMemOperand(MMO).setMIFlag(Flags);
 }
@@ -120,15 +141,25 @@ void RISCCInstrInfo::loadRegFromStackSlot(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator I, Register Dst,
     int FI, const TargetRegisterClass *RC, Register, unsigned,
     MachineInstr::MIFlag Flags) const {
-  assert(RISCC::GPRRegClass.hasSubClassEq(RC) &&
-         "only GPR reloads are supported");
+  const bool GPR = STI.getGPRClass()->hasSubClassEq(RC);
+  const bool SReg = STI.getSRegClass()->hasSubClassEq(RC);
+  assert((GPR || SReg) &&
+         "only GPR and S-register reloads are supported");
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOLoad,
       MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
+  if (SReg) {
+    BuildMI(MBB, I, DebugLoc(), get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
+            RISCC::R0)
+        .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
+    BuildMI(MBB, I, DebugLoc(), get(RISCC::MTS), Dst).addReg(RISCC::R0);
+    return;
+  }
   BuildMI(MBB, I, DebugLoc(),
-          get(STI.isNano() ? RISCC::LD_NANO : RISCC::LD), Dst)
+          get(STI.isRC32() ? RISCC::LD32
+                           : STI.isNano() ? RISCC::LD_NANO : RISCC::LD), Dst)
       .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
 }
 
@@ -263,7 +294,7 @@ void RISCCInstrInfo::insertIndirectBranch(
   assert(MBB.empty() && MBB.pred_size() == 1 &&
          "expected a fresh long-branch block");
   assert(RestoreBB.empty() && "expected an empty restore block");
-  if (STI.hasSys()) {
+  if (STI.hasSys() && !STI.isRC32()) {
     BuildMI(MBB, MBB.end(), DL, get(RISCC::JMP16)).addMBB(&DestBB);
     return;
   }
@@ -271,10 +302,10 @@ void RISCCInstrInfo::insertIndirectBranch(
   assert(RS && "register scavenger required for a short-call-profile branch");
   MachineFunction &MF = *MBB.getParent();
   MachineRegisterInfo &MRI = MF.getRegInfo();
-  Register VirtualScratch = MRI.createVirtualRegister(&RISCC::GPRRegClass);
+  Register VirtualScratch = MRI.createVirtualRegister(STI.getGPRClass());
   MachineInstr &Address =
       *BuildMI(MBB, MBB.end(), DL, get(RISCC::LI), VirtualScratch)
-           .addMBB(&DestBB, RISCCII::MO_CODE);
+           .addMBB(&DestBB);
   if (STI.isNano())
     BuildMI(MBB, MBB.end(), DL, get(RISCC::JALR_NANO), RISCC::R0)
         .addReg(VirtualScratch, RegState::Kill);
@@ -284,7 +315,7 @@ void RISCCInstrInfo::insertIndirectBranch(
 
   RS->enterBasicBlockEnd(MBB);
   Register Scratch = RS->scavengeRegisterBackwards(
-      RISCC::GPRRegClass, Address.getIterator(), /*RestoreAfter=*/false,
+      *STI.getGPRClass(), Address.getIterator(), /*RestoreAfter=*/false,
       /*SPAdj=*/0, /*AllowSpill=*/false);
   if (Scratch) {
     RS->setRegUsed(Scratch);
@@ -296,14 +327,14 @@ void RISCCInstrInfo::insertIndirectBranch(
       report_fatal_error("RISC-C function size was underestimated");
 
     storeRegToStackSlot(MBB, Address.getIterator(), Scratch, true, FI,
-                        &RISCC::GPRRegClass, Register(),
+                        STI.getGPRClass(), Register(),
                         MachineInstr::NoFlags);
     STI.getRegisterInfo()->eliminateFrameIndex(
         std::prev(Address.getIterator()), 0, 1, RS);
 
     Address.getOperand(1).setMBB(&RestoreBB);
     loadRegFromStackSlot(RestoreBB, RestoreBB.end(), Scratch, FI,
-                         &RISCC::GPRRegClass, Register(), 0,
+                         STI.getGPRClass(), Register(), 0,
                          MachineInstr::NoFlags);
     STI.getRegisterInfo()->eliminateFrameIndex(RestoreBB.back(), 0, 1, RS);
   }

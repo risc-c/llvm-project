@@ -78,9 +78,14 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# A JAL16 payload is a 15-bit word index.
-0x00 0x07 0x00 0x80
+# RC16 reserves the JALL high address bits.
+0x74 0x38 0x00 0x00
 # FULL: warning: invalid instruction encoding
+# MIN: warning: invalid instruction encoding
+
+# A JALL payload is an aligned 16-bit byte address.
+0x34 0x00 0x00 0x80
+# FULL: jall s0, 32768
 # MIN: warning: invalid instruction encoding
 
 # MUL is structurally valid but unavailable in min.

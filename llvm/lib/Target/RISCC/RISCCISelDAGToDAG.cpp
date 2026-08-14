@@ -53,20 +53,23 @@ char RISCCDAGToDAGISelLegacy::ID = 0;
 
 std::pair<SDValue, SDValue>
 RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
+  const MVT XLenVT = Subtarget->getXLenVT();
   SDValue Base = Ptr;
   int64_t Displacement = 0;
   if (Ptr.getOpcode() == ISD::ADD) {
     if (auto *C = dyn_cast<ConstantSDNode>(Ptr.getOperand(1));
-        C && isInt<8>(C->getSExtValue()) &&
-        !(C->getSExtValue() & 1)) {
+        C && (Subtarget->isRC32() ? isInt<9>(C->getSExtValue()) &&
+                                      !(C->getSExtValue() & 3)
+                                   : isInt<8>(C->getSExtValue()) &&
+                                         !(C->getSExtValue() & 1))) {
       Base = Ptr.getOperand(0);
       Displacement = C->getSExtValue();
     }
   }
   if (auto *FI = dyn_cast<FrameIndexSDNode>(Base))
-    Base = CurDAG->getTargetFrameIndex(FI->getIndex(), MVT::i16);
+    Base = CurDAG->getTargetFrameIndex(FI->getIndex(), XLenVT);
   SDValue Disp = CurDAG->getTargetConstant(
-      APInt(16, Displacement, true), DL, MVT::i16);
+      APInt(XLenVT.getSizeInBits(), Displacement, true), DL, XLenVT);
   return {Base, Disp};
 }
 
@@ -96,13 +99,13 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
                          {N->getOperand(0), N->getOperand(1)});
     return;
   case ISD::Constant: {
-    if (N->getValueType(0) != MVT::i16)
+    if (N->getValueType(0) != Subtarget->getXLenVT())
       break;
     uint64_t Value = cast<ConstantSDNode>(N)->getZExtValue();
     if (isUInt<8>(Value)) {
-      CurDAG->SelectNodeTo(
-          N, RISCC::LDI, MVT::i16,
-          CurDAG->getTargetConstant(Value, DL, MVT::i16));
+      CurDAG->SelectNodeTo(N, Subtarget->isRC32() ? RISCC::LDI32 : RISCC::LDI,
+                           Subtarget->getXLenVT(), CurDAG->getTargetConstant(
+                               Value, DL, Subtarget->getXLenVT()));
       return;
     }
     if ((Value & 0xff) == 0) {
@@ -114,32 +117,69 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     break;
   }
   case ISD::FrameIndex: {
+    const MVT XLenVT = Subtarget->getXLenVT();
     int FI = cast<FrameIndexSDNode>(N)->getIndex();
-    SDValue TFI = CurDAG->getTargetFrameIndex(FI, MVT::i16);
+    SDValue TFI = CurDAG->getTargetFrameIndex(FI, XLenVT);
     SDValue Zero = CurDAG->getTargetConstant(0, DL, MVT::i16);
-    ReplaceNode(N, CurDAG->getMachineNode(RISCC::FRAMEADDR, DL, MVT::i16,
-                                         TFI, Zero));
+    ReplaceNode(N, CurDAG->getMachineNode(
+                       Subtarget->isRC32() ? RISCC::FRAMEADDR32
+                                            : RISCC::FRAMEADDR,
+                       DL, XLenVT, TFI, Zero));
     return;
   }
   case ISD::LOAD: {
     auto *LD = cast<LoadSDNode>(N);
     SDValue Chain = LD->getChain(), Ptr = LD->getBasePtr();
-    if (LD->getMemoryVT() == MVT::i16) {
+    if (Subtarget->isRC32() && LD->getMemoryVT() == MVT::i32 &&
+        isa<ConstantPoolSDNode>(Ptr)) {
+      const auto *CP = cast<ConstantPoolSDNode>(Ptr);
+      SDValue TargetCP = Ptr.getOpcode() == ISD::TargetConstantPool
+                             ? Ptr
+                             : CP->isMachineConstantPoolEntry()
+                                   ? CurDAG->getTargetConstantPool(
+                                         CP->getMachineCPVal(), MVT::i32,
+                                         CP->getAlign(), CP->getOffset())
+                                   : CurDAG->getTargetConstantPool(
+                                         CP->getConstVal(), MVT::i32,
+                                         CP->getAlign(), CP->getOffset());
+      CurDAG->SelectNodeTo(N, RISCC::LDPC, MVT::i32, MVT::Other,
+                           {TargetCP, Chain});
+      return;
+    }
+    if (LD->getMemoryVT() == Subtarget->getXLenVT()) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
       if (Base == Ptr && Ptr.getOpcode() == ISD::ADD)
-        CurDAG->SelectNodeTo(N, RISCC::LDX, MVT::i16, MVT::Other,
+        CurDAG->SelectNodeTo(N, Subtarget->isRC32() ? RISCC::LDX32 : RISCC::LDX,
+                             Subtarget->getXLenVT(), MVT::Other,
                              {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
       else
         CurDAG->SelectNodeTo(N,
-                             Subtarget->isNano() ? RISCC::LD_NANO : RISCC::LD,
-                             MVT::i16, MVT::Other,
+                             Subtarget->isRC32() ? RISCC::LD32
+                                                 : Subtarget->isNano()
+                                                       ? RISCC::LD_NANO
+                                                       : RISCC::LD,
+                             Subtarget->getXLenVT(), MVT::Other,
                              {Base, Disp, Chain});
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {
-      unsigned Opc = LD->getExtensionType() == ISD::SEXTLOAD ? RISCC::LDBS
-                                                              : RISCC::LDB;
-      CurDAG->SelectNodeTo(N, Opc, MVT::i16, MVT::Other, {Ptr, Chain});
+      unsigned Opc = Subtarget->isRC32()
+                         ? (LD->getExtensionType() == ISD::SEXTLOAD
+                                ? RISCC::LDBS32
+                                : RISCC::LDB32)
+                         : (LD->getExtensionType() == ISD::SEXTLOAD
+                                ? RISCC::LDBS
+                                : RISCC::LDB);
+      CurDAG->SelectNodeTo(N, Opc, Subtarget->getXLenVT(), MVT::Other,
+                           {Ptr, Chain});
+      return;
+    }
+    if (Subtarget->isRC32() && LD->getMemoryVT() == MVT::i16) {
+      CurDAG->SelectNodeTo(N,
+                           LD->getExtensionType() == ISD::SEXTLOAD
+                               ? RISCC::LDHS
+                               : RISCC::LDH,
+                           MVT::i32, MVT::Other, {Ptr, Chain});
       return;
     }
     break;
@@ -147,16 +187,24 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
   case ISD::STORE: {
     auto *ST = cast<StoreSDNode>(N);
     SDValue Chain = ST->getChain(), Val = ST->getValue(), Ptr = ST->getBasePtr();
-    if (ST->getMemoryVT() == MVT::i16) {
+    if (ST->getMemoryVT() == Subtarget->getXLenVT()) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
       CurDAG->SelectNodeTo(N,
-                           Subtarget->isNano() ? RISCC::ST_NANO : RISCC::ST,
+                           Subtarget->isRC32() ? RISCC::ST32
+                                               : Subtarget->isNano()
+                                                     ? RISCC::ST_NANO
+                                                     : RISCC::ST,
                            MVT::Other,
                            {Val, Base, Disp, Chain});
       return;
     }
     if (ST->getMemoryVT() == MVT::i8) {
-      CurDAG->SelectNodeTo(N, RISCC::STB, MVT::Other, {Val, Ptr, Chain});
+      CurDAG->SelectNodeTo(N, Subtarget->isRC32() ? RISCC::STB32 : RISCC::STB,
+                           MVT::Other, {Val, Ptr, Chain});
+      return;
+    }
+    if (Subtarget->isRC32() && ST->getMemoryVT() == MVT::i16) {
+      CurDAG->SelectNodeTo(N, RISCC::STH, MVT::Other, {Val, Ptr, Chain});
       return;
     }
     break;

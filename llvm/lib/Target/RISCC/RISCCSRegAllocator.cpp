@@ -49,8 +49,8 @@ static bool referencesFrameIndex(const MachineInstr &MI, int FI) {
 }
 
 static bool isSimpleSpillAccess(const MachineInstr &MI, int FI) {
-  return (MI.getOpcode() == RISCC::ST ||
-          MI.getOpcode() == RISCC::LD) &&
+  return (MI.getOpcode() == RISCC::ST || MI.getOpcode() == RISCC::LD ||
+          MI.getOpcode() == RISCC::ST32 || MI.getOpcode() == RISCC::LD32) &&
          MI.getNumOperands() >= 3 && MI.getOperand(1).isFI() &&
          MI.getOperand(1).getIndex() == FI && MI.getOperand(2).isImm() &&
          MI.getOperand(2).getImm() == 0;
@@ -71,8 +71,8 @@ static bool analyzeSpillSlot(const MachineFunction &MF, int FI,
       if (!isSimpleSpillAccess(MI, FI))
         return false;
 
-      HasStore |= MI.getOpcode() == RISCC::ST;
-      HasLoad |= MI.getOpcode() == RISCC::LD;
+      HasStore |= MI.getOpcode() == RISCC::ST || MI.getOpcode() == RISCC::ST32;
+      HasLoad |= MI.getOpcode() == RISCC::LD || MI.getOpcode() == RISCC::LD32;
       Weight = SaturatingAdd(Weight, Frequency);
     }
   }
@@ -88,12 +88,12 @@ static void moveSpillToSReg(MachineFunction &MF, int FI, MCRegister SReg,
           MI.getOperand(1).getIndex() != FI)
         continue;
 
-      if (MI.getOpcode() == RISCC::ST)
+      if (MI.getOpcode() == RISCC::ST || MI.getOpcode() == RISCC::ST32)
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::MTS), SReg)
             .addReg(MI.getOperand(0).getReg(),
                     getKillRegState(MI.getOperand(0).isKill()));
       else {
-        assert(MI.getOpcode() == RISCC::LD &&
+        assert((MI.getOpcode() == RISCC::LD || MI.getOpcode() == RISCC::LD32) &&
                "S-register candidate contains a non-spill reference");
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::MFS),
                 MI.getOperand(0).getReg())
@@ -154,7 +154,7 @@ static bool allocateSRegisters(MachineFunction &MF,
   }
 
   uint64_t EntryFrequency = MBFI.getEntryFreq().getFrequency();
-  for (MCRegister Reg : {RISCC::R5, RISCC::R6})
+  for (MCRegister Reg : {RISCC::R4, RISCC::R5, RISCC::R6})
     if (MRI.isPhysRegUsed(Reg))
       Candidates.push_back(
           {SaturatingMultiply(EntryFrequency, uint64_t(2)),
@@ -201,21 +201,29 @@ static bool allocateSRegisters(MachineFunction &MF,
         KeptLink = true;
       continue;
     }
-    if (Free.empty())
-      continue;
-
-    MCRegister SReg = Free.front();
-    Free.erase(Free.begin());
-    if (C.Kind == CandidateKind::Spill)
+    if (C.Kind == CandidateKind::Spill) {
+      if (Free.empty())
+        continue;
+      MCRegister SReg = Free.front();
+      Free.erase(Free.begin());
       SpillAssignments.emplace_back(C.FrameIndex, SReg);
-    else {
-      Info->setCalleeSavedSReg(C.Reg, SReg);
-      Changed = true;
+      continue;
     }
+
+    auto SRegIt = llvm::find_if(
+        Free, [](MCRegister Reg) {
+          return Reg == RISCC::S3 || Reg == RISCC::S4 || Reg == RISCC::S7;
+        });
+    if (SRegIt == Free.end())
+      continue;
+    Info->setCalleeSavedSReg(C.Reg, *SRegIt);
+    Free.erase(SRegIt);
+    Changed = true;
   }
 
   if (!KeptLink && Info->getLRSpillFI() < 0) {
-    Info->setLRSpillFI(MFI.CreateStackObject(2, Align(2), false));
+    Info->setLRSpillFI(MFI.CreateStackObject(STI.getSlotSize(),
+                                             STI.getStackAlignment(), false));
     Changed = true;
   }
   for (auto [FI, SReg] : SpillAssignments)

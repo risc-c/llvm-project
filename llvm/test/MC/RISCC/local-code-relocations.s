@@ -6,7 +6,7 @@
 .text
   .short code(local)
   li r1, code(local)
-  jal16 s7, code(local)
+  jall s7, code(local)
 local:
   nop
 

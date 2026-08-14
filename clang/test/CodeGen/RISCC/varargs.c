@@ -8,10 +8,10 @@ typedef struct {
 } bytes3_t;
 
 // CHECK-LABEL: define{{.*}} i16 @take_one(i16 noundef %fixed, ...)
-// CHECK: call addrspace(1) void @llvm.va_start
-// CHECK: call addrspace(1) void @llvm.va_copy
+// CHECK: call void @llvm.va_start
+// CHECK: call void @llvm.va_copy
 // CHECK: getelementptr inbounds i8, ptr %{{.*}}, i16 2
-// CHECK-COUNT-2: call addrspace(1) void @llvm.va_end
+// CHECK-COUNT-2: call void @llvm.va_end
 unsigned int take_one(unsigned int fixed, ...) {
   va_list ap;
   va_list copy;
@@ -26,7 +26,7 @@ unsigned int take_one(unsigned int fixed, ...) {
 }
 
 // CHECK-LABEL: define{{.*}} i16 @call_take_one()
-// CHECK: call addrspace(1) i16 (i16, ...) @take_one(i16 noundef 1, i16 noundef 2)
+// CHECK: call i16 (i16, ...) @take_one(i16 noundef 1, i16 noundef 2)
 unsigned int call_take_one(void) {
   return take_one(1, 2);
 }

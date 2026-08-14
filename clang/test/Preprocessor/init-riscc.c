@@ -19,6 +19,9 @@
 // RUN:   -target-cpu full -target-feature +mdu < /dev/null | FileCheck %s \
 // RUN:   --check-prefixes=COMMON,FULL,MDU --implicit-check-not=__RISCC_MIN__ \
 // RUN:   --implicit-check-not=__RISCC_SYS__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu min -target-feature +rc32 < /dev/null | FileCheck %s \
+// RUN:   --check-prefix=RC32
 
 // COMMON-DAG: #define __RISCC__ 1
 // COMMON-DAG: #define __riscc__ 1
@@ -41,3 +44,9 @@
 // MDU-DAG: #define __RISCC_MDU__ 1
 // MDU-DAG: #define __RISCC_MULHU__ 1
 // MDU-DAG: #define __RISCC_DIVU__ 1
+// RC32-DAG: #define __RISCC_RC32__ 1
+// RC32-DAG: #define __RISCC_XLEN__ 32
+// RC32-DAG: #define __POINTER_WIDTH__ 32
+// RC32-DAG: #define __SIZEOF_INT__ 4
+// RC32-DAG: #define __SIZEOF_LONG__ 4
+// RC32-DAG: #define __SIZEOF_POINTER__ 4

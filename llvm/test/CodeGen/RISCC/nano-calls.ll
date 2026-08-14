@@ -7,10 +7,12 @@ declare i16 @callee(i16)
 
 define i16 @non_leaf(i16 %value) {
 ; CHECK-LABEL: non_leaf:
+; CHECK:       st r1,
 ; CHECK:       st r6,
-; CHECK:       li r0, code(callee)
+; CHECK:       li r0, callee
 ; CHECK-NEXT:  jalr r6, r0
 ; CHECK:       ld r6,
+; CHECK:       ld r0,
 ; CHECK:       ret r6
   %result = call i16 @callee(i16 %value)
   %sum = add i16 %result, %value
@@ -19,14 +21,15 @@ define i16 @non_leaf(i16 %value) {
 
 define i16 @large_frame(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; CHECK-LABEL: large_frame:
-; CHECK:       li [[SIZE:r[0-6]]], 3{{[0-9][0-9]}}
-; CHECK:       sub r7, r7, [[SIZE]]
+; CHECK:       li r0, 31{{[0-9]}}
+; CHECK-NEXT:  sub r7, r7, r0
+; CHECK:       st r4,
 ; CHECK:       st r6,
-; CHECK:       li r0, code(callee)
+; CHECK:       li r0, callee
 ; CHECK-NEXT:  jalr r6, r0
 ; CHECK:       ld r6,
-; CHECK:       li [[RESTORE:r[0-6]]], 3{{[0-9][0-9]}}
-; CHECK:       add r7, r7, [[RESTORE]]
+; CHECK:       li r0, 31{{[0-9]}}
+; CHECK:       add r7, r7, r0
 ; CHECK:       ret r6
   %buffer = alloca [300 x i8], align 2
   %slot = getelementptr inbounds [300 x i8], ptr %buffer, i16 0, i16 299

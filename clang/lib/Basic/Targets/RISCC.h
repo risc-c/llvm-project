@@ -22,6 +22,44 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
   static const TargetInfo::GCCRegAlias GCCRegAliases[];
   std::string CPU = "full";
   bool HasMdu = false;
+  bool IsRC32 = false;
+
+  void setDataModel(bool RC32) {
+    IsRC32 = RC32;
+    ShortWidth = ShortAlign = 16;
+    IntWidth = IntAlign = RC32 ? 32 : 16;
+    LongWidth = 32;
+    LongAlign = RC32 ? 32 : 16;
+    LongLongWidth = 64;
+    LongLongAlign = RC32 ? 32 : 16;
+
+    HalfWidth = HalfAlign = 16;
+    FloatWidth = 32;
+    FloatAlign = RC32 ? 32 : 16;
+    DoubleWidth = LongDoubleWidth = 64;
+    DoubleAlign = LongDoubleAlign = RC32 ? 32 : 16;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+
+    PointerWidth = PointerAlign = RC32 ? 32 : 16;
+    SuitableAlign = RC32 ? 32 : 16;
+    DefaultAlignForAttributeAligned = RC32 ? 32 : 16;
+
+    SizeType = UnsignedInt;
+    PtrDiffType = SignedInt;
+    IntPtrType = SignedInt;
+    IntMaxType = SignedLongLong;
+    SigAtomicType = SignedInt;
+    WIntType = SignedInt;
+    Char16Type = RC32 ? UnsignedShort : UnsignedInt;
+    Char32Type = RC32 ? UnsignedInt : UnsignedLong;
+    Int16Type = RC32 ? SignedShort : SignedInt;
+
+    resetDataLayout(RC32
+                        ? "e-m:e-p:32:32-i8:8-i16:16-i32:32-i64:32-"
+                          "f32:32-f64:32-a:8:32-n8:16:32-S32"
+                        : "e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-"
+                          "f32:16-f64:16-a:8:16-n8:16-S16");
+  }
 
 public:
   RISCCTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
@@ -31,39 +69,9 @@ public:
     TLSSupported = true;
     VLASupported = false;
 
-    ShortWidth = ShortAlign = 16;
-    IntWidth = IntAlign = 16;
-    LongWidth = 32;
-    LongAlign = 16;
-    LongLongWidth = 64;
-    LongLongAlign = 16;
-
-    HalfWidth = 16;
-    HalfAlign = 16;
-    FloatWidth = 32;
-    FloatAlign = 16;
-    DoubleWidth = LongDoubleWidth = 64;
-    DoubleAlign = LongDoubleAlign = 16;
-    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
-
-    PointerWidth = PointerAlign = 16;
-    SuitableAlign = 16;
-    DefaultAlignForAttributeAligned = 16;
-
-    SizeType = UnsignedInt;
-    PtrDiffType = SignedInt;
-    IntPtrType = SignedInt;
-    IntMaxType = SignedLongLong;
-    SigAtomicType = SignedInt;
-    WIntType = SignedInt;
-    Char16Type = UnsignedInt;
-    Char32Type = UnsignedLong;
-    Int16Type = SignedInt;
-
     MaxAtomicPromoteWidth = 0;
     MaxAtomicInlineWidth = 0;
-
-    resetDataLayout();
+    setDataModel(false);
   }
 
   void getTargetDefines(const LangOptions &Opts,

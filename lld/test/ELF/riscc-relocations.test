@@ -7,11 +7,11 @@
 # HEADER:      Class: 32-bit (0x1)
 # HEADER:      DataEncoding: LittleEndian
 # HEADER:      Machine: EM_RISCC (0xC8C8)
-# HEADER:      EF_RISCC_ABI_V1 (0x1)
+# HEADER:      EF_RISCC_ABI_V0 (0x1)
 # HEADER:      EF_RISCC_PROFILE_FULL (0x10)
 
 # CONTENTS:      Contents of section .text:
-# CONTENTS-NEXT: 0000 34340034 00340000 00800080 00007800
+# CONTENTS-NEXT: 0000 34340034 00340000 00000100 0100f000
 
 #--- input.yaml
 --- !ELF
@@ -20,7 +20,7 @@ FileHeader:
   Data:    ELFDATA2LSB
   Type:    ET_REL
   Machine: EM_RISCC
-  Flags:   [ EF_RISCC_ABI_V1, EF_RISCC_PROFILE_FULL ]
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
 Sections:
   - Name:    .text
     Type:    SHT_PROGBITS
@@ -82,5 +82,5 @@ ENTRY(func)
 SECTIONS {
   .text 0 : { *(.text) }
   .target 0x100 : { *(.target) }
-  .data 0x10034 : { *(.data) }
+  .data 0x34 : { *(.data) }
 }

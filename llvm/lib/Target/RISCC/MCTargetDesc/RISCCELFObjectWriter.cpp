@@ -43,7 +43,9 @@ public:
                  ? ELF::R_RISCC_CODE16
                  : ELF::R_RISCC_ABS16;
     case FK_Data_4:
-      return ELF::R_RISCC_ABS32;
+      return Target.getSpecifier() == RISCCMCExpr::VK_TPOFF
+                 ? ELF::R_RISCC_TPOFF32
+                 : ELF::R_RISCC_ABS32;
     case RISCC::fixup_abs8:
       return ELF::R_RISCC_ABS8;
     case RISCC::fixup_abs16:
@@ -60,6 +62,8 @@ public:
       return ELF::R_RISCC_CODE_LO8;
     case RISCC::fixup_code_hi8:
       return ELF::R_RISCC_CODE_HI8;
+    case RISCC::fixup_jall21:
+      return ELF::R_RISCC_JALL21;
     case RISCC::fixup_pcrel8_word:
       return ELF::R_RISCC_PCREL8_WORD;
     case RISCC::fixup_tpoff_lo8:

@@ -223,12 +223,11 @@ define i32 @shift_arithmetic_i32_one(i32 %value) {
 ; target combines their i16 limbs.
 define i32 @funnel_left_i32_one(i32 %high, i32 %low) {
 ; O0-LABEL:  funnel_left_i32_one:
-; O0:        mov r0, r1
-; O0:        fsl1 r1, r4
+; O0:        fsl1 r1, r3
 ; O0-NEXT:   fsl1 r2, r0
 ; OPT-LABEL: funnel_left_i32_one:
 ; OPT:       fsl1 r2, r1
-; OPT-NEXT:  fsl1 r1, r4
+; OPT:       fsl1 r1, r0
 ; NANO-LABEL: funnel_left_i32_one:
 ; NANO-NOT:  fsl1
   %result = call i32 @llvm.fshl.i32(i32 %high, i32 %low, i32 1)
@@ -237,19 +236,11 @@ define i32 @funnel_left_i32_one(i32 %high, i32 %low) {
 
 define i64 @funnel_left_i64_one(i64 %high, i64 %low) {
 ; O0-LABEL:  funnel_left_i64_one:
-; O0:        mov r5, r3
-; O0-NEXT:   mov r6, r2
-; O0:        mov r2, r6
-; O0-NEXT:   fsl1 r2, r1
-; O0:        mov r3, r5
-; O0-NEXT:   fsl1 r3, r6
-; O0-NEXT:   fsl1 r4, r5
-; O0-NEXT:   fsl1 r1, r0
+; O0:        fsl1
+; O0:        st {{r[0-6]}}, [r1 + 0]
 ; OPT-LABEL: funnel_left_i64_one:
-; OPT:       fsl1 r4, r3
-; OPT-NEXT:  fsl1 r3, r2
-; OPT-NEXT:  fsl1 r2, r1
-; OPT:       fsl1 r1, r0
+; OPT:       fsl1
+; OPT:       st {{r[0-6]}}, [r1 + 0]
 ; NANO-LABEL: funnel_left_i64_one:
 ; NANO-NOT:  fsl1
   %result = call i64 @llvm.fshl.i64(i64 %high, i64 %low, i64 1)

@@ -188,6 +188,7 @@ static bool supportsRISCC(uint64_t Type) {
   case ELF::R_RISCC_CODE_LO8:
   case ELF::R_RISCC_CODE_HI8:
   case ELF::R_RISCC_PCREL8_WORD:
+  case ELF::R_RISCC_TPOFF32:
     return true;
   default:
     return false;
@@ -204,15 +205,16 @@ static uint64_t resolveRISCC(uint64_t Type, uint64_t Offset, uint64_t S,
   case ELF::R_RISCC_ABS16:
     return Value & 0xffff;
   case ELF::R_RISCC_ABS32:
-    return Value & 0xffff;
+  case ELF::R_RISCC_TPOFF32:
+    return Value & 0xffffffff;
   case ELF::R_RISCC_HI8:
     return (Value >> 8) & 0xff;
   case ELF::R_RISCC_CODE16:
-    return (Value >> 1) & 0x7fff;
+    return Value & 0xffff;
   case ELF::R_RISCC_CODE_LO8:
-    return (Value >> 1) & 0xff;
+    return Value & 0xff;
   case ELF::R_RISCC_CODE_HI8:
-    return (Value >> 9) & 0xff;
+    return (Value >> 8) & 0xff;
   case ELF::R_RISCC_PCREL8_WORD:
     return ((Value - (Offset + 2)) >> 1) & 0xff;
   default:

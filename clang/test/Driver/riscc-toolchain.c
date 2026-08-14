@@ -8,12 +8,18 @@
 // RUN:   FileCheck %s --check-prefix=NANO
 // RUN: %clang -### --target=riscc-none-elf -mcpu=full -mmdu -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=MDU
+// RUN: %clang -### --target=riscc-none-elf -mcpu=min -mrc32 -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=RC32
 // RUN: %clang -### --target=riscc-none-elf -mcpu=full -mno-mdu -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=NO-MDU
 // RUN: %clang -### --target=riscc-none-elf -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=DEFAULT
 // RUN: not %clang --target=riscc-none-elf -mcpu=invalid -c %s -o %t.o 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=INVALID-CPU
+// RUN: not %clang --target=riscc-none-elf -mcpu=nano -mrc32 -c %s -o %t.o 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=RC32-NANO
+// RUN: not %clang --target=riscc-none-elf -mcpu=min -mrc32x -c %s -o %t.o 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=RC32X
 
 // CHECK: "-cc1" "-triple" "riscc-unknown-none-elf"
 // CHECK-SAME: "-target-cpu" "full"
@@ -38,8 +44,13 @@
 // NO-MDU-SAME: "-target-cpu" "full"
 // NO-MDU-SAME: "-target-feature" "-mdu"
 
+// RC32: "-target-cpu" "min"
+// RC32-SAME: "-target-feature" "+rc32"
+
 // DEFAULT: "-cc1"
 // DEFAULT-SAME: "-target-cpu" "full"
 
 // INVALID-CPU: error: unknown target CPU 'invalid'
 // INVALID-CPU-NEXT: note: valid target CPU values are: nano, min, sys, full
+// RC32-NANO: error: invalid feature combination: rc32 has no Nano profile
+// RC32X: error: invalid feature combination: rc32x is not implemented

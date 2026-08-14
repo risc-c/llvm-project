@@ -19,14 +19,28 @@
 using namespace llvm;
 
 RISCCFrameLowering::RISCCFrameLowering(const RISCCSubtarget &STI)
-    : TargetFrameLowering(StackGrowsDown, Align(2), 0, Align(2)), STI(STI) {}
+    : TargetFrameLowering(StackGrowsDown, STI.getStackAlignment(), 0,
+                          STI.getStackAlignment()),
+      STI(STI) {}
 
 static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      const DebugLoc &DL, const RISCCInstrInfo &TII,
-                     int64_t Amount, MachineInstr::MIFlag Flag,
+                     int64_t Amount, MachineInstr::MIFlag Flag, bool IsRC32,
                      Register Scratch = RISCC::R0) {
   if (!Amount)
     return;
+  if (IsRC32) {
+    while (Amount) {
+      int64_t Step = Amount > 0 ? std::min<int64_t>(Amount, 127)
+                                : std::max<int64_t>(Amount, -128);
+      BuildMI(MBB, I, DL, TII.get(RISCC::ADDI32), RISCC::R7)
+          .addReg(RISCC::R7)
+          .addImm(Step)
+          .setMIFlag(Flag);
+      Amount -= Step;
+    }
+    return;
+  }
   if (isInt<8>(Amount)) {
     BuildMI(MBB, I, DL, TII.get(RISCC::ADDI), RISCC::R7)
         .addReg(RISCC::R7)
@@ -37,7 +51,7 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   TII.materializeImmediate(MBB, I, DL, Scratch, std::abs(Amount), Flag);
   BuildMI(MBB, I, DL, TII.get(Amount < 0 ? RISCC::SUB : RISCC::ADD), RISCC::R7)
       .addReg(RISCC::R7)
-      .addReg(Scratch, RegState::Kill)
+      .addReg(Scratch)
       .setMIFlag(Flag);
 }
 
@@ -47,9 +61,10 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
   DebugLoc DL = I == MBB.end() ? DebugLoc() : I->getDebugLoc();
   const auto &TII = *STI.getInstrInfo();
   uint64_t Size = MF.getFrameInfo().getStackSize();
-  if (Size > 0xffff)
+  if (!STI.isRC32() && Size > 0xffff)
     report_fatal_error("RISC-C stack frame exceeds the 16-bit address space");
-  adjustSP(MBB, I, DL, TII, -int64_t(Size), MachineInstr::FrameSetup);
+  adjustSP(MBB, I, DL, TII, -int64_t(Size), MachineInstr::FrameSetup,
+           STI.isRC32());
 
   const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   int FI = FuncInfo.getLRSpillFI();
@@ -57,7 +72,7 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
     BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
         .addReg(FuncInfo.getReturnAddressReg())
         .setMIFlag(MachineInstr::FrameSetup);
-    BuildMI(MBB, I, DL, TII.get(RISCC::ST))
+    BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
         .addReg(RISCC::R0, RegState::Kill)
         .addFrameIndex(FI)
         .addImm(0)
@@ -73,7 +88,8 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   int FI = FuncInfo.getLRSpillFI();
   if (!STI.isNano() && FI >= 0) {
-    BuildMI(MBB, I, DL, TII.get(RISCC::LD), RISCC::R0)
+    BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
+            RISCC::R0)
         .addFrameIndex(FI)
         .addImm(0)
         .setMIFlag(MachineInstr::FrameDestroy);
@@ -82,15 +98,15 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
         .addReg(RISCC::R0, RegState::Kill)
         .setMIFlag(MachineInstr::FrameDestroy);
   }
-  // A Nano return may hold its target in r0 while a large SP adjustment also
-  // needs a temporary. Calls and tail calls use direct targets here.
+  // A Nano tail return may hold its target in r0 while a large stack
+  // adjustment needs a temporary.
   Register Scratch =
       STI.isNano() && I != MBB.end() && I->getOpcode() == RISCC::RET_NANO &&
               I->getOperand(0).getReg() == RISCC::R0
           ? RISCC::R6
           : RISCC::R0;
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
-           MachineInstr::FrameDestroy, Scratch);
+           MachineInstr::FrameDestroy, STI.isRC32(), Scratch);
 }
 
 bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
@@ -103,7 +119,8 @@ bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
   auto *FuncInfo = MF.getInfo<RISCCMachineFunctionInfo>();
 
   for (CalleeSavedInfo &Info : CSI) {
-    if (Info.getReg() == RISCC::R5 || Info.getReg() == RISCC::R6) {
+    if (Info.getReg() == RISCC::R4 || Info.getReg() == RISCC::R5 ||
+        Info.getReg() == RISCC::R6) {
       MCRegister SReg = FuncInfo->getCalleeSavedSReg(Info.getReg());
       if (SReg) {
         Info.setDstReg(SReg);
@@ -112,7 +129,8 @@ bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
     }
 
     const TargetRegisterClass *RC =
-        TRI->getMinimalPhysRegClass(Info.getReg());
+        RISCC::SREGRegClass.contains(Info.getReg()) ? STI.getSRegClass()
+                                                    : STI.getGPRClass();
     Align Alignment = std::min(TRI->getSpillAlign(*RC), getStackAlign());
     int FI = MFI.CreateStackObject(TRI->getSpillSize(*RC), Alignment, true);
     MFI.setIsCalleeSavedObjectIndex(FI, true);
@@ -159,9 +177,6 @@ static bool needsFrameScavengerSlot(const MachineFunction &MF) {
 
 void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
     MachineFunction &MF, RegScavenger *RS) const {
-  if (MF.getFrameInfo().getMaxCallFrameSize() > 126)
-    report_fatal_error("RISC-C supports outgoing call frames of at most 126 "
-                       "bytes");
   bool HasReturningCall = llvm::any_of(MF, [](const MachineBasicBlock &MBB) {
     return llvm::any_of(MBB, [](const MachineInstr &MI) {
       return MI.isCall() && !MI.isReturn();
@@ -169,7 +184,8 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   });
   if (!STI.isNano() && HasReturningCall &&
       MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI() < 0) {
-    int FI = MF.getFrameInfo().CreateStackObject(2, Align(2), false);
+    int FI = MF.getFrameInfo().CreateStackObject(STI.getSlotSize(),
+                                                 STI.getStackAlignment(), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
   }
   // Min's largest forward short-branch displacement is 254 bytes. Reserve 14
@@ -177,12 +193,13 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   // branch may need to spill its scavenged address register.
   constexpr int64_t MinBranchSpillThreshold = 254 - 14;
   bool NeedsBranchSpill =
-      !STI.hasSys() &&
+      (!STI.hasSys() || STI.isRC32()) &&
       MF.estimateFunctionSizeInBytes() >= MinBranchSpillThreshold;
   // Only large frame offsets and long branches need a scavenged GPR. Avoid
   // growing every ordinary frame by a word just to reserve an unused slot.
   if (RS && (needsFrameScavengerSlot(MF) || NeedsBranchSpill)) {
-    int FI = MF.getFrameInfo().CreateSpillStackObject(2, Align(2));
+    int FI = MF.getFrameInfo().CreateSpillStackObject(STI.getSlotSize(),
+                                                       STI.getStackAlignment());
     RS->addScavengingFrameIndex(FI);
     if (NeedsBranchSpill)
       MF.getInfo<RISCCMachineFunctionInfo>()

@@ -12,17 +12,31 @@ declare i16 @five_args(i16, i16, i16, i16, i16)
 
 define i16 @direct_tail(i16 %x) {
 ; CHECK-LABEL: direct_tail:
-; SYS:         tail code(callee)
-; MIN:         li r0, code(callee)
+; SYS:         tail callee
+; MIN:         li r0, callee
 ; MIN-NEXT:    jalr s0, r0
-; NANO:        li r0, code(callee)
+; NANO:        li r0, callee
 ; NANO-NEXT:   jalr r0, r0
 ; CHECK-NOT:   ret
   %result = tail call i16 @callee(i16 %x)
   ret i16 %result
 }
 
-define i16 @reject_indirect_tail(ptr addrspace(1) %callee_ptr, i16 %x) {
+; The fourth argument is stack-passed, so this is a normal call rather than a
+; sibling call. Direct targets consistently use the caller-saved r0 scratch.
+define i16 @direct_tail_four_args(i16 %a, i16 %b, i16 %c, i16 %d) {
+; CHECK-LABEL: direct_tail_four_args:
+; SYS:         call16 four_args
+; MIN:         li r0, four_args
+; MIN-NEXT:    jalr s7, r0
+; NANO:        li r0, four_args
+; NANO-NEXT:   jalr r6, r0
+; NANO:        ret r0
+  %result = tail call i16 @four_args(i16 %a, i16 %b, i16 %c, i16 %d)
+  ret i16 %result
+}
+
+define i16 @reject_indirect_tail(ptr %callee_ptr, i16 %x) {
 ; CHECK-LABEL: reject_indirect_tail:
 ; CHECK:       call r{{[0-6]}}
 ; SYS:         rets
@@ -38,10 +52,10 @@ define i16 @framed_tail(i16 %x) {
 ; CHECK-NEXT:  st r1, [r7 + 0]
 ; CHECK-NEXT:  ld r1, [r7 + 0]
 ; CHECK-NEXT:  addi r7, 2
-; SYS-NEXT:    tail code(callee)
-; MIN-NEXT:    li r0, code(callee)
+; SYS-NEXT:    tail callee
+; MIN-NEXT:    li r0, callee
 ; MIN-NEXT:    jalr s0, r0
-; NANO-NEXT:   li r0, code(callee)
+; NANO-NEXT:   li r0, callee
 ; NANO-NEXT:   jalr r0, r0
   %slot = alloca i16, align 2
   store volatile i16 %x, ptr %slot
@@ -52,9 +66,9 @@ define i16 @framed_tail(i16 %x) {
 
 define i16 @call_then_tail(i16 %x) {
 ; CHECK-LABEL: call_then_tail:
-; SYS:         call16 code(callee)
+; SYS:         call16 callee
 ; SYS:         mts s7,
-; SYS:         tail code(callee)
+; SYS:         tail callee
 ; MIN:         jalr s7,
 ; MIN:         mts s7,
 ; MIN:         jalr s0,
@@ -66,13 +80,17 @@ define i16 @call_then_tail(i16 %x) {
   ret i16 %result
 }
 
-define i16 @reject_large_indirect_tail(ptr addrspace(1) %callee_ptr, i16 %x) {
+define i16 @reject_large_indirect_tail(ptr %callee_ptr, i16 %x) {
 ; CHECK-LABEL: reject_large_indirect_tail:
-; CHECK:       ldi r{{[0-6]}}, 204
+; CHECK:       ldi r{{[0-6]}}, 20{{[46]}}
 ; CHECK:       sub r7, r7,
 ; CHECK:       call r{{[0-6]}}
-; CHECK:       ldi r{{[0-6]}}, 204
-; CHECK-NEXT:  add r7, r7,
+; SYS:         ldi r{{[0-6]}}, 20{{[46]}}
+; SYS:         add r7, r7,
+; MIN:         ldi r{{[0-6]}}, 20{{[46]}}
+; MIN:         add r7, r7,
+; NANO:        ldi r6, 204
+; NANO-NEXT:   add r7, r7, r6
 ; SYS-NEXT:    rets
 ; MIN-NEXT:    rets
 ; NANO-NEXT:   ret r{{[0-6]}}
@@ -86,7 +104,7 @@ define i16 @reject_large_indirect_tail(ptr addrspace(1) %callee_ptr, i16 %x) {
 
 define i16 @reject_stack_tail(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e) {
 ; CHECK-LABEL: reject_stack_tail:
-; SYS:         call16 code(five_args)
+; SYS:         call16 five_args
 ; SYS:         rets
 ; MIN:         jalr s7,
 ; MIN:         rets
@@ -97,7 +115,7 @@ define i16 @reject_stack_tail(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e) {
 }
 
 define i16 @reject_indirect_four_args(
-    ptr addrspace(1) %callee_ptr, i16 %a, i16 %b, i16 %c, i16 %d) {
+    ptr %callee_ptr, i16 %a, i16 %b, i16 %c, i16 %d) {
 ; CHECK-LABEL: reject_indirect_four_args:
 ; CHECK:       call r{{[0-6]}}
 ; SYS:         rets

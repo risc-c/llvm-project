@@ -29,14 +29,13 @@ namespace {
 class RISCCAsmBackend final : public MCAsmBackend {
   uint8_t OSABI;
 
-  void adjustCodeAddress(const MCFixup &Fixup, uint64_t &Value) const {
+  void checkCodeAddress(const MCFixup &Fixup, uint64_t Value) const {
     if (Value & 1)
       getContext().reportError(Fixup.getLoc(),
                                "code address must be 2-byte aligned");
-    Value >>= 1;
-    if (Value > 0x7fff)
+    if (Value > 0xffff)
       getContext().reportError(Fixup.getLoc(),
-                               "code address exceeds 15-bit range");
+                               "code address exceeds 16-bit range");
   }
 
 public:
@@ -58,6 +57,7 @@ public:
         {"fixup_code16", 0, 16, 0},
         {"fixup_code_lo8", 0, 8, 0},
         {"fixup_code_hi8", 0, 8, 0},
+        {"fixup_jall21", 0, 32, 0},
         {"fixup_pcrel8_word", 0, 8, 0},
         {"fixup_tpoff_lo8", 0, 8, 0},
         {"fixup_tpoff_hi8", 0, 8, 0},
@@ -83,6 +83,21 @@ public:
       return;
     }
 
+    if (Kind == RISCC::fixup_jall21) {
+      if (!IsResolved)
+        return;
+      if ((Value & 1) || Value > 0x1fffff) {
+        getContext().reportError(Fixup.getLoc(),
+                                 "direct target exceeds JALL address range");
+        return;
+      }
+      uint16_t Head = support::endian::read16le(Data);
+      Head = (Head & ~0x07c0) | ((Value >> 16) & 0x1f) << 6;
+      support::endian::write16le(Data, Head);
+      support::endian::write16le(Data + 2, Value);
+      return;
+    }
+
     if (IsResolved) {
       if (Kind == FK_Data_1) {
         switch (Target.getSpecifier()) {
@@ -94,7 +109,7 @@ public:
           break;
         case RISCCMCExpr::VK_CODE_LO8:
         case RISCCMCExpr::VK_CODE_HI8:
-          adjustCodeAddress(Fixup, Value);
+          checkCodeAddress(Fixup, Value);
           if (Target.getSpecifier() == RISCCMCExpr::VK_CODE_LO8)
             Value &= 0xff;
           else
@@ -105,7 +120,7 @@ public:
         }
       }
       if (Kind == FK_Data_2 && Target.getSpecifier() == RISCCMCExpr::VK_CODE) {
-        adjustCodeAddress(Fixup, Value);
+        checkCodeAddress(Fixup, Value);
       }
       switch (Kind) {
       case RISCC::fixup_hi8:
@@ -119,7 +134,7 @@ public:
       case RISCC::fixup_code16:
       case RISCC::fixup_code_lo8:
       case RISCC::fixup_code_hi8:
-        adjustCodeAddress(Fixup, Value);
+        checkCodeAddress(Fixup, Value);
         if (Kind == RISCC::fixup_code_lo8)
           Value &= 0xff;
         if (Kind == RISCC::fixup_code_hi8)
@@ -133,7 +148,8 @@ public:
         if (!isInt<8>(Rel))
           getContext().reportError(Fixup.getLoc(),
                                    "branch target out of signed 8-bit range");
-        Value = Rel & 0xff;
+        uint64_t Encoded = Rel & 0xff;
+        Value = ((Encoded << 1) & 0xfe) | (Encoded >> 7);
         break;
       }
       default:

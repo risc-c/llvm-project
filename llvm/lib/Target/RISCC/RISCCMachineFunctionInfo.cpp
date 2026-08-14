@@ -25,15 +25,22 @@ RISCCMachineFunctionInfo::RISCCMachineFunctionInfo(
 
 void RISCCMachineFunctionInfo::setCalleeSavedSReg(MCRegister GPR,
                                                   MCRegister SReg) {
-  assert((GPR == RISCC::R5 || GPR == RISCC::R6) &&
+  assert((GPR == RISCC::R4 || GPR == RISCC::R5 || GPR == RISCC::R6) &&
          "only callee-saved GPRs have S-register backups");
-  (GPR == RISCC::R5 ? R5SaveReg : R6SaveReg) = SReg;
+  if (GPR == RISCC::R4)
+    R4SaveReg = SReg;
+  else if (GPR == RISCC::R5)
+    R5SaveReg = SReg;
+  else
+    R6SaveReg = SReg;
 }
 
 MCRegister
 RISCCMachineFunctionInfo::getCalleeSavedSReg(MCRegister GPR) const {
-  assert((GPR == RISCC::R5 || GPR == RISCC::R6) &&
+  assert((GPR == RISCC::R4 || GPR == RISCC::R5 || GPR == RISCC::R6) &&
          "only callee-saved GPRs have S-register backups");
+  if (GPR == RISCC::R4)
+    return R4SaveReg;
   return GPR == RISCC::R5 ? R5SaveReg : R6SaveReg;
 }
 

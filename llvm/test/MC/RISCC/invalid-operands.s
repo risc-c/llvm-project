@@ -6,6 +6,8 @@
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/far-branch.s 2>&1 | FileCheck %s --check-prefix=BRANCH
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj -o /dev/null < %t/alignment.s 2>&1 | FileCheck %s --check-prefix=ALIGN
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=null < %t/funnel.s 2>&1 | FileCheck %s --check-prefix=FUNNEL
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -mattr=+rc32 -show-encoding < %t/rc32-jall.s | FileCheck %s --check-prefix=RC32-JALL
+# RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -mattr=+rc32 -filetype=obj -o /dev/null < %t/rc32-li.s 2>&1 | FileCheck %s --check-prefix=RC32-LI
 
 #--- ranges.s
 ldi r0, 256
@@ -26,17 +28,13 @@ ldb r0, [r1 + r2]
 # ADDRESS: error: direct address requires a single register
 ldbs r0, [r1 + r2]
 # ADDRESS: error: direct address requires a single register
-ldph r0, [r1 + r2]
-# ADDRESS: error: direct address requires a single register
-ldp r0, [r1 + r2]
-# ADDRESS: error: direct address requires a single register
 
 #--- encoding.s
-jal16 s7, 3
-# ENCODING: error: direct target is not a 15-bit word address
-jal16 s7, 65536
-# ENCODING: error: direct target is not a 15-bit word address
-jal16 s7, lo8(func)
+jall s7, 3
+# ENCODING: error: direct target is not an aligned JALL byte address
+jall s7, 65536
+# ENCODING: error: direct target is not an aligned JALL byte address
+jall s7, lo8(func)
 # ENCODING: error: only code() is valid on a direct control target
 beqz code(func)
 # ENCODING: error: target modifier is invalid on a short branch
@@ -64,3 +62,13 @@ fsr1 r1, r2, r3
 # FUNNEL: error: invalid operand for RISC-C instruction
 fsr1 r1
 # FUNNEL: error: invalid operand for RISC-C instruction
+
+#--- rc32-jall.s
+jall s7, 65536
+# RC32-JALL: jall	s7, 65536{{ *}}; encoding: [0x74,0x38,0x00,0x00]
+jall s7, 2097150
+# RC32-JALL: jall	s7, 2097150{{ *}}; encoding: [0xf4,0x3f,0xfe,0xff]
+
+#--- rc32-li.s
+li r0, 1
+# RC32-LI: error: LI is unavailable in RC32

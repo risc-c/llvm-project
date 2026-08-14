@@ -1043,7 +1043,7 @@ enum {
 // RISC-C specific e_flags.
 enum : unsigned {
   EF_RISCC_ABI_MASK = 0x0000000f,
-  EF_RISCC_ABI_V1 = 0x00000001,
+  EF_RISCC_ABI_V0 = 0x00000001,
 
   EF_RISCC_PROFILE_MASK = 0x000000f0,
   EF_RISCC_PROFILE_FULL = 0x00000010,
@@ -1051,9 +1051,9 @@ enum : unsigned {
   EF_RISCC_PROFILE_SYS = 0x00000030,
   EF_RISCC_PROFILE_NANO = 0x00000040,
 
-  // Split-memory linker scripts tag data addresses inside ELF with this bit.
-  // Relocations erase the tag before writing an architectural data address.
-  RISCC_ELF_DATA_ADDRESS_TAG = 0x00010000,
+  EF_RISCC_CONFIG_MASK = 0x00000300,
+  EF_RISCC_RC32 = 0x00000100,
+  EF_RISCC_RC32X = 0x00000200,
 };
 
 // ELF relocation types for RISC-C.

@@ -21,6 +21,7 @@ enum Fixups {
   fixup_code16,
   fixup_code_lo8,
   fixup_code_hi8,
+  fixup_jall21,
   fixup_pcrel8_word,
   fixup_tpoff_lo8,
   fixup_tpoff_hi8,

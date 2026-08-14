@@ -61,6 +61,7 @@ bool RISCCTargetInfo::setCPU(StringRef Name) {
 bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
   return llvm::StringSwitch<bool>(Feature)
       .Case("riscc", true)
+      .Case("rc32", IsRC32)
       .Case("nano", CPU == "nano")
       .Case("min", CPU == "min")
       .Case("full", CPU == "full")
@@ -78,11 +79,27 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
 bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
                                            DiagnosticsEngine &Diags) {
   HasMdu = false;
+  IsRC32 = false;
   for (StringRef Feature : Features) {
     if (Feature == "+mdu")
       HasMdu = true;
     else if (Feature == "-mdu")
       HasMdu = false;
+    else if (Feature == "+rc32")
+      IsRC32 = true;
+    else if (Feature == "-rc32")
+      IsRC32 = false;
+    else if (Feature == "+rc32x") {
+      Diags.Report(diag::err_invalid_feature_combination)
+          << "rc32x is not implemented";
+      return false;
+    }
+  }
+
+  if (IsRC32 && CPU == "nano") {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "rc32 has no Nano profile";
+    return false;
   }
 
   if (HasMdu && CPU != "full") {
@@ -90,6 +107,7 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
         << "mdu requires -mcpu=full";
     return false;
   }
+  setDataModel(IsRC32);
   return true;
 }
 
@@ -97,6 +115,9 @@ void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
                                        MacroBuilder &Builder) const {
   Builder.defineMacro("__riscc__");
   Builder.defineMacro("__RISCC__");
+  Builder.defineMacro("__RISCC_XLEN__", IsRC32 ? "32" : "16");
+  if (IsRC32)
+    Builder.defineMacro("__RISCC_RC32__");
   if (CPU == "nano")
     Builder.defineMacro("__RISCC_NANO__");
   else if (CPU == "min")

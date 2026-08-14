@@ -894,6 +894,15 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
                                        options::OPT_mno_mdu))
       Features.push_back(A->getOption().matches(options::OPT_mmdu) ? "+mdu"
                                                                   : "-mdu");
+    if (const Arg *A = Args.getLastArg(options::OPT_mrc32,
+                                       options::OPT_mno_rc32))
+      Features.push_back(A->getOption().matches(options::OPT_mrc32) ? "+rc32"
+                                                                    : "-rc32");
+    if (const Arg *A = Args.getLastArg(options::OPT_mrc32x,
+                                       options::OPT_mno_rc32x))
+      Features.push_back(A->getOption().matches(options::OPT_mrc32x)
+                             ? "+rc32x"
+                             : "-rc32x");
     break;
   case llvm::Triple::systemz:
     systemz::getSystemZTargetFeatures(D, Args, Features);

@@ -54,6 +54,12 @@ static DecodeStatus DecodeGPRRegisterClass(MCInst &MI, uint64_t RegNo,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus DecodeGPR32RegisterClass(MCInst &MI, uint64_t RegNo,
+                                             uint64_t Address,
+                                             const MCDisassembler *Decoder) {
+  return DecodeGPRRegisterClass(MI, RegNo, Address, Decoder);
+}
+
 static DecodeStatus DecodeSREGRegisterClass(MCInst &MI, uint64_t RegNo,
                                             uint64_t,
                                             const MCDisassembler *) {
@@ -69,6 +75,23 @@ static DecodeStatus decodeSigned8(MCInst &MI, uint64_t Value, uint64_t,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus decodeBranch8(MCInst &MI, uint64_t Value, uint64_t,
+                                  const MCDisassembler *) {
+  uint8_t Encoded = static_cast<uint8_t>(Value);
+  uint8_t Rel = static_cast<uint8_t>((Encoded >> 1) | (Encoded << 7));
+  MI.addOperand(MCOperand::createImm(static_cast<int8_t>(Rel)));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus decodeRC32WordDisp(MCInst &MI, uint64_t Value, uint64_t,
+                                       const MCDisassembler *) {
+  uint8_t Encoded = static_cast<uint8_t>(Value);
+  uint8_t Words = static_cast<uint8_t>(((Encoded >> 2) & 0x3f) |
+                                       ((Encoded & 0x02) << 5));
+  MI.addOperand(MCOperand::createImm(SignExtend32<7>(Words) * 4));
+  return MCDisassembler::Success;
+}
+
 static DecodeStatus decodeShiftAmount(MCInst &MI, uint64_t Value, uint64_t,
                                       const MCDisassembler *Decoder) {
   bool HasWideShift =
@@ -80,8 +103,11 @@ static DecodeStatus decodeShiftAmount(MCInst &MI, uint64_t Value, uint64_t,
 }
 
 static DecodeStatus decodeCodeTarget(MCInst &MI, uint64_t Value, uint64_t,
-                                     const MCDisassembler *) {
-  MI.addOperand(MCOperand::createImm(Value * 2));
+                                     const MCDisassembler *Decoder) {
+  if (!Decoder->getSubtargetInfo().hasFeature(RISCC::FeatureRC32) &&
+      Value > 0xffff)
+    return MCDisassembler::Fail;
+  MI.addOperand(MCOperand::createImm(Value));
   return MCDisassembler::Success;
 }
 
@@ -95,21 +121,28 @@ DecodeStatus RISCCDisassembler::getInstruction(
 
   uint16_t Instruction = support::endian::read16le(Bytes.data());
   Size = 2;
+  bool IsJALL = (Instruction & 0xc03f) == 0x0034;
   DecodeStatus Result = Fail;
   if (STI.hasFeature(RISCC::FeatureNano))
     Result = decodeInstruction(DecoderTableNano16, MI, Instruction, Address,
+                               this, STI);
+  else if (STI.hasFeature(RISCC::FeatureRC32))
+    Result = decodeInstruction(DecoderTableRC3216, MI, Instruction, Address,
+                               this, STI);
+  else
+    Result = decodeInstruction(DecoderTableRC1616, MI, Instruction, Address,
                                this, STI);
   if (Result == Fail) {
     MI.clear();
     Result =
         decodeInstruction(DecoderTable16, MI, Instruction, Address, this, STI);
   }
-  if (Result != Fail)
+  if (Result != Fail && !IsJALL)
     return Result;
 
-  // Only the defined JAL16 head can begin a 32-bit instruction. Avoid
+  // Only the defined JALL head can begin a 32-bit instruction. Avoid
   // consuming the following instruction after a reserved 00 encoding.
-  if ((Instruction & 0xc7ff) != 0x0700 || Bytes.size() < 4)
+  if (!IsJALL || Bytes.size() < 4)
     return Fail;
   MI.clear();
   uint32_t LongInstruction = support::endian::read32le(Bytes.data());

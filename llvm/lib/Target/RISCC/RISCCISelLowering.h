@@ -48,10 +48,12 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerExternalSymbol(SDValue, SelectionDAG &) const;
   SDValue lowerBlockAddress(SDValue, SelectionDAG &) const;
   SDValue lowerAddrSpaceCast(SDValue, SelectionDAG &) const;
+  SDValue lowerConstant(SDValue, SelectionDAG &) const;
   SDValue lowerBRCC(SDValue, SelectionDAG &) const;
   SDValue lowerSETCC(SDValue, SelectionDAG &) const;
   SDValue lowerSELECTCC(SDValue, SelectionDAG &) const;
   SDValue lowerShift(SDValue, SelectionDAG &) const;
+  SDValue lowerRC32Shift(SDValue, SelectionDAG &) const;
   SDValue lowerFunnelShift(SDValue, SelectionDAG &) const;
   SDValue lowerShiftLibCall(SDValue, unsigned Opcode, unsigned Amount,
                             SelectionDAG &) const;
@@ -87,12 +89,8 @@ public:
   MachineBasicBlock *EmitInstrWithCustomInserter(
       MachineInstr &, MachineBasicBlock *) const override;
 
-  MVT getScalarShiftAmountTy(const DataLayout &, EVT) const override {
-    return MVT::i16;
-  }
-  MVT::SimpleValueType getCmpLibcallReturnType() const override {
-    return MVT::i16;
-  }
+  MVT getScalarShiftAmountTy(const DataLayout &, EVT) const override;
+  MVT::SimpleValueType getCmpLibcallReturnType() const override;
   ConstraintType getConstraintType(StringRef) const override;
   std::pair<unsigned, const TargetRegisterClass *>
   getRegForInlineAsmConstraint(const TargetRegisterInfo *, StringRef,

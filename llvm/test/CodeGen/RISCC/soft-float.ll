@@ -6,10 +6,10 @@ target triple = "riscc-none-elf"
 
 define float @arithmetic_f32(float %a, float %b) {
 ; CHECK-LABEL: arithmetic_f32:
-; CHECK: code(__addsf3)
-; CHECK: code(__subsf3)
-; CHECK: code(__mulsf3)
-; CHECK: code(__divsf3)
+; CHECK: __addsf3
+; CHECK: __subsf3
+; CHECK: __mulsf3
+; CHECK: __divsf3
   %add = fadd float %a, %b
   %sub = fsub float %add, %b
   %mul = fmul float %sub, %a
@@ -19,10 +19,10 @@ define float @arithmetic_f32(float %a, float %b) {
 
 define double @arithmetic_f64(double %a, double %b) {
 ; CHECK-LABEL: arithmetic_f64:
-; CHECK: code(__adddf3)
-; CHECK: code(__subdf3)
-; CHECK: code(__muldf3)
-; CHECK: code(__divdf3)
+; CHECK: __adddf3
+; CHECK: __subdf3
+; CHECK: __muldf3
+; CHECK: __divdf3
   %add = fadd double %a, %b
   %sub = fsub double %add, %b
   %mul = fmul double %sub, %a
@@ -32,133 +32,133 @@ define double @arithmetic_f64(double %a, double %b) {
 
 define double @extend(float %value) {
 ; CHECK-LABEL: extend:
-; CHECK: code(__extendsfdf2)
+; CHECK: __extendsfdf2
   %result = fpext float %value to double
   ret double %result
 }
 
 define float @double_to_float(double %value) {
 ; CHECK-LABEL: double_to_float:
-; CHECK: code(__truncdfsf2)
+; CHECK: __truncdfsf2
   %result = fptrunc double %value to float
   ret float %result
 }
 
 define i32 @float_to_i32(float %value) {
 ; CHECK-LABEL: float_to_i32:
-; CHECK: code(__fixsfsi)
+; CHECK: __fixsfsi
   %result = fptosi float %value to i32
   ret i32 %result
 }
 
 define i64 @float_to_i64(float %value) {
 ; CHECK-LABEL: float_to_i64:
-; CHECK: code(__fixsfdi)
+; CHECK: __fixsfdi
   %result = fptosi float %value to i64
   ret i64 %result
 }
 
 define i32 @double_to_i32(double %value) {
 ; CHECK-LABEL: double_to_i32:
-; CHECK: code(__fixdfsi)
+; CHECK: __fixdfsi
   %result = fptosi double %value to i32
   ret i32 %result
 }
 
 define i64 @double_to_i64(double %value) {
 ; CHECK-LABEL: double_to_i64:
-; CHECK: code(__fixdfdi)
+; CHECK: __fixdfdi
   %result = fptosi double %value to i64
   ret i64 %result
 }
 
 define i32 @float_to_u32(float %value) {
 ; CHECK-LABEL: float_to_u32:
-; CHECK: code(__fixunssfsi)
+; CHECK: __fixunssfsi
   %result = fptoui float %value to i32
   ret i32 %result
 }
 
 define i64 @float_to_u64(float %value) {
 ; CHECK-LABEL: float_to_u64:
-; CHECK: code(__fixunssfdi)
+; CHECK: __fixunssfdi
   %result = fptoui float %value to i64
   ret i64 %result
 }
 
 define i32 @double_to_u32(double %value) {
 ; CHECK-LABEL: double_to_u32:
-; CHECK: code(__fixunsdfsi)
+; CHECK: __fixunsdfsi
   %result = fptoui double %value to i32
   ret i32 %result
 }
 
 define i64 @double_to_u64(double %value) {
 ; CHECK-LABEL: double_to_u64:
-; CHECK: code(__fixunsdfdi)
+; CHECK: __fixunsdfdi
   %result = fptoui double %value to i64
   ret i64 %result
 }
 
 define float @i32_to_float(i32 %value) {
 ; CHECK-LABEL: i32_to_float:
-; CHECK: code(__floatsisf)
+; CHECK: __floatsisf
   %result = sitofp i32 %value to float
   ret float %result
 }
 
 define double @i32_to_double(i32 %value) {
 ; CHECK-LABEL: i32_to_double:
-; CHECK: code(__floatsidf)
+; CHECK: __floatsidf
   %result = sitofp i32 %value to double
   ret double %result
 }
 
 define float @i64_to_float(i64 %value) {
 ; CHECK-LABEL: i64_to_float:
-; CHECK: code(__floatdisf)
+; CHECK: __floatdisf
   %result = sitofp i64 %value to float
   ret float %result
 }
 
 define double @i64_to_double(i64 %value) {
 ; CHECK-LABEL: i64_to_double:
-; CHECK: code(__floatdidf)
+; CHECK: __floatdidf
   %result = sitofp i64 %value to double
   ret double %result
 }
 
 define float @u32_to_float(i32 %value) {
 ; CHECK-LABEL: u32_to_float:
-; CHECK: code(__floatunsisf)
+; CHECK: __floatunsisf
   %result = uitofp i32 %value to float
   ret float %result
 }
 
 define double @u32_to_double(i32 %value) {
 ; CHECK-LABEL: u32_to_double:
-; CHECK: code(__floatunsidf)
+; CHECK: __floatunsidf
   %result = uitofp i32 %value to double
   ret double %result
 }
 
 define float @u64_to_float(i64 %value) {
 ; CHECK-LABEL: u64_to_float:
-; CHECK: code(__floatundisf)
+; CHECK: __floatundisf
   %result = uitofp i64 %value to float
   ret float %result
 }
 
 define double @u64_to_double(i64 %value) {
 ; CHECK-LABEL: u64_to_double:
-; CHECK: code(__floatundidf)
+; CHECK: __floatundidf
   %result = uitofp i64 %value to double
   ret double %result
 }
 
 define i16 @compare_olt_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_olt_f32:
-; CHECK: code(__ltsf2)
+; CHECK: __ltsf2
   %result = fcmp olt float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -166,7 +166,7 @@ define i16 @compare_olt_f32(float %a, float %b) {
 
 define i16 @compare_oge_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_oge_f32:
-; CHECK: code(__gesf2)
+; CHECK: __gesf2
   %result = fcmp oge float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -174,7 +174,7 @@ define i16 @compare_oge_f32(float %a, float %b) {
 
 define i16 @compare_ole_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_ole_f32:
-; CHECK: code(__lesf2)
+; CHECK: __lesf2
   %result = fcmp ole float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -182,7 +182,7 @@ define i16 @compare_ole_f32(float %a, float %b) {
 
 define i16 @compare_ogt_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_ogt_f32:
-; CHECK: code(__gtsf2)
+; CHECK: __gtsf2
   %result = fcmp ogt float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -190,7 +190,7 @@ define i16 @compare_ogt_f32(float %a, float %b) {
 
 define i16 @compare_oeq_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_oeq_f32:
-; CHECK: code(__eqsf2)
+; CHECK: __eqsf2
   %result = fcmp oeq float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -198,7 +198,7 @@ define i16 @compare_oeq_f32(float %a, float %b) {
 
 define i16 @compare_une_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_une_f32:
-; CHECK: code(__nesf2)
+; CHECK: __nesf2
   %result = fcmp une float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -206,7 +206,7 @@ define i16 @compare_une_f32(float %a, float %b) {
 
 define i16 @compare_uno_f32(float %a, float %b) {
 ; CHECK-LABEL: compare_uno_f32:
-; CHECK: code(__unordsf2)
+; CHECK: __unordsf2
   %result = fcmp uno float %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -214,7 +214,7 @@ define i16 @compare_uno_f32(float %a, float %b) {
 
 define i16 @compare_olt_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_olt_f64:
-; CHECK: code(__ltdf2)
+; CHECK: __ltdf2
   %result = fcmp olt double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -222,7 +222,7 @@ define i16 @compare_olt_f64(double %a, double %b) {
 
 define i16 @compare_oge_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_oge_f64:
-; CHECK: code(__gedf2)
+; CHECK: __gedf2
   %result = fcmp oge double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -230,7 +230,7 @@ define i16 @compare_oge_f64(double %a, double %b) {
 
 define i16 @compare_ole_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_ole_f64:
-; CHECK: code(__ledf2)
+; CHECK: __ledf2
   %result = fcmp ole double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -238,7 +238,7 @@ define i16 @compare_ole_f64(double %a, double %b) {
 
 define i16 @compare_ogt_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_ogt_f64:
-; CHECK: code(__gtdf2)
+; CHECK: __gtdf2
   %result = fcmp ogt double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -246,7 +246,7 @@ define i16 @compare_ogt_f64(double %a, double %b) {
 
 define i16 @compare_oeq_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_oeq_f64:
-; CHECK: code(__eqdf2)
+; CHECK: __eqdf2
   %result = fcmp oeq double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -254,7 +254,7 @@ define i16 @compare_oeq_f64(double %a, double %b) {
 
 define i16 @compare_une_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_une_f64:
-; CHECK: code(__nedf2)
+; CHECK: __nedf2
   %result = fcmp une double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -262,7 +262,7 @@ define i16 @compare_une_f64(double %a, double %b) {
 
 define i16 @compare_uno_f64(double %a, double %b) {
 ; CHECK-LABEL: compare_uno_f64:
-; CHECK: code(__unorddf2)
+; CHECK: __unorddf2
   %result = fcmp uno double %a, %b
   %extended = zext i1 %result to i16
   ret i16 %extended
@@ -283,49 +283,49 @@ declare double @llvm.copysign.f64(double, double)
 
 define float @remainder_f32(float %a, float %b) {
 ; CHECK-LABEL: remainder_f32:
-; CHECK: code(fmodf)
+; CHECK: fmodf
   %result = frem float %a, %b
   ret float %result
 }
 
 define float @sqrt_f32(float %value) {
 ; CHECK-LABEL: sqrt_f32:
-; CHECK: code(sqrtf)
+; CHECK: sqrtf
   %result = call float @llvm.sqrt.f32(float %value)
   ret float %result
 }
 
 define float @ceil_f32(float %value) {
 ; CHECK-LABEL: ceil_f32:
-; CHECK: code(ceilf)
+; CHECK: ceilf
   %result = call float @llvm.ceil.f32(float %value)
   ret float %result
 }
 
 define float @trunc_f32(float %value) {
 ; CHECK-LABEL: trunc_f32:
-; CHECK: code(truncf)
+; CHECK: truncf
   %result = call float @llvm.trunc.f32(float %value)
   ret float %result
 }
 
 define float @round_f32(float %value) {
 ; CHECK-LABEL: round_f32:
-; CHECK: code(roundf)
+; CHECK: roundf
   %result = call float @llvm.round.f32(float %value)
   ret float %result
 }
 
 define float @floor_f32(float %value) {
 ; CHECK-LABEL: floor_f32:
-; CHECK: code(floorf)
+; CHECK: floorf
   %result = call float @llvm.floor.f32(float %value)
   ret float %result
 }
 
 define float @copysign_f32(float %value, float %sign) {
 ; CHECK-LABEL: copysign_f32:
-; CHECK-NOT: code(copysignf)
+; CHECK-NOT: call16 copysignf
 ; CHECK: ret
   %result = call float @llvm.copysign.f32(float %value, float %sign)
   ret float %result
@@ -333,49 +333,49 @@ define float @copysign_f32(float %value, float %sign) {
 
 define double @remainder_f64(double %a, double %b) {
 ; CHECK-LABEL: remainder_f64:
-; CHECK: code(fmod)
+; CHECK: fmod
   %result = frem double %a, %b
   ret double %result
 }
 
 define double @sqrt_f64(double %value) {
 ; CHECK-LABEL: sqrt_f64:
-; CHECK: code(sqrt)
+; CHECK: sqrt
   %result = call double @llvm.sqrt.f64(double %value)
   ret double %result
 }
 
 define double @ceil_f64(double %value) {
 ; CHECK-LABEL: ceil_f64:
-; CHECK: code(ceil)
+; CHECK: ceil
   %result = call double @llvm.ceil.f64(double %value)
   ret double %result
 }
 
 define double @trunc_f64(double %value) {
 ; CHECK-LABEL: trunc_f64:
-; CHECK: code(trunc)
+; CHECK: trunc
   %result = call double @llvm.trunc.f64(double %value)
   ret double %result
 }
 
 define double @round_f64(double %value) {
 ; CHECK-LABEL: round_f64:
-; CHECK: code(round)
+; CHECK: round
   %result = call double @llvm.round.f64(double %value)
   ret double %result
 }
 
 define double @floor_f64(double %value) {
 ; CHECK-LABEL: floor_f64:
-; CHECK: code(floor)
+; CHECK: floor
   %result = call double @llvm.floor.f64(double %value)
   ret double %result
 }
 
 define double @copysign_f64(double %value, double %sign) {
 ; CHECK-LABEL: copysign_f64:
-; CHECK-NOT: code(copysign)
+; CHECK-NOT: call16 copysign
 ; CHECK: ret
   %result = call double @llvm.copysign.f64(double %value, double %sign)
   ret double %result

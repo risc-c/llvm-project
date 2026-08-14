@@ -47,10 +47,6 @@ fsr1 r5, r3
 # ENC: fsr1	r5, r3{{ *}}; encoding: [0x89,0xeb]
 ldx r0, [r1 + r2]
 # ENC: ldx	r0, [r1 + r2]{{ *}}; encoding: [0x42,0xc1]
-ldph r0, [r7]
-# ENC: ldph	r0, [r7]{{ *}}; encoding: [0x53,0xc7]
-ldp r7, [r0]
-# ENC: ldph	r7, [r0]{{ *}}; encoding: [0x53,0xf8]
 ldb r1, [r2]
 # ENC: ldb	r1, [r2]{{ *}}; encoding: [0x50,0xca]
 ldbs r2, [r3]
@@ -74,8 +70,8 @@ mts s2, r1
 # ENC: mts	s2, r1{{ *}}; encoding: [0xfb,0xd1]
 reti s0
 # ENC: reti	s0{{ *}}; encoding: [0xf8,0xe8]
-jal16 s7, 4660
-# ENC: jal16	s7, 4660{{ *}}; encoding: [0x00,0x3f,0x1a,0x09]
+jall s7, 4660
+# ENC: jall	s7, 4660{{ *}}; encoding: [0x34,0x38,0x34,0x12]
 cli
 # ENC: cli{{ *}}; encoding: [0xf8,0xd0]
 sti
@@ -88,9 +84,9 @@ ldi16 r0, 4660
 call r1
 # ENC: call	r1{{ *}}; encoding: [0xf9,0xf9]
 call16 4660
-# ENC: call16	4660{{ *}}; encoding: [0x00,0x3f,0x1a,0x09]
-jmp16 4660
-# ENC: jmp16	4660{{ *}}; encoding: [0x00,0x07,0x1a,0x09]
+# ENC: call16	4660{{ *}}; encoding: [0x34,0x38,0x34,0x12]
+jmpl 4660
+# ENC: jmpl	4660{{ *}}; encoding: [0x34,0x00,0x34,0x12]
 rets
 # ENC: rets{{ *}}; encoding: [0xf8,0xc7]
 mov r2, r3
@@ -108,19 +104,17 @@ halt
 # DIS: fsl1	r5, r3
 # DIS: fsr1	r5, r3
 # DIS: ldx	r0, [r1 + r2]
-# DIS: ldph	r0, [r7]
-# DIS: ldph	r7, [r0]
 # DIS: ldb	r1, [r2]
 # DIS: ldbs	r2, [r3]
 # DIS: stb	r3, [r4]
 # DIS: reti	s0
-# DIS: jal16	s7, 4660
+# DIS: jall	s7, 4660
 # DIS: cli
 # DIS: sti
 # DIS: lui	r0, 18
 # DIS: ori	r0, 52
 # DIS: lui	r0, 18
 # DIS: ori	r0, 52
-# DIS: jal16	s7, 4660
-# DIS: jal16	s0, 4660
+# DIS: jall	s7, 4660
+# DIS: jall	s0, 4660
 # DIS: ret	s7

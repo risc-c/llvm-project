@@ -36,8 +36,7 @@ enum TOF : unsigned {
   MO_TPOFF,
 
   // SelectionDAG-only marker for compiler-private helpers that preserve the
-  // software-managed S-register cache. Call lowering replaces this with
-  // MO_CODE before instruction selection.
+  // software-managed S-register cache.
   MO_SREG_PRESERVING_CALL
 };
 }

@@ -54,9 +54,9 @@ static Register scavengeFrameAddressRegister(
   reserveInstructionRegisters(MI, *RS);
   if (STI.isNano())
     reserveNanoReturnRegister(I, *RS);
-  Register Scratch = RS->FindUnusedReg(&RISCC::GPRRegClass);
+  Register Scratch = RS->FindUnusedReg(STI.getGPRClass());
   if (!Scratch)
-    Scratch = RS->scavengeRegisterBackwards(RISCC::GPRRegClass, I, false,
+    Scratch = RS->scavengeRegisterBackwards(*STI.getGPRClass(), I, false,
                                              SPAdj);
   assert(Scratch && "unable to scavenge frame-address register");
   return Scratch;
@@ -89,7 +89,7 @@ BitVector RISCCRegisterInfo::getReservedRegs(const MachineFunction &) const {
 
 const TargetRegisterClass *RISCCRegisterInfo::getPointerRegClass(
     unsigned) const {
-  return &RISCC::GPRRegClass;
+  return STI.getGPRClass();
 }
 
 bool RISCCRegisterInfo::eliminateFrameIndex(
@@ -101,17 +101,29 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
   int64_t Offset = MF.getFrameInfo().getObjectOffset(FI) +
                    MF.getFrameInfo().getStackSize() +
                    MI.getOperand(FIOperandNum + 1).getImm() + SPAdj;
+  const bool IsRC32 = STI.isRC32();
 
-  if (MI.getOpcode() == RISCC::FRAMEADDR) {
+  if (MI.getOpcode() == RISCC::FRAMEADDR || MI.getOpcode() == RISCC::FRAMEADDR32) {
     Register Dst = MI.getOperand(0).getReg();
     const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
     DebugLoc DL = MI.getDebugLoc();
-    BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::MOV), Dst)
+    BuildMI(*MI.getParent(), II, DL,
+            TII.get(IsRC32 ? RISCC::MOV32 : RISCC::MOV), Dst)
         .addReg(RISCC::R7);
     if (Offset) {
       if (isInt<8>(Offset))
-        BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI), Dst)
+        BuildMI(*MI.getParent(), II, DL,
+                TII.get(IsRC32 ? RISCC::ADDI32 : RISCC::ADDI), Dst)
             .addReg(Dst).addImm(Offset);
+      else if (IsRC32) {
+        for (int64_t Remaining = Offset; Remaining;) {
+          int64_t Step = Remaining > 0 ? std::min<int64_t>(Remaining, 127)
+                                       : std::max<int64_t>(Remaining, -128);
+          BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI32), Dst)
+              .addReg(Dst).addImm(Step);
+          Remaining -= Step;
+        }
+      }
       else {
         Register Scratch =
             scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
@@ -124,7 +136,8 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
     return false;
   }
 
-  if (isInt<8>(Offset)) {
+  if ((IsRC32 && isInt<9>(Offset) && !(Offset & 3)) ||
+      (!IsRC32 && isInt<8>(Offset))) {
     MI.getOperand(FIOperandNum).ChangeToRegister(RISCC::R7, false);
     MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
     return false;
@@ -133,9 +146,21 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
   Register Scratch = scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
   const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
-  TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
-  BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Scratch)
-      .addReg(RISCC::R7).addReg(Scratch, RegState::Kill);
+  if (IsRC32) {
+    BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::MOV32), Scratch)
+        .addReg(RISCC::R7);
+    for (int64_t Remaining = Offset; Remaining;) {
+      int64_t Step = Remaining > 0 ? std::min<int64_t>(Remaining, 127)
+                                   : std::max<int64_t>(Remaining, -128);
+      BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI32), Scratch)
+          .addReg(Scratch).addImm(Step);
+      Remaining -= Step;
+    }
+  } else {
+    TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
+    BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Scratch)
+        .addReg(RISCC::R7).addReg(Scratch, RegState::Kill);
+  }
   MI.getOperand(FIOperandNum).ChangeToRegister(Scratch, false);
   MI.getOperand(FIOperandNum + 1).ChangeToImmediate(0);
   return false;

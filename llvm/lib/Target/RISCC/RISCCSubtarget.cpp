@@ -23,6 +23,8 @@ RISCCSubtarget &RISCCSubtarget::initializeSubtargetDependencies(StringRef CPU,
   if (CPU.empty())
     CPU = "full";
   ParseSubtargetFeatures(CPU, CPU, FS);
+  if (IsNano && IsRC32)
+    report_fatal_error("RISC-C RC32 has no Nano profile");
   return *this;
 }
 

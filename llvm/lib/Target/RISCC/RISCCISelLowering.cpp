@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCCISelLowering.h"
+#include "RISCCConstantPoolValue.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
@@ -18,12 +19,20 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Target/TargetMachine.h"
 #include <climits>
 
 using namespace llvm;
+
+static SDValue loadRC32Literal(SDValue Address, const SDLoc &DL,
+                               SelectionDAG &DAG) {
+  return DAG.getLoad(MVT::i32, DL, DAG.getEntryNode(), Address,
+                     MachinePointerInfo::getConstantPool(
+                         DAG.getMachineFunction()));
+}
 
 #define GET_CALLING_CONV_IMPL
 #include "RISCCGenCallingConv.inc"
@@ -35,6 +44,46 @@ using namespace llvm;
 RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
                                          const RISCCSubtarget &STI)
     : TargetLowering(TM, STI), STI(STI) {
+  if (STI.isRC32()) {
+    addRegisterClass(MVT::i32, STI.getGPRClass());
+    computeRegisterProperties(STI.getRegisterInfo());
+    setStackPointerRegisterToSaveRestore(RISCC::R7);
+    setBooleanContents(ZeroOrOneBooleanContent);
+    setMinFunctionAlignment(Align(2));
+    setPrefFunctionAlignment(Align(2));
+    setMaxAtomicSizeInBitsSupported(0);
+    setMinimumJumpTableEntries(UINT_MAX);
+
+    for (unsigned Op : {ISD::ADD, ISD::SUB, ISD::AND, ISD::OR, ISD::XOR})
+      setOperationAction(Op, MVT::i32, Legal);
+    setOperationAction(ISD::MUL, MVT::i32, LibCall);
+    for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA})
+      setOperationAction(Op, MVT::i32, Custom);
+    for (unsigned Op : {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
+      setOperationAction(Op, MVT::i32, LibCall);
+    setLoadExtAction(ISD::EXTLOAD, MVT::i32, MVT::i8, Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, MVT::i8, Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::i32, MVT::i8, Legal);
+    setLoadExtAction(ISD::EXTLOAD, MVT::i32, MVT::i16, Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, MVT::i16, Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::i32, MVT::i16, Legal);
+    setTruncStoreAction(MVT::i32, MVT::i8, Legal);
+    setTruncStoreAction(MVT::i32, MVT::i16, Legal);
+    setOperationAction(ISD::FrameIndex, MVT::i32, Legal);
+    setOperationAction(ISD::Constant, MVT::i32, Custom);
+    for (unsigned Op : {ISD::GlobalAddress, ISD::ExternalSymbol,
+                        ISD::BlockAddress})
+      setOperationAction(Op, MVT::i32, Custom);
+    setOperationAction(ISD::GlobalTLSAddress, MVT::i32, Custom);
+    for (unsigned Op : {ISD::BR_CC, ISD::SETCC, ISD::SELECT_CC})
+      setOperationAction(Op, MVT::i32, Custom);
+    setOperationAction(ISD::SELECT, MVT::i32, Expand);
+    setOperationAction(ISD::VASTART, MVT::Other, Custom);
+    setOperationAction(ISD::VAEND, MVT::Other, Expand);
+    setOperationAction(ISD::VAARG, MVT::Other, Expand);
+    setOperationAction(ISD::VACOPY, MVT::Other, Expand);
+    return;
+  }
   addRegisterClass(MVT::i16, &RISCC::GPRRegClass);
   computeRegisterProperties(STI.getRegisterInfo());
   setStackPointerRegisterToSaveRestore(RISCC::R7);
@@ -131,6 +180,14 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setTargetDAGCombine(ISD::OR);
   setTargetDAGCombine(ISD::SELECT);
   setTargetDAGCombine(ISD::SUB);
+}
+
+MVT RISCCTargetLowering::getScalarShiftAmountTy(const DataLayout &, EVT) const {
+  return STI.getXLenVT();
+}
+
+MVT::SimpleValueType RISCCTargetLowering::getCmpLibcallReturnType() const {
+  return STI.getXLenVT().SimpleTy;
 }
 
 //===----------------------------------------------------------------------===//
@@ -307,6 +364,8 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerBlockAddress(Op, DAG);
   case ISD::ADDRSPACECAST:
     return lowerAddrSpaceCast(Op, DAG);
+  case ISD::Constant:
+    return lowerConstant(Op, DAG);
   case ISD::BR_CC:
     return lowerBRCC(Op, DAG);
   case ISD::SETCC:
@@ -549,6 +608,9 @@ SDValue RISCCTargetLowering::lowerUDivRem(SDValue Op,
 
 SDValue RISCCTargetLowering::lowerShift(SDValue Op,
                                         SelectionDAG &DAG) const {
+  if (STI.isRC32())
+    return lowerRC32Shift(Op, DAG);
+
   unsigned TOpc = Op.getOpcode() == ISD::SHL ? RISCCISD::SHL
                   : Op.getOpcode() == ISD::SRL ? RISCCISD::SRL
                                                : RISCCISD::SRA;
@@ -577,6 +639,25 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op,
     return V;
   }
   return DAG.getNode(TOpc, DL, MVT::i16, Op.getOperand(0), Op.getOperand(1));
+}
+
+SDValue RISCCTargetLowering::lowerRC32Shift(SDValue Op,
+                                            SelectionDAG &DAG) const {
+  const char *Name = Op.getOpcode() == ISD::SHL   ? "__ashlsi3"
+                     : Op.getOpcode() == ISD::SRL ? "__lshrsi3"
+                                                   : "__ashrsi3";
+  Type *I32 = Type::getInt32Ty(*DAG.getContext());
+  ArgListTy Args;
+  Args.emplace_back(Op.getOperand(0), I32);
+  Args.emplace_back(Op.getOperand(1), I32);
+  SDLoc DL(Op);
+  SDValue Callee =
+      DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, I32, Callee, std::move(Args));
+  return LowerCallTo(CLI).first;
 }
 
 SDValue RISCCTargetLowering::lowerShiftLibCall(
@@ -670,11 +751,21 @@ SDValue RISCCTargetLowering::lowerDivRem(
 SDValue RISCCTargetLowering::lowerGlobalAddress(SDValue Op,
                                                 SelectionDAG &DAG) const {
   auto *N = cast<GlobalAddressSDNode>(Op);
-  unsigned TF = (isa<Function>(N->getGlobal()) ||
-                 N->getGlobal()->getAddressSpace() == 1)
-                    ? RISCCII::MO_CODE : RISCCII::MO_None;
+  if (STI.isRC32()) {
+    LLVMContext &Context = *DAG.getContext();
+    Type *WordTy = Type::getInt32Ty(Context);
+    Constant *Address = ConstantExpr::getPtrToInt(
+        const_cast<GlobalValue *>(N->getGlobal()), WordTy);
+    if (N->getOffset())
+      Address = ConstantExpr::getAdd(
+          Address, ConstantInt::getSigned(WordTy, N->getOffset()));
+    SDLoc DL(Op);
+    SDValue Pool = DAG.getConstantPool(Address, MVT::i32, Align(4));
+    return loadRC32Literal(Pool, DL, DAG);
+  }
   SDValue T = DAG.getTargetGlobalAddress(N->getGlobal(), SDLoc(Op),
-                                         Op.getValueType(), N->getOffset(), TF);
+                                         Op.getValueType(), N->getOffset(),
+                                         RISCCII::MO_None);
   return DAG.getNode(RISCCISD::Wrapper, SDLoc(Op), Op.getValueType(), T);
 }
 
@@ -700,6 +791,15 @@ SDValue RISCCTargetLowering::lowerGlobalTLSAddress(SDValue Op,
         "RISC-C supports only static local-exec TLS", DL.getDebugLoc()));
     return DAG.getPOISON(Op.getValueType());
   }
+  if (STI.isRC32()) {
+    SDValue Base = DAG.getCopyFromReg(DAG.getEntryNode(), DL, RISCC::S2,
+                                      MVT::i32);
+    auto *Symbol = RISCCConstantPoolSymbol::Create(*DAG.getContext(), GV,
+                                                    /*IsTPOFF=*/true);
+    SDValue Pool = DAG.getTargetConstantPool(Symbol, MVT::i32, Align(4));
+    SDValue Offset = loadRC32Literal(Pool, DL, DAG);
+    return DAG.getNode(ISD::ADD, DL, MVT::i32, Base, Offset);
+  }
 
   // S2 is reserved from ordinary allocation and is the ABI thread pointer.
   // A physical copy is selected through RISCCInstrInfo::copyPhysReg as MFS.
@@ -715,6 +815,13 @@ SDValue RISCCTargetLowering::lowerGlobalTLSAddress(SDValue Op,
 SDValue RISCCTargetLowering::lowerExternalSymbol(SDValue Op,
                                                  SelectionDAG &DAG) const {
   auto *N = cast<ExternalSymbolSDNode>(Op);
+  if (STI.isRC32()) {
+    SDLoc DL(Op);
+    auto *Symbol =
+        RISCCConstantPoolSymbol::Create(*DAG.getContext(), N->getSymbol());
+    SDValue Pool = DAG.getTargetConstantPool(Symbol, MVT::i32, Align(4));
+    return loadRC32Literal(Pool, DL, DAG);
+  }
   SDValue T = DAG.getTargetExternalSymbol(N->getSymbol(), Op.getValueType(),
                                           RISCCII::MO_None);
   return DAG.getNode(RISCCISD::Wrapper, SDLoc(Op), Op.getValueType(), T);
@@ -723,21 +830,35 @@ SDValue RISCCTargetLowering::lowerExternalSymbol(SDValue Op,
 SDValue RISCCTargetLowering::lowerBlockAddress(SDValue Op,
                                                SelectionDAG &DAG) const {
   auto *N = cast<BlockAddressSDNode>(Op);
+  if (STI.isRC32()) {
+    LLVMContext &Context = *DAG.getContext();
+    Type *WordTy = Type::getInt32Ty(Context);
+    Constant *Address = ConstantExpr::getPtrToInt(
+        const_cast<BlockAddress *>(N->getBlockAddress()), WordTy);
+    SDLoc DL(Op);
+    SDValue Pool = DAG.getConstantPool(Address, MVT::i32, Align(4));
+    return loadRC32Literal(Pool, DL, DAG);
+  }
   SDValue T = DAG.getTargetBlockAddress(N->getBlockAddress(), Op.getValueType(),
-                                        0, RISCCII::MO_CODE);
+                                        0, RISCCII::MO_None);
   return DAG.getNode(RISCCISD::Wrapper, SDLoc(Op), Op.getValueType(), T);
 }
 
 SDValue RISCCTargetLowering::lowerAddrSpaceCast(SDValue Op,
                                                 SelectionDAG &DAG) const {
-  auto *N = cast<AddrSpaceCastSDNode>(Op);
-  SDValue V = Op.getOperand(0);
-  SDValue One = DAG.getConstant(1, SDLoc(Op), MVT::i16);
-  if (N->getSrcAddressSpace() == 0 && N->getDestAddressSpace() == 1)
-    return DAG.getNode(ISD::SRL, SDLoc(Op), MVT::i16, V, One);
-  if (N->getSrcAddressSpace() == 1 && N->getDestAddressSpace() == 0)
-    return DAG.getNode(ISD::SHL, SDLoc(Op), MVT::i16, V, One);
-  return V;
+  return Op.getOperand(0);
+}
+
+SDValue RISCCTargetLowering::lowerConstant(SDValue Op,
+                                           SelectionDAG &DAG) const {
+  auto *N = cast<ConstantSDNode>(Op);
+  if (isUInt<8>(N->getZExtValue()))
+    return Op;
+  Type *Ty = Type::getInt32Ty(*DAG.getContext());
+  Constant *Value = ConstantInt::get(Ty, N->getAPIntValue());
+  SDLoc DL(Op);
+  SDValue Pool = DAG.getConstantPool(Value, MVT::i32, Align(4));
+  return loadRC32Literal(Pool, DL, DAG);
 }
 
 SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
@@ -755,18 +876,21 @@ SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
     bool IsSignTest =
         (Immediate == 0 && (CC == ISD::SETLT || CC == ISD::SETGE)) ||
         (Immediate == -1 && (CC == ISD::SETGT || CC == ISD::SETLE));
-    if (IsSignTest ||
+    if (!STI.isRC32() &&
+        (IsSignTest ||
         (IsEquality && (Immediate == 0 ||
-                        (!STI.isNano() && isInt<8>(Immediate))))) {
+                        (!STI.isNano() && isInt<8>(Immediate)))))) {
       return DAG.getNode(
           RISCCISD::BR_CC_IMM, DL, MVT::Other, Op.getOperand(0),
-          LHS, DAG.getConstant(APInt(16, Immediate, true), DL, MVT::i16),
-          DAG.getConstant(CC, DL, MVT::i16), Op.getOperand(4));
+          LHS, DAG.getConstant(APInt(STI.getXLenVT().getSizeInBits(),
+                                     Immediate, true),
+                             DL, STI.getXLenVT()),
+          DAG.getTargetConstant(CC, DL, MVT::i16), Op.getOperand(4));
     }
   }
   return DAG.getNode(
       RISCCISD::BR_CC, DL, MVT::Other, Op.getOperand(0), LHS, RHS,
-      DAG.getConstant(CC, DL, MVT::i16),
+      DAG.getTargetConstant(CC, DL, MVT::i16),
       Op.getOperand(4));
 }
 
@@ -780,27 +904,28 @@ SDValue RISCCTargetLowering::lowerSETCC(SDValue Op, SelectionDAG &DAG) const {
       !isa<ConstantSDNode>(RHS))
     std::swap(LHS, RHS);
   if (IsEquality) {
-    if (auto *C = dyn_cast<ConstantSDNode>(RHS);
-        C && isUInt<8>(C->getZExtValue())) {
+    if (!STI.isRC32())
+      if (auto *C = dyn_cast<ConstantSDNode>(RHS);
+          C && isUInt<8>(C->getZExtValue())) {
       return DAG.getNode(
-          RISCCISD::SET_CC_IMM, DL, MVT::i16, LHS,
+          RISCCISD::SET_CC_IMM, DL, STI.getXLenVT(), LHS,
           DAG.getConstant(C->getZExtValue(), DL, MVT::i16),
-          DAG.getConstant(CC, DL, MVT::i16));
-    }
+          DAG.getTargetConstant(CC, DL, MVT::i16));
+      }
   }
   return DAG.getNode(
-      RISCCISD::SET_CC, DL, MVT::i16, LHS, RHS,
-      DAG.getConstant(CC, DL, MVT::i16));
+      RISCCISD::SET_CC, DL, STI.getXLenVT(), LHS, RHS,
+      DAG.getTargetConstant(CC, DL, MVT::i16));
 }
 
 SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
                                            SelectionDAG &DAG) const {
   SDLoc DL(Op);
   return DAG.getNode(
-      RISCCISD::SELECT_CC, DL, MVT::i16, Op.getOperand(0), Op.getOperand(1),
+      RISCCISD::SELECT_CC, DL, Op.getValueType(), Op.getOperand(0), Op.getOperand(1),
       Op.getOperand(2), Op.getOperand(3),
-      DAG.getConstant(cast<CondCodeSDNode>(Op.getOperand(4))->get(), DL,
-                      MVT::i16));
+      DAG.getTargetConstant(cast<CondCodeSDNode>(Op.getOperand(4))->get(), DL,
+                            MVT::i16));
 }
 
 //===----------------------------------------------------------------------===//
@@ -809,22 +934,22 @@ SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
 
 template <typename ArgT>
 static std::pair<MVT, CCValAssign::LocInfo>
-getArgumentLocation(const ArgT &Arg) {
-  if (Arg.VT != MVT::i1 && Arg.VT != MVT::i8)
+getArgumentLocation(const ArgT &Arg, MVT SlotVT) {
+  if (Arg.VT != MVT::i1 && Arg.VT != MVT::i8 &&
+      !(SlotVT == MVT::i32 && Arg.VT == MVT::i16))
     return {Arg.VT, CCValAssign::Full};
 
   CCValAssign::LocInfo Info =
       Arg.VT == MVT::i1 || Arg.Flags.isZExt()
           ? CCValAssign::ZExt
           : Arg.Flags.isSExt() ? CCValAssign::SExt : CCValAssign::AExt;
-  return {MVT::i16, Info};
+  return {SlotVT, Info};
 }
 
 template <typename ArgT>
 static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
-                             const SmallVectorImpl<ArgT> &Args) {
-  static const MCPhysReg ArgRegs[] = {RISCC::R1, RISCC::R2, RISCC::R3,
-                                      RISCC::R4};
+                             const SmallVectorImpl<ArgT> &Args, MVT SlotVT) {
+  static const MCPhysReg ArgRegs[] = {RISCC::R1, RISCC::R2, RISCC::R3};
   unsigned NextReg = 0;
   bool OnStack = false;
 
@@ -838,7 +963,7 @@ static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
                               NextReg + NumParts <= std::size(ArgRegs);
     if (UseRegisters) {
       for (; I != ArgEnd; ++I) {
-        auto [LocVT, LocInfo] = getArgumentLocation(Args[I]);
+        auto [LocVT, LocInfo] = getArgumentLocation(Args[I], SlotVT);
         MCRegister R = State.AllocateReg(ArgRegs[NextReg++]);
         Locs.push_back(
             CCValAssign::getReg(I, Args[I].VT, R, LocVT, LocInfo));
@@ -846,12 +971,29 @@ static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
     } else {
       OnStack = true;
       for (; I != ArgEnd; ++I) {
-        auto [LocVT, LocInfo] = getArgumentLocation(Args[I]);
-        CC_RISCC_Stack(I, Args[I].VT, LocVT, LocInfo, Args[I].Flags,
-                       Args[I].OrigTy, State);
+        auto [LocVT, LocInfo] = getArgumentLocation(Args[I], SlotVT);
+        if (SlotVT == MVT::i32)
+          CC_RISCC32_Stack(I, Args[I].VT, LocVT, LocInfo, Args[I].Flags,
+                           Args[I].OrigTy, State);
+        else
+          CC_RISCC_Stack(I, Args[I].VT, LocVT, LocInfo, Args[I].Flags,
+                         Args[I].OrigTy, State);
       }
     }
   }
+}
+
+static bool isExpandedMulLibcall(
+    const TargetLowering::CallLoweringInfo &CLI) {
+  const auto *Callee = dyn_cast<ExternalSymbolSDNode>(CLI.Callee);
+  if (!Callee || StringRef(Callee->getSymbol()) != "__mulsi3" ||
+      CLI.Outs.size() != 4)
+    return false;
+
+  for (const auto [I, Arg] : enumerate(CLI.Outs))
+    if (Arg.VT != MVT::i16 || Arg.OrigArgIndex != I || Arg.PartOffset != 0)
+      return false;
+  return true;
 }
 
 static SDValue unpackArgument(SDValue Value, const CCValAssign &VA,
@@ -875,23 +1017,24 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
     report_fatal_error("unsupported RISC-C calling convention");
   SmallVector<CCValAssign, 16> Locs;
   CCState State(CC, IsVarArg, DAG.getMachineFunction(), Locs, *DAG.getContext());
-  analyzeArguments(State, Locs, Ins);
+  analyzeArguments(State, Locs, Ins, STI.getXLenVT());
   MachineFunction &MF = DAG.getMachineFunction();
   if (STI.isNano()) {
     Register ReturnAddress =
-        MF.addLiveIn(RISCC::R6, &RISCC::GPRCallerRegClass);
+        MF.addLiveIn(RISCC::R6, &RISCC::GPRNanoCallerRegClass);
     MF.getInfo<RISCCMachineFunctionInfo>()->setReturnAddressReg(ReturnAddress);
   }
 
   for (const CCValAssign &VA : Locs) {
     SDValue V;
     if (VA.isRegLoc()) {
-      Register VR = MF.getRegInfo().createVirtualRegister(&RISCC::GPRRegClass);
+      Register VR = MF.getRegInfo().createVirtualRegister(STI.getGPRClass());
       MF.getRegInfo().addLiveIn(VA.getLocReg(), VR);
       V = DAG.getCopyFromReg(Chain, DL, VR, VA.getLocVT());
     } else {
-      int FI = MF.getFrameInfo().CreateFixedObject(2, VA.getLocMemOffset(), true);
-      SDValue Addr = DAG.getFrameIndex(FI, MVT::i16);
+      int FI = MF.getFrameInfo().CreateFixedObject(STI.getSlotSize(),
+                                                    VA.getLocMemOffset(), true);
+      SDValue Addr = DAG.getFrameIndex(FI, STI.getXLenVT());
       V = DAG.getLoad(VA.getLocVT(), DL, Chain, Addr,
                       MachinePointerInfo::getFixedStack(MF, FI));
     }
@@ -900,7 +1043,8 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
   MachineFrameInfo &FrameInfo = MF.getFrameInfo();
   if (IsVarArg && FrameInfo.hasVAStart()) {
     // The varargs area begins after the fixed stack arguments.
-    int VarArgsFI = FrameInfo.CreateFixedObject(2, State.getStackSize(), true);
+    int VarArgsFI = FrameInfo.CreateFixedObject(STI.getSlotSize(),
+                                                State.getStackSize(), true);
     MF.getInfo<RISCCMachineFunctionInfo>()->setVarArgsFrameIndex(VarArgsFI);
   }
   return Chain;
@@ -968,9 +1112,17 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   bool PreservesSRegs = !STI.isNano() && isSRegPreservingCall(CLI.Callee);
   SmallVector<CCValAssign, 16> Locs;
   CCState State(CLI.CallConv, CLI.IsVarArg, MF, Locs, *DAG.getContext());
-  analyzeArguments(State, Locs, CLI.Outs);
+  SmallVector<ISD::OutputArg, 16> Args(CLI.Outs.begin(), CLI.Outs.end());
+  // Type legalization expands an i32 multiply libcall into four i16 values
+  // without retaining its two source-argument groups. Recreate the groups so
+  // __mulsi3 uses the normal no-split C ABI.
+  if (isExpandedMulLibcall(CLI)) {
+    Args[1].OrigArgIndex = 0;
+    Args[2].OrigArgIndex = Args[3].OrigArgIndex = 1;
+  }
+  analyzeArguments(State, Locs, Args, STI.getXLenVT());
   unsigned NumBytes = State.getStackSize();
-  if (NumBytes > 0xffff)
+  if (!STI.isRC32() && NumBytes > 0xffff)
     report_fatal_error(
         "RISC-C outgoing call frame exceeds the 16-bit address space");
 
@@ -999,10 +1151,11 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
     if (VA.isRegLoc()) {
       RegArgs.emplace_back(VA.getLocReg(), V);
     } else {
-      SDValue SP = DAG.getCopyFromReg(Chain, DL, RISCC::R7, MVT::i16);
-      SDValue Addr = DAG.getNode(ISD::ADD, DL, MVT::i16, SP,
+      SDValue SP =
+          DAG.getCopyFromReg(Chain, DL, RISCC::R7, STI.getXLenVT());
+      SDValue Addr = DAG.getNode(ISD::ADD, DL, STI.getXLenVT(), SP,
                                  DAG.getConstant(VA.getLocMemOffset(), DL,
-                                                 MVT::i16));
+                                                 STI.getXLenVT()));
       Stores.push_back(DAG.getStore(Chain, DL, V, Addr, MachinePointerInfo()));
     }
   }
@@ -1014,8 +1167,9 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
     Glue = Chain.getValue(1);
   }
 
-  MCRegister CalleeLink =
-      STI.isNano() ? RISCC::S7 : getDirectCalleeLink(CLI.Callee);
+  MCRegister CalleeLink = STI.isNano() || STI.isRC32()
+                              ? RISCC::S7
+                              : getDirectCalleeLink(CLI.Callee);
   bool UsesPrivateLink = !STI.isNano() && CalleeLink == RISCC::S3;
 
   if (CLI.IsTailCall && !STI.isNano()) {
@@ -1036,12 +1190,17 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   }
 
   SDValue Callee = CLI.Callee;
-  if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
+  if (STI.isRC32()) {
+    if (isa<GlobalAddressSDNode>(Callee))
+      Callee = lowerGlobalAddress(Callee, DAG);
+    else if (isa<ExternalSymbolSDNode>(Callee))
+      Callee = lowerExternalSymbol(Callee, DAG);
+  } else if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
     Callee = DAG.getTargetGlobalAddress(G->getGlobal(), DL, MVT::i16,
-                                        G->getOffset(), RISCCII::MO_CODE);
+                                        G->getOffset(), RISCCII::MO_None);
   else if (auto *E = dyn_cast<ExternalSymbolSDNode>(Callee))
     Callee = DAG.getTargetExternalSymbol(E->getSymbol(), MVT::i16,
-                                         RISCCII::MO_CODE);
+                                         RISCCII::MO_None);
 
   SmallVector<SDValue, 10> Ops{Chain, Callee};
   for (auto [Reg, V] : RegArgs)
@@ -1076,7 +1235,8 @@ SDValue RISCCTargetLowering::lowerCallResult(
     SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
   SmallVector<CCValAssign, 8> Locs;
   CCState State(CC, IsVarArg, DAG.getMachineFunction(), Locs, *DAG.getContext());
-  State.AnalyzeCallResult(Ins, RetCC_RISCC);
+  State.AnalyzeFormalArguments(Ins,
+                               STI.isRC32() ? RetCC_RISCC32 : RetCC_RISCC);
   for (unsigned I = 0; I != Locs.size(); ++I) {
     const CCValAssign &VA = Locs[I];
     SDValue V = DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
@@ -1093,7 +1253,8 @@ bool RISCCTargetLowering::CanLowerReturn(
     const Type *) const {
   SmallVector<CCValAssign, 8> Locs;
   CCState State(CC, IsVarArg, MF, Locs, Ctx);
-  return State.CheckReturn(Outs, RetCC_RISCC);
+  return State.CheckReturn(Outs,
+                           STI.isRC32() ? RetCC_RISCC32 : RetCC_RISCC);
 }
 
 SDValue RISCCTargetLowering::LowerReturn(
@@ -1105,7 +1266,7 @@ SDValue RISCCTargetLowering::LowerReturn(
   auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   SmallVector<CCValAssign, 8> Locs;
   CCState State(CC, IsVarArg, MF, Locs, *DAG.getContext());
-  State.AnalyzeReturn(Outs, RetCC_RISCC);
+  State.AnalyzeReturn(Outs, STI.isRC32() ? RetCC_RISCC32 : RetCC_RISCC);
   SDValue Glue;
   SmallVector<SDValue, 8> Ops{Chain};
   if (STI.isNano()) {
@@ -1144,7 +1305,7 @@ SDValue RISCCTargetLowering::LowerReturn(
 
 static Register createVirtualGPR(MachineBasicBlock &MBB) {
   return MBB.getParent()->getRegInfo().createVirtualRegister(
-      &RISCC::GPRRegClass);
+      MBB.getParent()->getSubtarget<RISCCSubtarget>().getGPRClass());
 }
 
 static bool isSignedRelationalComparison(ISD::CondCode CC) {
@@ -1185,37 +1346,38 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  const DebugLoc &DL, const RISCCInstrInfo &TII,
                                  Register LHS, Register RHS, ISD::CondCode CC,
-                                 MachineBasicBlock *Target, bool IsNano) {
+                                 MachineBasicBlock *Target, bool IsNano,
+                                 bool IsRC32) {
   if (swapsComparisonOperands(CC))
     std::swap(LHS, RHS);
   unsigned Cmp, Br;
   switch (CC) {
   case ISD::SETEQ:
-    Cmp = RISCC::SUB;
+    Cmp = IsRC32 ? RISCC::SUB32 : RISCC::SUB;
     Br = RISCC::BEQZ;
     break;
   case ISD::SETNE:
-    Cmp = RISCC::SUB;
+    Cmp = IsRC32 ? RISCC::SUB32 : RISCC::SUB;
     Br = RISCC::BNEZ;
     break;
   case ISD::SETLT:
   case ISD::SETGT:
-    Cmp = IsNano ? RISCC::SLTU : RISCC::SLT;
+    Cmp = IsRC32 ? RISCC::SLT32 : IsNano ? RISCC::SLTU : RISCC::SLT;
     Br = RISCC::BNEZ;
     break;
   case ISD::SETGE:
   case ISD::SETLE:
-    Cmp = IsNano ? RISCC::SLTU : RISCC::SLT;
+    Cmp = IsRC32 ? RISCC::SLT32 : IsNano ? RISCC::SLTU : RISCC::SLT;
     Br = RISCC::BEQZ;
     break;
   case ISD::SETULT:
   case ISD::SETUGT:
-    Cmp = RISCC::SLTU;
+    Cmp = IsRC32 ? RISCC::SLTU32 : RISCC::SLTU;
     Br = RISCC::BNEZ;
     break;
   case ISD::SETUGE:
   case ISD::SETULE:
-    Cmp = RISCC::SLTU;
+    Cmp = IsRC32 ? RISCC::SLTU32 : RISCC::SLTU;
     Br = RISCC::BEQZ;
     break;
   default:
@@ -1272,32 +1434,34 @@ static void emitNonZeroResult(MachineBasicBlock &MBB,
                               MachineBasicBlock::iterator I,
                               const DebugLoc &DL,
                               const RISCCInstrInfo &TII, Register Destination,
-                              Register Value, bool Invert) {
+                              Register Value, bool Invert, bool IsRC32) {
   Register Zero = createVirtualGPR(MBB);
   Register NonZero = Invert ? createVirtualGPR(MBB) : Destination;
   TII.materializeImmediate(MBB, I, DL, Zero, 0);
-  BuildMI(MBB, I, DL, TII.get(RISCC::SLTU), NonZero)
+  BuildMI(MBB, I, DL, TII.get(IsRC32 ? RISCC::SLTU32 : RISCC::SLTU), NonZero)
       .addReg(Zero)
       .addReg(Value);
   if (Invert)
-    BuildMI(MBB, I, DL, TII.get(RISCC::XORI), Destination)
+    BuildMI(MBB, I, DL, TII.get(IsRC32 ? RISCC::XORI32 : RISCC::XORI), Destination)
         .addReg(NonZero)
         .addImm(1);
 }
 
 static void emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
-                                 const RISCCInstrInfo &TII, bool IsNano) {
+                                 const RISCCInstrInfo &TII, bool IsNano,
+                                 bool IsRC32) {
   ISD::CondCode CC = ISD::CondCode(MI.getOperand(3).getImm());
   Register Destination = MI.getOperand(0).getReg();
   Register LHS = MI.getOperand(1).getReg();
   Register RHS = MI.getOperand(2).getReg();
   if (CC == ISD::SETEQ || CC == ISD::SETNE) {
     Register Difference = createVirtualGPR(MBB);
-    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::XOR), Difference)
+    BuildMI(MBB, MI, MI.getDebugLoc(),
+            TII.get(IsRC32 ? RISCC::XOR32 : RISCC::XOR), Difference)
         .addReg(LHS)
         .addReg(RHS);
     emitNonZeroResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
-                      CC == ISD::SETEQ);
+                      CC == ISD::SETEQ, IsRC32);
     MI.eraseFromParent();
     return;
   }
@@ -1315,12 +1479,14 @@ static void emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
   bool Invert = invertsLessThanResult(CC);
   if (Invert)
     Less = createVirtualGPR(MBB);
-  unsigned Compare = IsSigned && !IsNano ? RISCC::SLT : RISCC::SLTU;
+  unsigned Compare = IsRC32 ? (IsSigned ? RISCC::SLT32 : RISCC::SLTU32)
+                             : IsSigned && !IsNano ? RISCC::SLT : RISCC::SLTU;
   BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Compare), Less)
       .addReg(LHS)
       .addReg(RHS);
   if (Invert)
-    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::XORI), Destination)
+    BuildMI(MBB, MI, MI.getDebugLoc(),
+            TII.get(IsRC32 ? RISCC::XORI32 : RISCC::XORI), Destination)
         .addReg(Less)
         .addImm(1);
   MI.eraseFromParent();
@@ -1344,7 +1510,7 @@ static void emitImmediateEqualityResult(MachineInstr &MI,
         .addImm(RHS);
   }
   emitNonZeroResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
-                    CC == ISD::SETEQ);
+                    CC == ISD::SETEQ, false);
   MI.eraseFromParent();
 }
 
@@ -1420,7 +1586,8 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
 
 static MachineBasicBlock *emitSelect(MachineInstr &MI,
                                      MachineBasicBlock *MBB,
-                                     const RISCCInstrInfo &TII, bool IsNano) {
+                                     const RISCCInstrInfo &TII, bool IsNano,
+                                     bool IsRC32) {
   DebugLoc DL = MI.getDebugLoc();
   MachineFunction *MF = MBB->getParent();
   const BasicBlock *IRBlock = MBB->getBasicBlock();
@@ -1441,7 +1608,8 @@ static MachineBasicBlock *emitSelect(MachineInstr &MI,
   Register TrueValue = MI.getOperand(3).getReg();
   Register FalseValue = MI.getOperand(4).getReg();
   emitComparisonBranch(*MBB, MI, DL, TII, LHS, RHS,
-                       ISD::CondCode(MI.getOperand(5).getImm()), True, IsNano);
+                       ISD::CondCode(MI.getOperand(5).getImm()), True, IsNano,
+                       IsRC32);
   BuildMI(*MBB, MI, DL, TII.get(RISCC::JMP8)).addMBB(Sink);
   BuildMI(*Sink, Sink->begin(), DL, TII.get(TargetOpcode::PHI), Destination)
       .addReg(FalseValue)
@@ -1461,10 +1629,11 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
   case RISCC::PseudoSRA:
     return emitVariableShift(MI, MBB, TII, STI.hasWideShift());
   case RISCC::PseudoBRCC:
+  case RISCC::PseudoBRCC32:
     emitComparisonBranch(*MBB, MI, MI.getDebugLoc(), TII,
                          MI.getOperand(0).getReg(), MI.getOperand(1).getReg(),
                          ISD::CondCode(MI.getOperand(2).getImm()),
-                         MI.getOperand(3).getMBB(), STI.isNano());
+                         MI.getOperand(3).getMBB(), STI.isNano(), STI.isRC32());
     MI.eraseFromParent();
     return MBB;
   case RISCC::PseudoBRCCImm:
@@ -1472,13 +1641,15 @@ MachineBasicBlock *RISCCTargetLowering::EmitInstrWithCustomInserter(
     MI.eraseFromParent();
     return MBB;
   case RISCC::PseudoSETCC:
-    emitComparisonResult(MI, *MBB, TII, STI.isNano());
+  case RISCC::PseudoSETCC32:
+    emitComparisonResult(MI, *MBB, TII, STI.isNano(), STI.isRC32());
     return MBB;
   case RISCC::PseudoSETCCImm:
     emitImmediateEqualityResult(MI, *MBB, TII);
     return MBB;
   case RISCC::PseudoSELECTCC:
-    return emitSelect(MI, MBB, TII, STI.isNano());
+  case RISCC::PseudoSELECTCC32:
+    return emitSelect(MI, MBB, TII, STI.isNano(), STI.isRC32());
   default:
     llvm_unreachable("unexpected custom inserter opcode");
   }
@@ -1499,6 +1670,6 @@ std::pair<unsigned, const TargetRegisterClass *>
 RISCCTargetLowering::getRegForInlineAsmConstraint(
     const TargetRegisterInfo *TRI, StringRef C, MVT VT) const {
   if (C == "r" && VT.isInteger())
-    return {0, &RISCC::GPRRegClass};
+    return {0, STI.getGPRClass()};
   return TargetLowering::getRegForInlineAsmConstraint(TRI, C, VT);
 }
