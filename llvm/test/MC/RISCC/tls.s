@@ -2,7 +2,7 @@
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj < %s | llvm-readobj -r - | FileCheck %s
 
 .text
-  li r1, tpoff(tls_initialized)
+  ldi16 r1, tpoff(tls_initialized)
   ldi r2, tpoff(tls_zeroed)
   lui r3, tpoff(tls_zeroed)
 

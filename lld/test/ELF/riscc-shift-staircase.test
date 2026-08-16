@@ -1,0 +1,40 @@
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -filetype=obj %t/root.s -o %t/root.o
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -filetype=obj %t/staircase.s -o %t/staircase.o
+# RUN: ld.lld -m elf32lriscc --gc-sections -e _start -Ttext=0 %t/root.o %t/staircase.o -o %t/linked
+# RUN: llvm-nm --numeric-sort %t/linked | FileCheck %s
+
+# CHECK: 00000000 T _start
+# CHECK: 00000006 t __riscc_shlhi2
+# CHECK: 00000008 t __riscc_shlhi1
+# CHECK: 0000000a t __riscc_shlhi_return
+# CHECK-NOT: __riscc_shlhi3
+
+#--- root.s
+        .text
+        .global _start
+_start:
+        jall    s7, __riscc_shlhi2
+        jmp8    -1
+
+#--- staircase.s
+        .macro STEP name, next
+        .section .text.\name,"ax",@progbits
+        .p2align 1
+        .global \name
+        .hidden \name
+\name:
+        add     r1, r1, r1
+        .reloc . - 2, R_RISCC_NONE, \next
+        .endm
+
+        STEP __riscc_shlhi3, __riscc_shlhi2
+        STEP __riscc_shlhi2, __riscc_shlhi1
+        STEP __riscc_shlhi1, __riscc_shlhi_return
+
+        .section .text.__riscc_shlhi_return,"ax",@progbits
+        .p2align 1
+        .global __riscc_shlhi_return
+        .hidden __riscc_shlhi_return
+__riscc_shlhi_return:
+        ret     s7

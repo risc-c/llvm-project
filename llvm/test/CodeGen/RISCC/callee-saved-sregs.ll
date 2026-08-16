@@ -14,7 +14,7 @@ define void @leaf_clobber_r5_r6() {
 ; CHECK-NEXT:  mts s4, r6
 ; CHECK:       mfs r6, s4
 ; CHECK-NEXT:  mfs r5, s3
-; CHECK-NEXT:  rets
+; CHECK-NEXT:  ret s7
   call void asm sideeffect "", "~{r5},~{r6}"()
   ret void
 }
@@ -33,7 +33,7 @@ define void @leaf_clobber_s5_s6() {
 ; CHECK:       ld r0,
 ; CHECK:       mts s5, r0
 ; CHECK:       addi r7, 4
-; CHECK:       rets
+; CHECK:       ret s7
   call void asm sideeffect "", "~{s5},~{s6}"()
   ret void
 }
@@ -51,7 +51,7 @@ define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
 ; CHECK:       ld r6,
 ; CHECK:       ld r5,
 ; CHECK:       mfs r4, s4
-; CHECK:       rets
+; CHECK:       ret s7
   %a.ok = icmp eq i16 %a, 1
   %b.ok = icmp eq i16 %b, 2
   %ab.ok = and i1 %a.ok, %b.ok
@@ -69,9 +69,9 @@ define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
 ; expansion uses the caller-saved scratch register r0 as its target.
 define i16 @shift_call_clobber_r5_r6(i16 %value) minsize {
 ; CHECK-LABEL: shift_call_clobber_r5_r6:
-; MIN:         li r0, __riscc_shlhi11
+; MIN:         ldi16 r0, __riscc_shlhi11
 ; MIN-NEXT:    jalr s7, r0
-; CHECK:       rets
+; CHECK:       ret s7
   call void asm sideeffect "", "~{r5},~{r6}"()
   %result = shl i16 %value, 11
   ret i16 %result
@@ -87,7 +87,7 @@ define void @ordinary_call_clobber_r5_r6() {
 ; CHECK:       st r6,
 ; CHECK:       ld r6,
 ; CHECK:       ld r5,
-; CHECK:       rets
+; CHECK:       ret s7
   call void asm sideeffect "", "~{r5},~{r6}"()
   call void @external()
   ret void

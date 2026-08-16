@@ -193,7 +193,7 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   // branch may need to spill its scavenged address register.
   constexpr int64_t MinBranchSpillThreshold = 254 - 14;
   bool NeedsBranchSpill =
-      (!STI.hasSys() || STI.isRC32()) &&
+      (!STI.hasLongJall() || STI.isRC32()) &&
       MF.estimateFunctionSizeInBytes() >= MinBranchSpillThreshold;
   // Only large frame offsets and long branches need a scavenged GPR. Avoid
   // growing every ordinary frame by a word just to reserve an unused slot.

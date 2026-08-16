@@ -325,8 +325,8 @@ define float @floor_f32(float %value) {
 
 define float @copysign_f32(float %value, float %sign) {
 ; CHECK-LABEL: copysign_f32:
-; CHECK-NOT: call16 copysignf
-; CHECK: ret
+; CHECK-NOT: jall s7, copysignf
+; CHECK: {{ret s7|jalr r0, r6}}
   %result = call float @llvm.copysign.f32(float %value, float %sign)
   ret float %result
 }
@@ -375,8 +375,8 @@ define double @floor_f64(double %value) {
 
 define double @copysign_f64(double %value, double %sign) {
 ; CHECK-LABEL: copysign_f64:
-; CHECK-NOT: call16 copysign
-; CHECK: ret
+; CHECK-NOT: jall s7, copysign
+; CHECK: {{ret s7|jalr r0, r6}}
   %result = call double @llvm.copysign.f64(double %value, double %sign)
   ret double %result
 }

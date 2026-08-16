@@ -6,8 +6,8 @@
 caller:
   ldi r0, lo8(data)
   lui r1, hi8(data)
-  li r2, data
-  li r3, code(func)
+  ldi16 r2, data
+  ldi16 r3, code(func)
   jall s7, code(func)
   beqz external_target
   .byte data

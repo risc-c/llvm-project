@@ -5,7 +5,7 @@
 # the linker performs byte-offset-to-word-index conversion.
 .text
   .short code(local)
-  li r1, code(local)
+  ldi16 r1, code(local)
   jall s7, code(local)
 local:
   nop

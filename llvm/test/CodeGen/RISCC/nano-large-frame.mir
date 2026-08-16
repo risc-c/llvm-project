@@ -5,9 +5,9 @@
 # register, so large-frame setup may use it directly; teardown uses r6 to
 # preserve the return target.
 # CHECK-LABEL: name: return_link_in_r0
-# CHECK:       $r0 = frame-setup LI 302
+# CHECK:       $r0 = frame-setup LDI16 302
 # CHECK-NEXT:  $r7 = frame-setup SUB $r7, $r0
-# CHECK:       $r6 = frame-destroy LI 302
+# CHECK:       $r6 = frame-destroy LDI16 302
 # CHECK-NEXT:  $r7 = frame-destroy ADD $r7, $r6
 # CHECK-NEXT:  RET_NANO killed $r0
 

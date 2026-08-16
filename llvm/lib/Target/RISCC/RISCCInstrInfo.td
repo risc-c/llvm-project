@@ -20,6 +20,8 @@ def : MnemonicAlias<"jmp16", "jmpl">;
 
 def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
+def HasLongJallPred : Predicate<"Subtarget->hasLongJall()">,
+                      AssemblerPredicate<(all_of FeatureLongJall)>;
 def HasMulPred : Predicate<"Subtarget->hasMul()">,
                  AssemblerPredicate<(all_of FeatureMul)>;
 def HasMduPred : Predicate<"Subtarget->hasMulhu() && Subtarget->hasDivu()">,
@@ -34,9 +36,9 @@ def IsRC32Pred : Predicate<"Subtarget->isRC32()">,
                  AssemblerPredicate<(all_of FeatureRC32)>;
 def IsRC16Pred : Predicate<"!Subtarget->isRC32()">,
                  AssemblerPredicate<(not FeatureRC32)>;
-def IsMinPred : Predicate<"!Subtarget->hasSys() && !Subtarget->isNano()">,
-                AssemblerPredicate<(all_of (not FeatureSys),
-                                           (not FeatureNano))>;
+def NoLongJallPred : Predicate<"!Subtarget->hasLongJall() && !Subtarget->isNano()">,
+                     AssemblerPredicate<(all_of (not FeatureLongJall),
+                                                (not FeatureNano))>;
 
 def SDT_RISCCCall : SDTypeProfile<0, -1, [SDTCisVT<0, iPTR>] >;
 def SDT_RISCCRet : SDTypeProfile<0, -1, []>;
@@ -391,12 +393,15 @@ let Predicates = [IsNanoPred], isBranch = 1, isIndirectBranch = 1,
     isTerminator = 1, isBarrier = 1, DecoderNamespace = "Nano" in
 def JALR_NANO : SYS<1, (outs GPR:$sd), (ins GPR:$ra),
                     "jalr\t$sd, $ra">;
+// Conventional spelling for the link-free JALR form.  The encoder selects
+// S0 for mainline and r0 for Nano.
+def JMP : MCPseudo<(outs), (ins GPR:$ra), "jmp\t$ra", 2>;
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
 def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 5; }
 
 def LDI16 : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm),
                      "ldi16\t$rd, $imm", 4>;
-let Predicates = [HasSysPred] in
+let Predicates = [HasLongJallPred] in
 def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
                         "jall\t$sd, $target"> {
   bits<3> sd;
@@ -412,12 +417,12 @@ def CLI : SYS<0, (outs), (ins), "cli"> { let sd = 2; let ra = 0; }
 def STI : SYS<0, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
 }
 
-// Assembler and code-generation aliases are expanded by the MC emitter.
-def LI : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm), "li\t$rd, $imm", 4>;
-let Predicates = [HasSysPred], isCall = 1,
+// ABI-bound call/return forms remain compiler pseudos only. Source assembly
+// must spell the link register and transfer instruction explicitly.
+let Predicates = [HasLongJallPred], isCall = 1,
     Defs = [S7, R0, R1, R2, R3] in
-def CALL16 : MCPseudo<(outs), (ins codeaddr:$target), "call16\t$target", 4>;
-let Predicates = [IsMinPred], isCall = 1, isCodeGenOnly = 1,
+def CALL16 : Pseudo<(outs), (ins codeaddr:$target)> { let Size = 4; }
+let Predicates = [NoLongJallPred], isCall = 1, isCodeGenOnly = 1,
     Defs = [S7, R0, R1, R2, R3] in
 def CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
@@ -429,42 +434,43 @@ def CALL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
 }
 let Predicates = [NoNanoPred], isCall = 1,
     Defs = [S7, R0, R1, R2, R3] in
-def CALL : MCPseudo<(outs), (ins GPR:$target), "call\t$target", 2> {
-  let Pattern = [(RISCCcall GPR:$target)];
+def CALL : Pseudo<(outs), (ins GPR:$target), [(RISCCcall GPR:$target)]> {
+  let Size = 2;
 }
 let Predicates = [IsRC32Pred], isCall = 1,
     Defs = [S7, R0, R1, R2, R3] in
-def CALL32 : MCPseudo<(outs), (ins GPR32:$target), "call\t$target", 2> {
-  let Pattern = [(RISCCcall GPR32:$target)];
+def CALL32 : Pseudo<(outs), (ins GPR32:$target),
+                    [(RISCCcall GPR32:$target)]> {
+  let Size = 2;
 }
 let Predicates = [IsNanoPred], isCall = 1,
     Defs = [R6, R0, R1, R2, R3] in
-def CALL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
-                             "call\t$target", 2> {
-  let Pattern = [(RISCCcall GPR:$target)];
+def CALL_NANO_REG : Pseudo<(outs), (ins GPR:$target),
+                            [(RISCCcall GPR:$target)]> {
+  let Size = 2;
 }
 
 // Direct-only private functions use S3 instead of the public S7 ABI link.
 // Keep that physical link in the instruction descriptor so ordinary
 // call/return liveness remains exact.
 multiclass PrivateLink<Register link> {
-  let Predicates = [HasSysPred], isCall = 1, isCodeGenOnly = 1,
+  let Predicates = [HasLongJallPred], isCall = 1, isCodeGenOnly = 1,
       Defs = [link, R0, R1, R2, R3] in
   def _CALL16 : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 4;
   }
-  let Predicates = [IsMinPred], isCall = 1, isCodeGenOnly = 1,
+  let Predicates = [NoLongJallPred], isCall = 1, isCodeGenOnly = 1,
       Defs = [link, R0, R1, R2, R3] in
   def _CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 6;
   }
-  let Predicates = [HasSysPred], isCall = 1, isReturn = 1,
+  let Predicates = [HasLongJallPred], isCall = 1, isReturn = 1,
       isTerminator = 1, isBarrier = 1, isCodeGenOnly = 1,
       Uses = [link] in
   def _TAIL16 : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 4;
   }
-  let Predicates = [IsMinPred], isCall = 1, isReturn = 1,
+  let Predicates = [NoLongJallPred], isCall = 1, isReturn = 1,
       isTerminator = 1, isBarrier = 1, isCodeGenOnly = 1,
       Uses = [link] in
   def _TAIL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
@@ -480,10 +486,9 @@ multiclass PrivateLink<Register link> {
 defm LINK_S3 : PrivateLink<S3>;
 
 let isCall = 1, isReturn = 1, isTerminator = 1, isBarrier = 1 in {
-let Predicates = [HasSysPred], Uses = [S7] in
-def TAIL16 : MCPseudo<(outs), (ins codeaddr:$target),
-                      "tail\t$target", 4>;
-let Predicates = [IsMinPred], Uses = [S7], isCodeGenOnly = 1 in
+let Predicates = [HasLongJallPred], Uses = [S7] in
+def TAIL16 : Pseudo<(outs), (ins codeaddr:$target)> { let Size = 4; }
+let Predicates = [NoLongJallPred], Uses = [S7], isCodeGenOnly = 1 in
 def TAIL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
@@ -491,31 +496,27 @@ let Predicates = [IsNanoPred], Uses = [R6], isCodeGenOnly = 1 in
 def TAIL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
-// Register-tail aliases remain available to assembly, but code generation
-// deliberately limits sibling calls to direct targets.
 let Predicates = [NoNanoPred], Uses = [S7] in
-def TAIL_REG : MCPseudo<(outs), (ins GPR:$target),
-                        "tail\t$target", 2>;
+def TAIL_REG : Pseudo<(outs), (ins GPR:$target)> { let Size = 2; }
 let Predicates = [IsRC32Pred], Uses = [S7] in
-def TAIL32 : MCPseudo<(outs), (ins GPR32:$target), "tail\t$target", 2> {
-  let Pattern = [(RISCCTail GPR32:$target)];
-}
+def TAIL32 : Pseudo<(outs), (ins GPR32:$target),
+                    [(RISCCTail GPR32:$target)]> { let Size = 2; }
 let Predicates = [IsNanoPred], Uses = [R6] in
-def TAIL_NANO_REG : MCPseudo<(outs), (ins GPR:$target),
-                             "tail\t$target", 2>;
+def TAIL_NANO_REG : Pseudo<(outs), (ins GPR:$target)> { let Size = 2; }
 }
-let Predicates = [HasSysPred], isBranch = 1, isTerminator = 1,
+
+let Predicates = [HasLongJallPred], isBranch = 1, isTerminator = 1,
     isBarrier = 1 in
 def JMP16 : MCPseudo<(outs), (ins codeaddr:$target), "jmpl\t$target", 4>;
 let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
     isBarrier = 1, Uses = [S7] in
-def RETS : MCPseudo<(outs), (ins), "rets", 2> {
-  let Pattern = [(RISCCret)];
+def RETS : Pseudo<(outs), (ins), [(RISCCret)]> {
+  let Size = 2;
 }
 let Predicates = [IsNanoPred], isReturn = 1, isTerminator = 1,
     isBarrier = 1 in
-def RET_NANO : MCPseudo<(outs), (ins GPR:$ra), "ret\t$ra", 2> {
-  let Pattern = [(RISCCret GPR:$ra)];
+def RET_NANO : Pseudo<(outs), (ins GPR:$ra), [(RISCCret GPR:$ra)]> {
+  let Size = 2;
 }
 let Predicates = [IsRC16Pred] in
 def MOV : MCPseudo<(outs GPR:$rd), (ins GPR:$rs), "mov\t$rd, $rs", 2>;
@@ -587,12 +588,13 @@ def PseudoSRA : Pseudo<(outs GPR:$dst), (ins GPR:$src, GPR:$amount),
   [(set i16:$dst, (RISCCsra GPR:$src, GPR:$amount))]>;
 }
 
-def : Pat<(i16 (RISCCWrapper tglobaladdr:$addr)), (LI tglobaladdr:$addr)>;
+def : Pat<(i16 (RISCCWrapper tglobaladdr:$addr)), (LDI16 tglobaladdr:$addr)>;
 def : Pat<(i16 (RISCCWrapper tglobaltlsaddr:$addr)),
-          (LI tglobaltlsaddr:$addr)>;
-def : Pat<(i16 (RISCCWrapper texternalsym:$addr)), (LI texternalsym:$addr)>;
-def : Pat<(i16 imm:$imm), (LI imm:$imm)>;
-let Predicates = [HasSysPred] in {
+          (LDI16 tglobaltlsaddr:$addr)>;
+def : Pat<(i16 (RISCCWrapper texternalsym:$addr)),
+          (LDI16 texternalsym:$addr)>;
+def : Pat<(i16 imm:$imm), (LDI16 imm:$imm)>;
+let Predicates = [HasLongJallPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL16 tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),
@@ -606,7 +608,7 @@ def : Pat<(RISCCcallPrivate (i16 tglobaladdr:$target)),
 def : Pat<(RISCCTailPrivate (i16 tglobaladdr:$target)),
           (LINK_S3_TAIL16 tglobaladdr:$target)>;
 }
-let Predicates = [IsMinPred] in {
+let Predicates = [NoLongJallPred] in {
 def : Pat<(RISCCcall (i16 tglobaladdr:$target)),
           (CALL_MIN tglobaladdr:$target)>;
 def : Pat<(RISCCcall (i16 texternalsym:$target)),

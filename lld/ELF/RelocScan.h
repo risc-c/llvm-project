@@ -195,6 +195,11 @@ void RelocScan::scan(typename Relocs<RelTy>::const_iterator &it, RelType type,
   RelExpr expr =
       ctx.target->getRelExpr(type, sym, sec->content().data() + offset);
 
+  // Marker relocations, such as R_*_NONE, participate in section GC but do
+  // not require a runtime or static relocation after their target is marked.
+  if (expr == R_NONE)
+    return;
+
   // Error if the target symbol is undefined. Symbol index 0 may be used by
   // marker relocations, e.g. R_*_NONE and R_ARM_V4BX. Don't error on them.
   if (sym.isUndefined() && symIdx != 0 &&

@@ -13,7 +13,7 @@ define i1 @overflow(i16 %a, i16 %b) {
 ; CHECK:       st r2, [r7 + 0]
 ; CHECK-NEXT:  ldi r2, 0
 ; CHECK-NEXT:  st r2, [r7 + 2]
-; CHECK:       li r0, __mulsi3
+; CHECK:       ldi16 r0, __mulsi3
 ; CHECK-NEXT:  jalr r6, r0
   %result = call { i16, i1 } @llvm.umul.with.overflow.i16(i16 %a, i16 %b)
   %overflow = extractvalue { i16, i1 } %result, 1

@@ -143,9 +143,34 @@ public:
     switch (Opcode) {
     default:
       break;
+    case RISCC::RETS:
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::RET).addReg(RISCC::S7));
+      return;
+    case RISCC::RET_NANO:
+      EmitToStreamer(*OutStreamer,
+                     MCInstBuilder(RISCC::JALR_NANO)
+                         .addReg(RISCC::R0)
+                         .addOperand(Out.getOperand(0)));
+      return;
     case RISCC::LINK_S3_RET:
       EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::RET).addReg(RISCC::S3));
       return;
+    case RISCC::CALL:
+    case RISCC::CALL32:
+      Link = RISCC::S7;
+      break;
+    case RISCC::TAIL_REG:
+    case RISCC::TAIL32:
+      Link = RISCC::S0;
+      break;
+    case RISCC::CALL_NANO_REG:
+      Link = RISCC::R6;
+      TransferOpcode = RISCC::JALR_NANO;
+      break;
+    case RISCC::TAIL_NANO_REG:
+      Link = RISCC::R0;
+      TransferOpcode = RISCC::JALR_NANO;
+      break;
     case RISCC::LINK_S3_CALL_MIN:
       Link = RISCC::S3;
       break;
@@ -166,18 +191,27 @@ public:
       Link = RISCC::R0;
       TransferOpcode = RISCC::JALR_NANO;
       break;
+    case RISCC::CALL16:
+    case RISCC::TAIL16:
     case RISCC::LINK_S3_CALL16:
     case RISCC::LINK_S3_TAIL16:
       EmitToStreamer(
           *OutStreamer,
           MCInstBuilder(RISCC::JAL16)
-              .addReg(Opcode == RISCC::LINK_S3_CALL16 ? RISCC::S3 : RISCC::S0)
+              .addReg(Opcode == RISCC::CALL16 ? RISCC::S7 :
+                      Opcode == RISCC::LINK_S3_CALL16 ? RISCC::S3 : RISCC::S0)
               .addOperand(Out.getOperand(0)));
       return;
     }
 
     if (Link) {
-      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::LI)
+      if (Out.getOperand(0).isReg()) {
+        EmitToStreamer(*OutStreamer, MCInstBuilder(TransferOpcode)
+                                        .addReg(Link)
+                                        .addOperand(Out.getOperand(0)));
+        return;
+      }
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::LDI16)
                                           .addReg(RISCC::R0)
                                           .addOperand(Out.getOperand(0)));
       EmitToStreamer(*OutStreamer, MCInstBuilder(TransferOpcode)
@@ -280,7 +314,7 @@ private:
   }
 
   static bool isLongBranchLoad(const MachineInstr &MI) {
-    if (MI.getOpcode() != RISCC::LI || MI.getNumOperands() < 2 ||
+    if (MI.getOpcode() != RISCC::LDI16 || MI.getNumOperands() < 2 ||
         !MI.getOperand(1).isMBB())
       return false;
     auto Next = std::next(MI.getIterator());

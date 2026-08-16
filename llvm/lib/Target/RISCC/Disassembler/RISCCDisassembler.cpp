@@ -142,7 +142,7 @@ DecodeStatus RISCCDisassembler::getInstruction(
 
   // Only the defined JALL head can begin a 32-bit instruction. Avoid
   // consuming the following instruction after a reserved 00 encoding.
-  if (!IsJALL || Bytes.size() < 4)
+  if (!IsJALL || !STI.hasFeature(RISCC::FeatureLongJall) || Bytes.size() < 4)
     return Fail;
   MI.clear();
   uint32_t LongInstruction = support::endian::read32le(Bytes.data());

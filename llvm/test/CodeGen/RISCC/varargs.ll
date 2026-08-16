@@ -16,7 +16,7 @@ define i16 @take_one(i16 %fixed, ...) {
 ; CHECK-NEXT:  st [[AP]], [r7 + 2]
 ; CHECK-NEXT:  ld r1, [r7 + 4]
 ; CHECK:       addi r7, 4
-; CHECK:       rets
+; CHECK:       ret s7
   %ap = alloca ptr, align 2
   call void @llvm.va_start(ptr %ap)
   %next = load ptr, ptr %ap, align 2
@@ -30,7 +30,7 @@ define i16 @take_one(i16 %fixed, ...) {
 ; CHECK:       ldi [[VARARG:r[0-6]]], 9
 ; CHECK-NEXT:  st [[VARARG]], [r7 + 0]
 ; CHECK:       ldi r1, 7
-; CHECK:       call16 take_one
+; CHECK:       jall s7, take_one
 ; CHECK:       ld r0, [r7 + 2]
 ; CHECK:       addi r7, 4
 define i16 @call_take_one() {

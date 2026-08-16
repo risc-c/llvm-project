@@ -16,15 +16,18 @@ fsr1 r1, r2
 
 slli r1, r2, 1
 # MIN: :[[@LINE-1]]:1: error: instruction or shift count is unavailable in this profile
-# NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
+# SYS: :[[@LINE-2]]:1: error: instruction or shift count is unavailable in this profile
+# NANO: :[[@LINE-3]]:1: error: invalid operand for RISC-C instruction
 
 srli r1, r2, 2
 # MIN: :[[@LINE-1]]:1: error: instruction or shift count is unavailable in this profile
-# NANO: :[[@LINE-2]]:1: error: instruction or shift count is unavailable in this profile
+# SYS: :[[@LINE-2]]:1: error: instruction or shift count is unavailable in this profile
+# NANO: :[[@LINE-3]]:1: error: instruction or shift count is unavailable in this profile
 
 srai r1, r2, 8
 # MIN: :[[@LINE-1]]:1: error: instruction or shift count is unavailable in this profile
-# NANO: :[[@LINE-2]]:1: error: instruction or shift count is unavailable in this profile
+# SYS: :[[@LINE-2]]:1: error: instruction or shift count is unavailable in this profile
+# NANO: :[[@LINE-3]]:1: error: instruction or shift count is unavailable in this profile
 
 jall s7, 4
 # MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction

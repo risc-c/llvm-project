@@ -17,16 +17,16 @@ declare i16 @four_args(i16, i16, i16, i16)
 
 define i16 @direct_call(i16 %x) {
 ; ASM-LABEL: direct_call:
-; ASM:       call16 callee
-; ASM:       rets
+; ASM:       jall s7, callee
+; ASM:       ret s7
   %v = call i16 @callee(i16 %x)
   ret i16 %v
 }
 
 define i16 @indirect_call(ptr %fp, i16 %x) {
 ; ASM-LABEL: indirect_call:
-; ASM:       call {{r[0-6]}}
-; ASM:       rets
+; ASM:       jalr s7, {{r[0-6]}}
+; ASM:       ret s7
   %v = call i16 %fp(i16 %x)
   ret i16 %v
 }
@@ -41,7 +41,7 @@ define i16 @stack_call() {
 ; ASM:       st {{r[0-6]}}, [r{{[0-7]}} + 2]
 ; ASM:       st {{r[0-6]}}, [r{{[0-7]}} + 0]
 ; ASM-NOT:   addi r7
-; ASM:       call16 six_args
+; ASM:       jall s7, six_args
 ; ASM-NEXT:  ld r0, [r7 + 6]
 ; ASM:       addi r7, 8
   %v = call i16 @six_args(i16 1, i16 2, i16 3, i16 4, i16 5, i16 6)
@@ -53,18 +53,18 @@ define i16 @stack_call() {
 define i16 @four_slot_call(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; ASM-LABEL: four_slot_call:
 ; ASM:       st r0, [r{{[0-7]}} + 0]
-; ASM:       call16 four_args
-; ASM:       rets
+; ASM:       jall s7, four_args
+; ASM:       ret s7
 ; MIN-LABEL: four_slot_call:
 ; MIN:       st r0, [r{{[0-7]}} + 0]
-; MIN:       li r0, four_args
+; MIN:       ldi16 r0, four_args
 ; MIN-NEXT:  jalr s7, r0
-; MIN:       rets
+; MIN:       ret s7
 ; NANO-LABEL: four_slot_call:
 ; NANO:       st r0, [r{{[0-7]}} + 0]
-; NANO:       li r0, four_args
+; NANO:       ldi16 r0, four_args
 ; NANO-NEXT:  jalr r6, r0
-; NANO:       ret r0
+; NANO:       jalr r0, r0
   %v = call i16 @four_args(i16 %a, i16 %b, i16 %c, i16 %d)
   ret i16 %v
 }

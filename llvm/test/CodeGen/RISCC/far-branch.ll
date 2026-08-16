@@ -1,6 +1,6 @@
 ; REQUIRES: riscc-registered-target
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,SYS
-; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,SYS
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,FULL
+; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,FULL
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,MIN
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s --check-prefix=RC32
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -filetype=obj < %s | llvm-objdump -dr - | FileCheck %s --check-prefix=OBJ
@@ -18,10 +18,10 @@ define i16 @far_conditional(i16 %a, i16 %b) {
 ; RC32-NEXT:  jalr s0, r0
 ; CHECK-LABEL: far_conditional:
 ; CHECK:       sub r0, r1, r2
-; SYS-NEXT:    bnez [[NEAR:.LBB[0-9_]+]]
-; SYS:         jmpl [[FAR:.LBB[0-9_]+]]
+; FULL-NEXT:   bnez [[NEAR:.LBB[0-9_]+]]
+; FULL:        jmpl [[FAR:.LBB[0-9_]+]]
 ; MIN-NEXT:    bnez [[NEAR:.LBB[0-9_]+]]
-; MIN:         li r0, [[FAR:.LBB[0-9_]+]]
+; MIN:         ldi16 r0, [[FAR:.LBB[0-9_]+]]
 ; MIN:         jalr s0, r0
 ; CHECK:       .zero 300
 ; CHECK:       [[FAR]]:

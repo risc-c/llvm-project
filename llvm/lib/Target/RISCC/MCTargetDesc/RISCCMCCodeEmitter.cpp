@@ -222,39 +222,16 @@ void RISCCMCCodeEmitter::encodeInstruction(
     encodeInstruction(Expanded, Code, Fixups, STI);
   };
   switch (Opcode) {
-  case RISCC::CALL16:
-  case RISCC::JMP16:
-  case RISCC::TAIL16: {
+  case RISCC::JMP: {
+    bool IsNano = STI.hasFeature(RISCC::FeatureNano);
+    Encode(MCInstBuilder(IsNano ? RISCC::JALR_NANO : RISCC::JALR)
+               .addReg(IsNano ? RISCC::R0 : RISCC::S0)
+               .addOperand(MI.getOperand(0)));
+    return;
+  }
+  case RISCC::JMP16: {
     Encode(MCInstBuilder(RISCC::JAL16)
-               .addReg(Opcode == RISCC::CALL16 ? RISCC::S7 : RISCC::S0)
-               .addOperand(MI.getOperand(0)));
-    return;
-  }
-  case RISCC::CALL:
-  case RISCC::CALL32:
-  case RISCC::TAIL_REG:
-  case RISCC::TAIL32: {
-    Encode(MCInstBuilder(RISCC::JALR)
-               .addReg(Opcode == RISCC::CALL || Opcode == RISCC::CALL32
-                           ? RISCC::S7
-                           : RISCC::S0)
-               .addOperand(MI.getOperand(0)));
-    return;
-  }
-  case RISCC::CALL_NANO_REG:
-  case RISCC::TAIL_NANO_REG: {
-    Encode(MCInstBuilder(RISCC::JALR_NANO)
-               .addReg(Opcode == RISCC::CALL_NANO_REG ? RISCC::R6 : RISCC::R0)
-               .addOperand(MI.getOperand(0)));
-    return;
-  }
-  case RISCC::RETS: {
-    Encode(MCInstBuilder(RISCC::RET).addReg(RISCC::S7));
-    return;
-  }
-  case RISCC::RET_NANO: {
-    Encode(MCInstBuilder(RISCC::JALR_NANO)
-               .addReg(RISCC::R0)
+               .addReg(RISCC::S0)
                .addOperand(MI.getOperand(0)));
     return;
   }
@@ -277,10 +254,9 @@ void RISCCMCCodeEmitter::encodeInstruction(
     Encode(MCInstBuilder(RISCC::JMP8).addImm(-1));
     return;
   }
-  case RISCC::LDI16:
-  case RISCC::LI: {
+  case RISCC::LDI16: {
     if (STI.hasFeature(RISCC::FeatureRC32)) {
-      Ctx.reportError(MI.getLoc(), "LI is unavailable in RC32");
+      Ctx.reportError(MI.getLoc(), "LDI16 is unavailable in RC32");
       return;
     }
     const MCOperand &Imm = MI.getOperand(1);
@@ -292,7 +268,7 @@ void RISCCMCCodeEmitter::encodeInstruction(
             Variant != RISCCMCExpr::VK_TPOFF) {
           Ctx.reportError(
               MI.getLoc(),
-              "LI accepts only an unmodified, code(), or tpoff() expression");
+              "LDI16 accepts only an unmodified, code(), or tpoff() expression");
           return;
         }
       }
@@ -310,7 +286,7 @@ void RISCCMCCodeEmitter::encodeInstruction(
             Variant != RISCCMCExpr::VK_TPOFF)
           Ctx.reportError(
               MI.getLoc(),
-              "LI accepts only an unmodified, code(), or tpoff() expression");
+              "LDI16 accepts only an unmodified, code(), or tpoff() expression");
       }
       Hi = Lo = MCOperand::createExpr(Expr);
     }

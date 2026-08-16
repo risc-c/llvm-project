@@ -3,23 +3,23 @@
 
 define i16 @quotient(i16 %a, i16 %b) {
 ; BASE-LABEL: quotient:
-; BASE: call16 __udivhi3
+; BASE: jall s7, __udivhi3
 ; MDU-LABEL: quotient:
 ; MDU: ldi r0, 0
 ; MDU-NEXT: divu r0, r1, r2
-; MDU-NEXT: rets
+; MDU-NEXT: ret s7
   %q = udiv i16 %a, %b
   ret i16 %q
 }
 
 define i16 @remainder(i16 %a, i16 %b) {
 ; BASE-LABEL: remainder:
-; BASE: call16 __umodhi3
+; BASE: jall s7, __umodhi3
 ; MDU-LABEL: remainder:
 ; MDU: ldi r0, 0
 ; MDU-NEXT: divu r0, r1, r2
 ; MDU-NEXT: mov r1, r0
-; MDU-NEXT: rets
+; MDU-NEXT: ret s7
   %r = urem i16 %a, %b
   ret i16 %r
 }
@@ -29,7 +29,7 @@ define i16 @both(i16 %a, i16 %b) {
 ; MDU: ldi r0, 0
 ; MDU-NEXT: divu r0, r1, r2
 ; MDU-NEXT: add r1, r1, r0
-; MDU-NEXT: rets
+; MDU-NEXT: ret s7
   %q = udiv i16 %a, %b
   %r = urem i16 %a, %b
   %sum = add i16 %q, %r

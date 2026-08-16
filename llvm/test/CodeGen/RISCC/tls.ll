@@ -10,9 +10,9 @@ target triple = "riscc-none-elf"
 define i16 @read_tls() {
 ; CHECK-LABEL: read_tls:
 ; CHECK:       mfs{{.*}}s2
-; CHECK:       li{{.*}}tpoff(tls_zeroed)
+; CHECK:       ldi16{{.*}}tpoff(tls_zeroed)
 ; CHECK-NEXT:  ldx
-; CHECK:       li{{.*}}tpoff(tls_initialized)
+; CHECK:       ldi16{{.*}}tpoff(tls_initialized)
 ; CHECK-NEXT:  ldx
 ; CHECK-NEXT:  add
   %a = load i16, ptr @tls_initialized, align 2

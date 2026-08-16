@@ -28,9 +28,9 @@ define i32 @literal_call(i32 %x) {
 ; CHECK-NEXT:  .long callee
 ; CHECK-LABEL: literal_call:
 ; CHECK:       ldpc r0, [[CALLEE]]
-; CHECK-NEXT:  call r0
+; CHECK-NEXT:  jalr s7, r0
 ; CHECK:       addi r1, 1
-; CHECK:       rets
+; CHECK:       ret s7
   %call = call i32 @callee(i32 %x)
   %result = add i32 %call, 1
   ret i32 %result
@@ -47,7 +47,7 @@ define i32 @memory(i32 %value) {
 ; CHECK:       st r1, [r{{[0-7]}} + 0]
 ; CHECK:       ldpc r0, [[HALF]]
 ; CHECK:       ldhs {{r[0-7]}}, [r{{[0-7]}}]
-; CHECK:       rets
+; CHECK:       ret s7
   %old = load i32, ptr @word, align 4
   store i32 %value, ptr @word, align 4
   %short = load i16, ptr @half, align 2
@@ -108,7 +108,7 @@ define void @large_call_frame() {
 ; CHECK-NEXT:  addi r7, -8
 ; CHECK:       st r0, [r7 + 124]
 ; CHECK:       ldpc r0, {{.Ltmp[0-9]+}}
-; CHECK-NEXT:  call r0
+; CHECK-NEXT:  jalr s7, r0
   call void @wide_callee(i1024 0)
   ret void
 }

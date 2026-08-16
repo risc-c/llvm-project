@@ -57,6 +57,8 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerFunnelShift(SDValue, SelectionDAG &) const;
   SDValue lowerShiftLibCall(SDValue, unsigned Opcode, unsigned Amount,
                             SelectionDAG &) const;
+  SDValue lowerVariableShiftLibCall(SDValue, SDValue, unsigned Opcode,
+                                    SelectionDAG &) const;
   SDValue lowerMULLOHI(SDValue, SelectionDAG &, bool Signed) const;
   SDValue lowerMul(SDValue, SelectionDAG &) const;
   SDValue lowerUDivRem(SDValue, SelectionDAG &) const;

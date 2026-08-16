@@ -61,10 +61,11 @@ public:
     unsigned Profile = ELF::EF_RISCC_PROFILE_MIN;
     if (STI.hasFeature(RISCC::FeatureNano))
       Profile = ELF::EF_RISCC_PROFILE_NANO;
-    else if (STI.hasFeature(RISCC::FeatureMul))
+    else if (STI.hasFeature(RISCC::FeatureMul) ||
+             STI.hasFeature(RISCC::FeatureWideShift))
       Profile = ELF::EF_RISCC_PROFILE_FULL;
     else if (STI.hasFeature(RISCC::FeatureSys) ||
-             STI.hasFeature(RISCC::FeatureWideShift))
+             STI.hasFeature(RISCC::FeatureLongJall))
       Profile = ELF::EF_RISCC_PROFILE_SYS;
     unsigned Config = STI.hasFeature(RISCC::FeatureRC32)
                           ? static_cast<unsigned>(ELF::EF_RISCC_RC32)

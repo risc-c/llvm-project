@@ -13,7 +13,9 @@ include "RISCCCallingConv.td"
 defm : RemapAllTargetPseudoPointerOperands<GPR>;
 
 def FeatureSys : SubtargetFeature<"sys", "HasSys", "true",
-  "Enable JALL and system instructions">;
+  "Enable interrupt and system instructions">;
+def FeatureLongJall : SubtargetFeature<"jall", "HasLongJall", "true",
+  "Enable the two-word JALL/JMPL control transfers">;
 def FeatureWideShift : SubtargetFeature<"wide-shift", "HasWideShift", "true",
   "Enable shift counts from 2 through 8">;
 def FeatureMul : SubtargetFeature<"mul", "HasMul", "true",
@@ -32,9 +34,9 @@ include "RISCCInstrInfo.td"
 
 def : ProcessorModel<"min", NoSchedModel, []>;
 def : ProcessorModel<"nano", NoSchedModel, [FeatureNano]>;
-def : ProcessorModel<"sys", NoSchedModel, [FeatureSys, FeatureWideShift]>;
+def : ProcessorModel<"sys", NoSchedModel, [FeatureSys, FeatureLongJall]>;
 def : ProcessorModel<"full", NoSchedModel,
-                     [FeatureSys, FeatureWideShift, FeatureMul]>;
+                     [FeatureSys, FeatureLongJall, FeatureWideShift, FeatureMul]>;
 
 def RISCCInstrInfo : InstrInfo;
 

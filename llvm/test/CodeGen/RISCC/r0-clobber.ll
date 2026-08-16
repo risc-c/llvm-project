@@ -10,7 +10,7 @@ target triple = "riscc-none-elf"
 define i16 @allocate_r0(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; CHECK-LABEL: allocate_r0:
 ; CHECK:       {{(add|xor|or|mul)}}	r0,
-; CHECK:       rets
+; CHECK:       ret s7
   %ab = add i16 %a, %b
   %cd = xor i16 %c, %d
   %ac = mul i16 %a, %c

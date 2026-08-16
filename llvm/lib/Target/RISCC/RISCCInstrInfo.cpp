@@ -52,7 +52,7 @@ void RISCCInstrInfo::materializeImmediate(
         .setMIFlag(Flag);
     return;
   }
-  BuildMI(MBB, I, DL, get(RISCC::LI), Destination)
+  BuildMI(MBB, I, DL, get(RISCC::LDI16), Destination)
       .addImm(Value)
       .setMIFlag(Flag);
 }
@@ -294,7 +294,7 @@ void RISCCInstrInfo::insertIndirectBranch(
   assert(MBB.empty() && MBB.pred_size() == 1 &&
          "expected a fresh long-branch block");
   assert(RestoreBB.empty() && "expected an empty restore block");
-  if (STI.hasSys() && !STI.isRC32()) {
+  if (STI.hasLongJall() && !STI.isRC32()) {
     BuildMI(MBB, MBB.end(), DL, get(RISCC::JMP16)).addMBB(&DestBB);
     return;
   }
@@ -304,7 +304,7 @@ void RISCCInstrInfo::insertIndirectBranch(
   MachineRegisterInfo &MRI = MF.getRegInfo();
   Register VirtualScratch = MRI.createVirtualRegister(STI.getGPRClass());
   MachineInstr &Address =
-      *BuildMI(MBB, MBB.end(), DL, get(RISCC::LI), VirtualScratch)
+      *BuildMI(MBB, MBB.end(), DL, get(RISCC::LDI16), VirtualScratch)
            .addMBB(&DestBB);
   if (STI.isNano())
     BuildMI(MBB, MBB.end(), DL, get(RISCC::JALR_NANO), RISCC::R0)

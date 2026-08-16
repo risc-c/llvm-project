@@ -77,18 +77,18 @@ cli
 sti
 # ENC: sti{{ *}}; encoding: [0xf8,0xf8]
 
-li r0, 4660
-# ENC: li	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
 ldi16 r0, 4660
 # ENC: ldi16	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]
-call r1
-# ENC: call	r1{{ *}}; encoding: [0xf9,0xf9]
-call16 4660
-# ENC: call16	4660{{ *}}; encoding: [0x34,0x38,0x34,0x12]
+jalr s7, r1
+# ENC: jalr	s7, r1{{ *}}; encoding: [0xf9,0xf9]
+jmp r5
+# ENC: jmp	r5{{ *}}; encoding: [0xf9,0xc5]
+jall s7, 4660
+# ENC: jall	s7, 4660{{ *}}; encoding: [0x34,0x38,0x34,0x12]
 jmpl 4660
 # ENC: jmpl	4660{{ *}}; encoding: [0x34,0x00,0x34,0x12]
-rets
-# ENC: rets{{ *}}; encoding: [0xf8,0xc7]
+ret s7
+# ENC: ret	s7{{ *}}; encoding: [0xf8,0xc7]
 mov r2, r3
 # ENC: mov	r2, r3{{ *}}; encoding: [0x2b,0xd3]
 nop
@@ -113,8 +113,7 @@ halt
 # DIS: sti
 # DIS: lui	r0, 18
 # DIS: ori	r0, 52
-# DIS: lui	r0, 18
-# DIS: ori	r0, 52
+# DIS: jalr	s0, r5
 # DIS: jall	s7, 4660
 # DIS: jall	s0, 4660
 # DIS: ret	s7

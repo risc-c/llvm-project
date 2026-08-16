@@ -11,21 +11,21 @@ declare void @use(ptr)
 define i16 @constant_5() {
 ; COMMON-LABEL: constant_5:
 ; COMMON:       ldi r1, 5
-; COMMON-NEXT:  {{rets|ret r6}}
+; COMMON-NEXT:  {{ret s7|jalr r0, r6}}
   ret i16 5
 }
 
 define i16 @constant_ff00() {
 ; COMMON-LABEL: constant_ff00:
 ; COMMON:       lui r1, 255
-; COMMON-NEXT:  {{rets|ret r6}}
+; COMMON-NEXT:  {{ret s7|jalr r0, r6}}
   ret i16 -256
 }
 
 define i16 @constant_1234() {
 ; COMMON-LABEL: constant_1234:
-; COMMON:       li r1, 4660
-; COMMON-NEXT:  {{rets|ret r6}}
+; COMMON:       ldi16 r1, 4660
+; COMMON-NEXT:  {{ret s7|jalr r0, r6}}
   ret i16 4660
 }
 

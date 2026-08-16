@@ -638,6 +638,10 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op,
     }
     return V;
   }
+  const Function &Fn = DAG.getMachineFunction().getFunction();
+  if (!STI.hasWideShift() && Fn.hasMinSize())
+    return lowerVariableShiftLibCall(Op.getOperand(0), Op.getOperand(1),
+                                     Op.getOpcode(), DAG);
   return DAG.getNode(TOpc, DL, MVT::i16, Op.getOperand(0), Op.getOperand(1));
 }
 
@@ -673,6 +677,29 @@ SDValue RISCCTargetLowering::lowerShiftLibCall(
 
   const char *Symbol =
       DAG.getMachineFunction().createExternalSymbolName(Name);
+  SDValue Callee = DAG.getTargetExternalSymbol(
+      Symbol, getPointerTy(DAG.getDataLayout()),
+      RISCCII::MO_SREG_PRESERVING_CALL);
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, I16, Callee, std::move(Args))
+      .setIsPostTypeLegalization(true);
+  return LowerCallTo(CLI).first;
+}
+
+SDValue RISCCTargetLowering::lowerVariableShiftLibCall(
+    SDValue Value, SDValue Amount, unsigned Opcode, SelectionDAG &DAG) const {
+  const char *Name = Opcode == ISD::SHL   ? "__riscc_shlhi"
+                     : Opcode == ISD::SRL ? "__riscc_lshrhi"
+                                          : "__riscc_ashrhi";
+  SDLoc DL(Value);
+  Type *I16 = Type::getInt16Ty(*DAG.getContext());
+  ArgListTy Args;
+  Args.emplace_back(Value, I16);
+  Args.emplace_back(Amount, I16);
+
+  const char *Symbol = DAG.getMachineFunction().createExternalSymbolName(Name);
   SDValue Callee = DAG.getTargetExternalSymbol(
       Symbol, getPointerTy(DAG.getDataLayout()),
       RISCCII::MO_SREG_PRESERVING_CALL);

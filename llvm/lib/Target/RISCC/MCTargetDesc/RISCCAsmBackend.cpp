@@ -47,6 +47,12 @@ public:
     return createRISCCELFObjectWriter(OSABI);
   }
 
+  std::optional<MCFixupKind> getFixupKind(StringRef Name) const override {
+    if (Name == "R_RISCC_NONE")
+      return FirstLiteralRelocationKind + ELF::R_RISCC_NONE;
+    return std::nullopt;
+  }
+
   MCFixupKindInfo getFixupKindInfo(MCFixupKind Kind) const override {
     static const MCFixupKindInfo Infos[] = {
         {"fixup_abs8", 0, 8, 0},
@@ -64,6 +70,8 @@ public:
         {"fixup_insn_align", 0, 0, 0},
     };
     static_assert(std::size(Infos) == RISCC::NumTargetFixupKinds);
+    if (mc::isRelocRelocation(Kind))
+      return MCAsmBackend::getFixupKindInfo(FK_NONE);
     if (Kind < FirstTargetFixupKind)
       return MCAsmBackend::getFixupKindInfo(Kind);
     return Infos[Kind - FirstTargetFixupKind];
@@ -74,6 +82,11 @@ public:
                   bool IsResolved) override {
     maybeAddReloc(F, Fixup, Target, Value, IsResolved);
     unsigned Kind = Fixup.getKind();
+
+    // A .reloc R_RISCC_NONE carries a linker reachability edge but has no
+    // encoded field to update.
+    if (mc::isRelocRelocation(Kind))
+      return;
 
     if (Kind == RISCC::fixup_insn_align) {
       uint64_t Address = Asm->getFragmentOffset(F) + Fixup.getOffset();
