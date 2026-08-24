@@ -21,11 +21,14 @@ four_words_t pass_four_words(four_words_t value) { return value; }
 
 __thread int tls;
 
+// ASM:       [[CONTEXT:.Ltmp[0-9]+]]:
+// ASM-NEXT:  .long __riscc_current_context
 // ASM:       [[TLS:.Ltmp[0-9]+]]:
 // ASM-NEXT:  .long tpoff(tls)
 // ASM-LABEL: tls_load:
-// ASM:       mfs r0, s2
-// ASM:       ldpc r1, [[TLS]]
+// ASM:       ldpc r0, [[CONTEXT]]
+// ASM-NEXT:  ld r0, [r0 + 0]
+// ASM-NEXT:  ldpc r1, [[TLS]]
 // ASM-NEXT:  ldx r1, [r0 + r1]
 // ASM:       ret s7
 int tls_load(void) { return tls; }

@@ -10,10 +10,10 @@ declare void @external()
 ; caller-saved cache bank.
 define void @leaf_clobber_r5_r6() {
 ; CHECK-LABEL: leaf_clobber_r5_r6:
-; CHECK:       mts s3, r5
-; CHECK-NEXT:  mts s4, r6
-; CHECK:       mfs r6, s4
-; CHECK-NEXT:  mfs r5, s3
+; CHECK:       mts s2, r5
+; CHECK-NEXT:  mts s3, r6
+; CHECK:       mfs r6, s3
+; CHECK-NEXT:  mfs r5, s2
 ; CHECK-NEXT:  ret s7
   call void asm sideeffect "", "~{r5},~{r6}"()
   ret void
@@ -38,19 +38,19 @@ define void @leaf_clobber_s5_s6() {
   ret void
 }
 
-; The cache pool holds a short-lived allocator spill while r4..r6 remain
-; callee-saved. S3 and S4 hold entry backups; the public link occupies S7.
+; The expanded caller-saved cache pool holds a short-lived allocator spill
+; while S3/S4 hold two callee-saved GPR entry values and S7 holds the link.
 define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
 ; CHECK-LABEL: leaf_local_spill:
-; CHECK:       addi r7, -6
-; CHECK:       mts s4, r4
-; CHECK:       st r5,
+; CHECK:       addi r7, -4
+; CHECK:       mts s3, r4
+; CHECK:       mts s4, r5
 ; CHECK:       st r6,
-; CHECK:       mts s3,
-; CHECK:       mfs r1, s3
+; CHECK:       mts s2,
+; CHECK:       mfs r1, s2
 ; CHECK:       ld r6,
-; CHECK:       ld r5,
-; CHECK:       mfs r4, s4
+; CHECK:       mfs r5, s4
+; CHECK:       mfs r4, s3
 ; CHECK:       ret s7
   %a.ok = icmp eq i16 %a, 1
   %b.ok = icmp eq i16 %b, 2

@@ -1,46 +1,42 @@
 # REQUIRES: riscc-registered-target
 # RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=riscc-sreg-allocator,prolog-epilog %s -o - | FileCheck %s
 
-# Five loop-local spills are more valuable than keeping the return address in
-# S7 for the whole function. Save S5/S6 and the displaced S7 link once outside
-# the loop, use S3..S7 for the spills, then restore ABI state before returning.
+# Five loop-local spills fit in S2..S6 without displacing the S7 return
+# address. Save the callee-saved S5/S6 entries once outside the loop, then
+# restore them before returning.
 # CHECK-LABEL: name: loop_spills_use_link
-# CHECK:       $r0 = frame-setup MFS $s7
-# CHECK:       frame-setup ST killed $r0, $r7, 0
+# CHECK-NOT:   frame-setup MFS $s7
 # CHECK:       $r0 = MFS killed $s5
 # CHECK:       $r0 = MFS killed $s6
 # CHECK:       bb.1.loop:
 # CHECK-NOT:   {{(^|[[:space:]])ST[[:space:]]}}
+# CHECK:       $s2 = MTS
 # CHECK:       $s3 = MTS
 # CHECK:       $s4 = MTS
 # CHECK:       $s5 = MTS
 # CHECK:       $s6 = MTS
-# CHECK:       $s7 = MTS
 # CHECK:       bb.2.exit:
 # CHECK:       $s6 = MTS $r0
 # CHECK:       $s5 = MTS $r0
-# CHECK:       $r0 = frame-destroy LD $r7, 0
-# CHECK-NEXT:  $s7 = frame-destroy MTS killed $r0
-# CHECK:       RETS implicit $s7
+# CHECK:       RETS implicit $s7, implicit $r1
 
-# Caching the fifth entry-frequency spill would cost more than saving and
-# restoring it on the stack. Keep the link and cache four values, including
-# the callee-saved S5/S6 cache registers.
+# All five entry-frequency spills now fit while retaining the S7 link. The
+# prologue and epilogue preserve the callee-saved S5/S6 cache entries.
 # CHECK-LABEL: name: cold_spills_keep_link
 # CHECK-NOT:   frame-setup MFS $s7
+# CHECK:       $s2 = MTS
 # CHECK:       $s3 = MTS
 # CHECK:       $s4 = MTS
 # CHECK:       $s5 = MTS
 # CHECK:       $s6 = MTS
-# CHECK:       ST
-# CHECK:       RETS implicit $s7
+# CHECK:       RETS implicit $s7, implicit $r1
 
-# A compiler-private helper preserves S3..S6, so a spill may remain cached
+# A compiler-private helper preserves S2..S6, so a spill may remain cached
 # across that call.
 # CHECK-LABEL: name: spill_across_preserving_call
-# CHECK:       $s3 = MTS killed $r1
+# CHECK:       $s2 = MTS killed $r1
 # CHECK:       CALL $r0, csr_riscc_sregpreservingcall
-# CHECK:       $r1 = MFS $s3
+# CHECK:       $r1 = MFS $s2
 # CHECK-NOT:   ST $r1
 # CHECK:       RETS implicit $s7
 

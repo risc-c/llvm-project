@@ -900,9 +900,14 @@ SDValue RISCCTargetLowering::lowerGlobalTLSAddress(SDValue Op,
         "RISC-C supports only static local-exec TLS", DL.getDebugLoc()));
     return DAG.getPOISON(Op.getValueType());
   }
+  EVT PointerVT = getPointerTy(DAG.getDataLayout());
+  SDValue ContextSymbol =
+      DAG.getExternalSymbol("__riscc_current_context", PointerVT);
+  SDValue ContextAddress = lowerExternalSymbol(ContextSymbol, DAG);
+  SDValue Base = DAG.getLoad(
+      PointerVT, DL, DAG.getEntryNode(), ContextAddress, MachinePointerInfo(),
+      Align(STI.isRC32() ? 4 : 2), MachineMemOperand::MOInvariant);
   if (STI.isRC32()) {
-    SDValue Base = DAG.getCopyFromReg(DAG.getEntryNode(), DL, RISCC::S2,
-                                      MVT::i32);
     auto *Symbol = RISCCConstantPoolSymbol::Create(*DAG.getContext(), GV,
                                                     /*IsTPOFF=*/true);
     SDValue Pool = DAG.getTargetConstantPool(Symbol, MVT::i32, Align(4));
@@ -910,10 +915,6 @@ SDValue RISCCTargetLowering::lowerGlobalTLSAddress(SDValue Op,
     return DAG.getNode(ISD::ADD, DL, MVT::i32, Base, Offset);
   }
 
-  // S2 is reserved from ordinary allocation and is the ABI thread pointer.
-  // A physical copy is selected through RISCCInstrInfo::copyPhysReg as MFS.
-  SDValue Base = DAG.getCopyFromReg(DAG.getEntryNode(), DL, RISCC::S2,
-                                    MVT::i16);
   SDValue Offset = DAG.getTargetGlobalAddress(GV, DL, Op.getValueType(),
                                                N->getOffset(),
                                                RISCCII::MO_TPOFF);

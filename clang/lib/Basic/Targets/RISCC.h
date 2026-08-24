@@ -64,8 +64,8 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
 public:
   RISCCTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
       : TargetInfo(Triple) {
-    // Static, local-exec TLS uses S2 as the thread pointer.  The backend
-    // rejects every dynamic TLS model.
+    // Static local-exec TLS loads the current context from runtime state. The
+    // backend rejects every dynamic TLS model.
     TLSSupported = true;
     VLASupported = false;
 

@@ -178,9 +178,9 @@ static bool allocateSRegisters(MachineFunction &MF,
     return A.Kind < B.Kind;
   });
 
-  SmallVector<MCRegister, 5> Free;
+  SmallVector<MCRegister, 6> Free;
   for (MCRegister Reg :
-       {RISCC::S3, RISCC::S4, RISCC::S5, RISCC::S6, RISCC::S7})
+       {RISCC::S2, RISCC::S3, RISCC::S4, RISCC::S5, RISCC::S6, RISCC::S7})
     if (isPreservedByAllCalls(MF, Reg, TRI) &&
         (!MRI.isPhysRegUsed(Reg) || (Reg == Link && !IsLinkClobbered)))
       Free.push_back(Reg);
@@ -194,7 +194,7 @@ static bool allocateSRegisters(MachineFunction &MF,
 
   bool KeptLink = !HasLink;
   bool Changed = false;
-  SmallVector<std::pair<int, MCRegister>, 5> SpillAssignments;
+  SmallVector<std::pair<int, MCRegister>, 6> SpillAssignments;
   for (const Candidate &C : Candidates) {
     if (C.Kind == CandidateKind::ReturnAddress) {
       if (takeRegister(Free, Link))
@@ -212,7 +212,8 @@ static bool allocateSRegisters(MachineFunction &MF,
 
     auto SRegIt = llvm::find_if(
         Free, [](MCRegister Reg) {
-          return Reg == RISCC::S3 || Reg == RISCC::S4 || Reg == RISCC::S7;
+          return Reg == RISCC::S2 || Reg == RISCC::S3 || Reg == RISCC::S4 ||
+                 Reg == RISCC::S7;
         });
     if (SRegIt == Free.end())
       continue;
