@@ -11,8 +11,10 @@
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 
@@ -58,6 +60,41 @@ void RISCCInstrInfo::materializeImmediate(
 }
 
 bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
+  if (MI.getOpcode() == RISCC::SEXT8_RC32 ||
+      MI.getOpcode() == RISCC::SEXT16_RC32) {
+    MachineBasicBlock &MBB = *MI.getParent();
+    Register Dst = MI.getOperand(0).getReg();
+    Register Src = MI.getOperand(1).getReg();
+    const DebugLoc &DL = MI.getDebugLoc();
+    if (MI.getOpcode() == RISCC::SEXT8_RC32) {
+      BuildMI(MBB, MI, DL, get(RISCC::ANDI32), Dst)
+          .addReg(Src).addImm(0xff);
+      BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst)
+          .addReg(Dst).addImm(0x80);
+      BuildMI(MBB, MI, DL, get(RISCC::ADDI32), Dst)
+          .addReg(Dst).addImm(-128);
+    } else {
+      MachineFunction *MF = MBB.getParent();
+      MachineConstantPool *Pool = MF->getConstantPool();
+      Type *I32 = Type::getInt32Ty(MF->getFunction().getContext());
+      auto LoadR0 = [&](uint32_t Value) {
+        const Constant *C = ConstantInt::get(I32, Value);
+        unsigned CPI = Pool->getConstantPoolIndex(C, Align(4));
+        BuildMI(MBB, MI, DL, get(RISCC::LDPC), RISCC::R0)
+            .addConstantPoolIndex(CPI);
+      };
+      LoadR0(0xffff);
+      BuildMI(MBB, MI, DL, get(RISCC::AND32), Dst)
+          .addReg(Src).addReg(RISCC::R0);
+      LoadR0(0x8000);
+      BuildMI(MBB, MI, DL, get(RISCC::XOR32), Dst)
+          .addReg(Dst).addReg(RISCC::R0);
+      BuildMI(MBB, MI, DL, get(RISCC::SUB32), Dst)
+          .addReg(Dst).addReg(RISCC::R0);
+    }
+    MI.eraseFromParent();
+    return true;
+  }
   if (MI.getOpcode() != RISCC::SEXT8_NANO)
     return false;
 
@@ -272,6 +309,14 @@ bool RISCCInstrInfo::isBranchOffsetInRange(unsigned Opcode,
     return true;
   if (Opcode != RISCC::JMP8 && !isConditionalBranchOpcode(Opcode))
     return true;
+  // RC32 literal islands are emitted by the AsmPrinter after branch
+  // relaxation. Their bytes are intentionally absent from MachineInstr
+  // offsets, so a nominally short branch may span considerably more than the
+  // relaxation pass can see. Route RC32 branches through the existing
+  // LDPC/JALR long-branch sequence; the inverse conditional used to skip that
+  // sequence remains an adjacent short branch.
+  if (STI.isRC32() && std::abs(BrOffset) > 32)
+    return false;
   // Short branches encode a signed word displacement from the following
   // instruction.
   int64_t Displacement = BrOffset - 2;

@@ -1,0 +1,275 @@
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 calls.s -o calls.o
+# RUN: ld.lld -m elf32lriscc --emit-relocs -T layout.ld calls.o -o relaxed
+# RUN: llvm-readobj --sections --relocations relaxed | FileCheck %s --check-prefix=RELAX
+# RUN: llvm-objdump --full-contents --section=.calls relaxed | FileCheck %s --check-prefix=BYTES
+# RUN: ld.lld -m elf32lriscc --no-relax --emit-relocs -T layout.ld calls.o -o unrelaxed
+# RUN: llvm-readobj --sections --relocations unrelaxed | FileCheck %s --check-prefix=NO-RELAX
+# RUN: ld.lld -m elf32lriscc -r calls.o -o partial.o
+# RUN: llvm-readobj --sections --relocations partial.o | FileCheck %s --check-prefix=RELOCATABLE
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 cross.s -o cross.o
+# RUN: ld.lld -m elf32lriscc -T cross.ld cross.o -o cross
+# RUN: llvm-readobj --sections cross | FileCheck %s --check-prefix=CROSS-SECTION
+# RUN: llvm-objdump --full-contents --section=.cross cross | FileCheck %s --check-prefix=CROSS-BYTES
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=min -mattr=+rc32 invalid-profile.s -o invalid-profile.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-profile.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-PROFILE
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 invalid-pair.s -o invalid-pair.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-pair.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-PAIR
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 invalid-shared.s -o invalid-shared.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-shared.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-SHARED
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 oscillate.s -o oscillate.o
+# RUN: ld.lld -m elf32lriscc -T oscillate.ld oscillate.o -o oscillate
+# RUN: llvm-readobj --sections oscillate | FileCheck %s --check-prefix=OSCILLATE
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 debug-layout.s -o debug-layout.o
+# RUN: ld.lld -m elf32lriscc --emit-relocs -Ttext=0 debug-layout.o -o debug-layout
+# RUN: llvm-readobj --sections --relocations debug-layout | FileCheck %s --check-prefix=DEBUG-LAYOUT
+# RUN: llvm-objdump -d debug-layout | FileCheck %s --check-prefix=DEBUG-BYTES
+# RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -filetype=obj inline-pool.ll -o inline-pool.o
+# RUN: ld.lld -m elf32lriscc -Ttext=0 inline-pool.o -o inline-pool
+# RUN: llvm-objdump -d inline-pool | FileCheck %s --check-prefix=INLINE-POOL
+
+# RELAX:      Name: .calls
+# RELAX:      Size: 26
+# RELAX:      Relocations [
+# RELAX:      R_RISCC_NONE near_target
+# RELAX:      R_RISCC_CALL_TARGET far_target
+# RELAX:      R_RISCC_NONE near_target
+# RELAX:      R_RISCC_CALL_TARGET far_target
+# RELAX:      R_RISCC_JALL21 near_target
+# RELAX:      R_RISCC_RELAX_CALL
+# RELAX:      R_RISCC_JALL21 near_target
+# RELAX:      R_RISCC_RELAX_TAIL
+
+# BYTES:      Contents of section .calls:
+# BYTES-NEXT: 0000 00002000 00002000 f43ffeff f381f9f8
+# BYTES-NEXT: 0010 f407feff ef81f9c0 f8c7
+
+# NO-RELAX:      Name: .calls
+# NO-RELAX:      Size: 34
+# NO-RELAX:      R_RISCC_CALL_TARGET near_target
+# NO-RELAX:      R_RISCC_CALL_TARGET far_target
+# NO-RELAX:      R_RISCC_CALL_TARGET near_target
+# NO-RELAX:      R_RISCC_CALL_TARGET far_target
+# NO-RELAX:      R_RISCC_RELAX_CALL
+# NO-RELAX:      R_RISCC_RELAX_CALL
+# NO-RELAX:      R_RISCC_RELAX_TAIL
+# NO-RELAX:      R_RISCC_RELAX_TAIL
+
+# RELOCATABLE:         Name: .text.calls
+# RELOCATABLE:         Size: 34
+# RELOCATABLE-COUNT-4: R_RISCC_CALL_TARGET
+# RELOCATABLE-COUNT-2: R_RISCC_RELAX_CALL
+# RELOCATABLE-COUNT-2: R_RISCC_RELAX_TAIL
+
+# CROSS-SECTION:      Name: .cross
+# CROSS-SECTION:      Size: 16
+
+# CROSS-BYTES:      Contents of section .cross:
+# CROSS-BYTES-NEXT: 0000 06a728c0 44332211 fb893438 0001f8c7
+
+# INVALID-PROFILE: error: {{.*}}RISC-C call relaxation requires RC32 Sys or Full
+# INVALID-PAIR: error: {{.*}}RISC-C relaxation marker is not attached to the LDPC r0/JALR s7,r0 instruction pair
+# INVALID-SHARED: error: {{.*}}relaxable RISC-C call literal is shared or has unexpected references
+
+# OSCILLATE:      Name: .calls
+# OSCILLATE:      Size: 8
+
+# DEBUG-LAYOUT:      Name: .text
+# DEBUG-LAYOUT:      Size: 16
+# DEBUG-LAYOUT:      R_RISCC_JALL21 target
+# DEBUG-LAYOUT-NOT:  R_RISCC_CALL_TARGET
+# DEBUG-LAYOUT-NOT:  R_RISCC_RELAX_CALL
+
+# DEBUG-BYTES-LABEL: <_start>:
+# DEBUG-BYTES:       jall s7, 14
+
+# INLINE-POOL-LABEL: <late_call>:
+# INLINE-POOL:       jall s7, 320
+
+#--- calls.s
+        .section .text.calls,"ax",@progbits
+        .p2align 2
+.Lnear_call_target:
+        .long call_target(near_target)
+.Lfar_call_target:
+        .long call_target(far_target)
+.Lnear_tail_target:
+        .long call_target(near_target)
+.Lfar_tail_target:
+        .long call_target(far_target)
+
+        .global _start
+        .type _start,@function
+_start:
+        .reloc .Lnear_call, R_RISCC_RELAX_CALL, .Lnear_call_target
+.Lnear_call:
+        ldpc r0, .Lnear_call_target
+        jalr s7, r0
+        .reloc .Lfar_call, R_RISCC_RELAX_CALL, .Lfar_call_target
+.Lfar_call:
+        ldpc r0, .Lfar_call_target
+        jalr s7, r0
+        .reloc .Lnear_tail, R_RISCC_RELAX_TAIL, .Lnear_tail_target
+.Lnear_tail:
+        ldpc r0, .Lnear_tail_target
+        jalr s0, r0
+        .reloc .Lfar_tail, R_RISCC_RELAX_TAIL, .Lfar_tail_target
+.Lfar_tail:
+        ldpc r0, .Lfar_tail_target
+        jalr s0, r0
+        ret s7
+        .size _start, . - _start
+
+        .section .text.near,"ax",@progbits
+        .global near_target
+        .type near_target,@function
+near_target:
+        ret s7
+        .size near_target, . - near_target
+
+        .section .text.far,"ax",@progbits
+        .global far_target
+        .type far_target,@function
+far_target:
+        ret s7
+        .size far_target, . - far_target
+
+#--- layout.ld
+SECTIONS {
+  .calls 0 : { *(.text.calls) }
+  .near 0x1ffffe : { *(.text.near) }
+  .far 0x200000 : { *(.text.far) }
+}
+
+#--- cross.s
+        .section .text.cross,"ax",@progbits
+        .global crossing
+        .type crossing,@function
+crossing:
+        jmp8 .Lbody
+        .p2align 2
+.Ldata:
+        .long 0x11223344
+.Lcall_target:
+        .long call_target(cross_target)
+.Lbody:
+        ldpc r1, .Ldata
+        .reloc .Lcall, R_RISCC_RELAX_CALL, .Lcall_target
+.Lcall:
+        ldpc r0, .Lcall_target
+        jalr s7, r0
+        ret s7
+        .size crossing, . - crossing
+
+        .section .text.target,"ax",@progbits
+        .global cross_target
+        .type cross_target,@function
+cross_target:
+        ret s7
+        .size cross_target, . - cross_target
+
+#--- cross.ld
+SECTIONS {
+  .cross 0 : { *(.text.cross) }
+  .target 0x100 : { *(.text.target) }
+}
+
+#--- invalid-profile.s
+        .section .text,"ax",@progbits
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+        .global _start
+_start:
+        .reloc _start, R_RISCC_RELAX_CALL, .Lliteral
+        ldpc r0, .Lliteral
+        jalr s7, r0
+target:
+        ret s7
+
+#--- invalid-pair.s
+        .section .text,"ax",@progbits
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+        .global _start
+_start:
+        .reloc _start, R_RISCC_RELAX_CALL, .Lliteral
+        nop
+        nop
+target:
+        ret s7
+
+#--- invalid-shared.s
+        .section .text,"ax",@progbits
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+        .global _start
+_start:
+        .reloc _start, R_RISCC_RELAX_CALL, .Lliteral
+        ldpc r0, .Lliteral
+        jalr s7, r0
+        ldpc r1, .Lliteral
+target:
+        ret s7
+
+#--- oscillate.s
+        .section .text.calls,"ax",@progbits
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+        .global _start
+_start:
+        .reloc _start, R_RISCC_RELAX_CALL, .Lliteral
+        ldpc r0, .Lliteral
+        jalr s7, r0
+
+        .section .text.target,"ax",@progbits
+        .global target
+target:
+        ret s7
+
+#--- oscillate.ld
+SECTIONS {
+  .calls 0 : { *(.text.calls) }
+  .target 0x200006 - SIZEOF(.calls) : { *(.text.target) }
+}
+
+#--- debug-layout.s
+        .section .text,"ax",@progbits
+        .p2align 2
+        .global _start
+        .type _start,@function
+_start:
+        jmp8 .Lbody
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+.Lbody:
+        .reloc .Lcall, R_RISCC_RELAX_CALL, .Lliteral
+.Lcall:
+        ldpc r0, .Lliteral
+        jalr s7, r0
+        ret s7
+        .size _start, . - _start
+target:
+        ret s7
+
+        .section .debug_info,"",@progbits
+        .byte 0
+
+#--- inline-pool.ll
+target triple = "riscc-none-elf"
+
+define void @late_call() {
+entry:
+  call void asm sideeffect ".zero 300", ""()
+  call void @target()
+  ret void
+}
+
+define void @target() noinline {
+entry:
+  ret void
+}

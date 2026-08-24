@@ -24,6 +24,7 @@ public:
     VK_CODE_LO8,
     VK_CODE_HI8,
     VK_TPOFF,
+    VK_CALL_TARGET,
   };
 
   static const RISCCMCExpr *create(VariantKind Kind, const MCExpr *Expr,

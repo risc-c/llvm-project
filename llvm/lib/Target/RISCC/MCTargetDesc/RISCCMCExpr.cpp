@@ -31,6 +31,7 @@ RISCCMCExpr::parseVariantKind(StringRef Name) {
       .Case("code_lo8", VK_CODE_LO8)
       .Case("code_hi8", VK_CODE_HI8)
       .Case("tpoff", VK_TPOFF)
+      .Case("call_target", VK_CALL_TARGET)
       .Default(std::nullopt);
 }
 
@@ -50,6 +51,8 @@ StringRef RISCCMCExpr::getVariantName(VariantKind Kind) {
     return "code_hi8";
   case VK_TPOFF:
     return "tpoff";
+  case VK_CALL_TARGET:
+    return "call_target";
   }
   llvm_unreachable("invalid RISC-C expression variant");
 }

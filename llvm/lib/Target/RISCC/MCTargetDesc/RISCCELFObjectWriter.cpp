@@ -43,9 +43,14 @@ public:
                  ? ELF::R_RISCC_CODE16
                  : ELF::R_RISCC_ABS16;
     case FK_Data_4:
-      return Target.getSpecifier() == RISCCMCExpr::VK_TPOFF
-                 ? ELF::R_RISCC_TPOFF32
-                 : ELF::R_RISCC_ABS32;
+      switch (Target.getSpecifier()) {
+      case RISCCMCExpr::VK_TPOFF:
+        return ELF::R_RISCC_TPOFF32;
+      case RISCCMCExpr::VK_CALL_TARGET:
+        return ELF::R_RISCC_CALL_TARGET;
+      default:
+        return ELF::R_RISCC_ABS32;
+      }
     case RISCC::fixup_abs8:
       return ELF::R_RISCC_ABS8;
     case RISCC::fixup_abs16:
@@ -65,6 +70,7 @@ public:
     case RISCC::fixup_jall21:
       return ELF::R_RISCC_JALL21;
     case RISCC::fixup_pcrel8_word:
+    case RISCC::fixup_pcrel8_branch:
       return ELF::R_RISCC_PCREL8_WORD;
     case RISCC::fixup_tpoff_lo8:
       return ELF::R_RISCC_TPOFF_LO8;
@@ -73,6 +79,13 @@ public:
     default:
       llvm_unreachable("invalid RISC-C fixup kind");
     }
+  }
+
+  bool needsRelocateWithSymbol(const MCValue &, unsigned Type) const override {
+    // Prefer retaining the callee symbol for relaxation. Local symbols may
+    // still use the canonical section-plus-offset form, which lld adjusts as
+    // the section shrinks.
+    return Type == ELF::R_RISCC_CALL_TARGET;
   }
 };
 }

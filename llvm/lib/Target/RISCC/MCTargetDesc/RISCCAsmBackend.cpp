@@ -50,6 +50,10 @@ public:
   std::optional<MCFixupKind> getFixupKind(StringRef Name) const override {
     if (Name == "R_RISCC_NONE")
       return FirstLiteralRelocationKind + ELF::R_RISCC_NONE;
+    if (Name == "R_RISCC_RELAX_CALL")
+      return FirstLiteralRelocationKind + ELF::R_RISCC_RELAX_CALL;
+    if (Name == "R_RISCC_RELAX_TAIL")
+      return FirstLiteralRelocationKind + ELF::R_RISCC_RELAX_TAIL;
     return std::nullopt;
   }
 
@@ -65,6 +69,7 @@ public:
         {"fixup_code_hi8", 0, 8, 0},
         {"fixup_jall21", 0, 32, 0},
         {"fixup_pcrel8_word", 0, 8, 0},
+        {"fixup_pcrel8_branch", 0, 8, 0},
         {"fixup_tpoff_lo8", 0, 8, 0},
         {"fixup_tpoff_hi8", 0, 8, 0},
         {"fixup_insn_align", 0, 0, 0},
@@ -80,8 +85,19 @@ public:
   void applyFixup(const MCFragment &F, const MCFixup &Fixup,
                   const MCValue &Target, uint8_t *Data, uint64_t Value,
                   bool IsResolved) override {
-    maybeAddReloc(F, Fixup, Target, Value, IsResolved);
     unsigned Kind = Fixup.getKind();
+
+    // RC32 Sys/Full call relaxation removes literal-pool words. Keep local
+    // compact branches and LDPC references relocatable so lld can update any
+    // reference that crosses a removed pool word.
+    if (Kind == RISCC::fixup_pcrel8_branch ||
+        Kind == RISCC::fixup_pcrel8_word)
+      if (const MCSubtargetInfo *STI = getSubtargetInfo(F);
+          STI && STI->hasFeature(RISCC::FeatureRC32) &&
+          STI->hasFeature(RISCC::FeatureLongJall))
+        IsResolved = false;
+
+    maybeAddReloc(F, Fixup, Target, Value, IsResolved);
 
     // A .reloc R_RISCC_NONE carries a linker reachability edge but has no
     // encoded field to update.
@@ -153,7 +169,8 @@ public:
         if (Kind == RISCC::fixup_code_hi8)
           Value >>= 8;
         break;
-      case RISCC::fixup_pcrel8_word: {
+      case RISCC::fixup_pcrel8_word:
+      case RISCC::fixup_pcrel8_branch: {
         if (Value & 1)
           getContext().reportError(Fixup.getLoc(),
                                    "branch target must be 2-byte aligned");

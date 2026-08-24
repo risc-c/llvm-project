@@ -27,7 +27,7 @@ __thread int tls;
 // ASM:       mfs r0, s2
 // ASM:       ldpc r1, [[TLS]]
 // ASM-NEXT:  ldx r1, [r0 + r1]
-// ASM:       rets
+// ASM:       ret s7
 int tls_load(void) { return tls; }
 
 #include <stdarg.h>
@@ -43,7 +43,7 @@ int first_vararg(int count, ...) {
 }
 
 // ASM:       [[SHIFT:.Ltmp[0-9]+]]:
-// ASM-NEXT:  .long __ashlsi3
+// ASM-NEXT:  .long call_target(__ashlsi3)
 // ASM-LABEL: shift_left:
 // ASM:       ldpc r0, [[SHIFT]]
 int shift_left(int value, int count) { return value << count; }

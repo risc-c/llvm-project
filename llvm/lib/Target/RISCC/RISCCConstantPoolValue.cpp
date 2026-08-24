@@ -19,9 +19,10 @@ RISCCConstantPoolSymbol::RISCCConstantPoolSymbol(LLVMContext &Context,
 
 RISCCConstantPoolSymbol::RISCCConstantPoolSymbol(LLVMContext &Context,
                                                  const GlobalValue *GV,
-                                                 bool IsTPOFF)
+                                                 bool IsTPOFF,
+                                                 bool IsCallTarget)
     : MachineConstantPoolValue(Type::getInt32Ty(Context)), Global(GV),
-      IsTPOFF(IsTPOFF) {}
+      IsTPOFF(IsTPOFF), IsCallTarget(IsCallTarget) {}
 
 RISCCConstantPoolSymbol *RISCCConstantPoolSymbol::Create(LLVMContext &Context,
                                                           StringRef Name) {
@@ -30,12 +31,32 @@ RISCCConstantPoolSymbol *RISCCConstantPoolSymbol::Create(LLVMContext &Context,
 
 RISCCConstantPoolSymbol *RISCCConstantPoolSymbol::Create(LLVMContext &Context,
                                                           const GlobalValue *GV,
-                                                          bool IsTPOFF) {
-  return new RISCCConstantPoolSymbol(Context, GV, IsTPOFF);
+                                                          bool IsTPOFF,
+                                                          bool IsCallTarget) {
+  return new RISCCConstantPoolSymbol(Context, GV, IsTPOFF, IsCallTarget);
+}
+
+RISCCConstantPoolSymbol *
+RISCCConstantPoolSymbol::CreateCallTarget(LLVMContext &Context,
+                                           StringRef Name) {
+  auto *Value = new RISCCConstantPoolSymbol(Context, Name);
+  Value->IsCallTarget = true;
+  return Value;
 }
 
 int RISCCConstantPoolSymbol::getExistingMachineCPValue(
     MachineConstantPool *Pool, Align Alignment) {
+  // A relaxable call owns its pool word so the linker can delete that exact
+  // word when it rewrites the call to JALL/JMPL.
+  if (IsCallTarget) {
+    for (unsigned I = 0; I != Pool->getConstants().size(); ++I) {
+      const MachineConstantPoolEntry &Entry = Pool->getConstants()[I];
+      if (Entry.isMachineConstantPoolEntry() &&
+          Entry.Val.MachineCPVal == this)
+        return I;
+    }
+    return -1;
+  }
   const auto &Constants = Pool->getConstants();
   for (unsigned I = 0; I != Constants.size(); ++I) {
     const MachineConstantPoolEntry &Entry = Constants[I];
@@ -43,21 +64,26 @@ int RISCCConstantPoolSymbol::getExistingMachineCPValue(
       continue;
     auto *Other = static_cast<RISCCConstantPoolSymbol *>(
         Entry.Val.MachineCPVal);
-    if (Other->Global == Global && Other->Symbol == Symbol &&
-        Other->IsTPOFF == IsTPOFF)
+    if (!Other->IsCallTarget && Other->Global == Global &&
+        Other->Symbol == Symbol && Other->IsTPOFF == IsTPOFF)
       return I;
   }
   return -1;
 }
 
 void RISCCConstantPoolSymbol::addSelectionDAGCSEId(FoldingSetNodeID &ID) {
+  if (IsCallTarget)
+    ID.AddPointer(this);
   ID.AddPointer(Global);
   ID.AddString(Symbol);
   ID.AddBoolean(IsTPOFF);
+  ID.AddBoolean(IsCallTarget);
 }
 
 void RISCCConstantPoolSymbol::print(raw_ostream &OS) const {
   OS << (Global ? Global->getName() : Symbol);
   if (IsTPOFF)
     OS << "@TPOFF";
+  if (IsCallTarget)
+    OS << "@CALL_TARGET";
 }

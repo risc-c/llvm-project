@@ -56,11 +56,37 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
 
     for (unsigned Op : {ISD::ADD, ISD::SUB, ISD::AND, ISD::OR, ISD::XOR})
       setOperationAction(Op, MVT::i32, Legal);
-    setOperationAction(ISD::MUL, MVT::i32, LibCall);
+    setOperationAction(ISD::MUL, MVT::i32,
+                       STI.hasMul() ? Legal : LibCall);
     for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA})
       setOperationAction(Op, MVT::i32, Custom);
-    for (unsigned Op : {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM})
+    for (unsigned Op : {ISD::ROTL, ISD::ROTR, ISD::BSWAP, ISD::CTLZ,
+                        ISD::CTTZ, ISD::CTPOP})
+      setOperationAction(Op, MVT::i32, Expand);
+    for (unsigned Op : {ISD::SHL_PARTS, ISD::SRL_PARTS, ISD::SRA_PARTS,
+                        ISD::SMUL_LOHI, ISD::MULHS})
+      setOperationAction(Op, MVT::i32, Expand);
+    setOperationAction(ISD::UMUL_LOHI, MVT::i32,
+                       STI.hasMulhu() ? Custom : Expand);
+    setOperationAction(ISD::MULHU, MVT::i32,
+                       STI.hasMulhu() ? Custom : Expand);
+    setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i32, Custom);
+    setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
+    for (unsigned Op : {ISD::SDIV, ISD::SREM})
       setOperationAction(Op, MVT::i32, LibCall);
+    for (unsigned Op : {ISD::UDIV, ISD::UREM})
+      setOperationAction(Op, MVT::i32,
+                         STI.hasDivu() ? Custom : LibCall);
+    for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA, ISD::SDIV,
+                        ISD::UDIV, ISD::SREM, ISD::UREM})
+      setOperationAction(Op, MVT::i64, LibCall);
+    setOperationAction(ISD::MUL, MVT::i64,
+                       STI.hasMulhu() ? Expand : LibCall);
+    setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
+    setOperationAction(ISD::UDIVREM, MVT::i32,
+                       STI.hasDivu() ? Custom : Expand);
+    setOperationAction(ISD::SDIVREM, MVT::i64, Expand);
+    setOperationAction(ISD::UDIVREM, MVT::i64, Expand);
     setLoadExtAction(ISD::EXTLOAD, MVT::i32, MVT::i8, Legal);
     setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, MVT::i8, Legal);
     setLoadExtAction(ISD::SEXTLOAD, MVT::i32, MVT::i8, Legal);
@@ -77,6 +103,8 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::GlobalTLSAddress, MVT::i32, Custom);
     for (unsigned Op : {ISD::BR_CC, ISD::SETCC, ISD::SELECT_CC})
       setOperationAction(Op, MVT::i32, Custom);
+    setOperationAction(ISD::BRCOND, MVT::Other, Expand);
+    setOperationAction(ISD::BR_JT, MVT::Other, Expand);
     setOperationAction(ISD::SELECT, MVT::i32, Expand);
     setOperationAction(ISD::VASTART, MVT::Other, Custom);
     setOperationAction(ISD::VAEND, MVT::Other, Expand);
@@ -380,16 +408,20 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
   case ISD::FSHR:
     return lowerFunnelShift(Op, DAG);
   case ISD::SIGN_EXTEND_INREG: {
-    assert(STI.isNano() &&
-           cast<VTSDNode>(Op.getOperand(1))->getVT() == MVT::i8);
+    MVT FromVT = cast<VTSDNode>(Op.getOperand(1))->getVT().getSimpleVT();
+    assert(((STI.isNano() && FromVT == MVT::i8) ||
+            (STI.isRC32() && (FromVT == MVT::i8 || FromVT == MVT::i16))) &&
+           "unexpected sign_extend_inreg lowering");
     SDLoc DL(Op);
+    MVT VT = Op.getValueType().getSimpleVT();
+    uint64_t Mask = FromVT == MVT::i8 ? 0xff : 0xffff;
+    uint64_t Sign = FromVT == MVT::i8 ? 0x80 : 0x8000;
     SDValue Value = DAG.getNode(
-        ISD::AND, DL, MVT::i16, Op.getOperand(0),
-        DAG.getConstant(0xff, DL, MVT::i16));
-    Value = DAG.getNode(ISD::XOR, DL, MVT::i16, Value,
-                        DAG.getConstant(0x80, DL, MVT::i16));
-    return DAG.getNode(ISD::ADD, DL, MVT::i16, Value,
-                       DAG.getConstant(-128, DL, MVT::i16));
+        ISD::AND, DL, VT, Op.getOperand(0), DAG.getConstant(Mask, DL, VT));
+    Value = DAG.getNode(ISD::XOR, DL, VT, Value,
+                        DAG.getConstant(Sign, DL, VT));
+    return DAG.getNode(ISD::SUB, DL, VT, Value,
+                       DAG.getConstant(Sign, DL, VT));
   }
   case ISD::UMUL_LOHI:
     return lowerMULLOHI(Op, DAG, false);
@@ -397,8 +429,9 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerMULLOHI(Op, DAG, true);
   case ISD::MULHU: {
     SDLoc DL(Op);
+    MVT VT = Op.getValueType().getSimpleVT();
     SDValue Product = DAG.getNode(ISD::UMUL_LOHI, DL,
-                                  DAG.getVTList(MVT::i16, MVT::i16),
+                                  DAG.getVTList(VT, VT),
                                   Op.getOperand(0), Op.getOperand(1));
     return lowerMULLOHI(Product, DAG, false).getValue(1);
   }
@@ -510,13 +543,16 @@ SDValue RISCCTargetLowering::lowerMULLOHI(SDValue Op, SelectionDAG &DAG,
                                            bool Signed) const {
   SDLoc DL(Op);
   SDValue LHS = Op.getOperand(0), RHS = Op.getOperand(1);
+  MVT VT = Op.getValueType().getSimpleVT();
   if (!Signed && STI.hasMulhu()) {
     SDValue Product = DAG.getNode(RISCCISD::MULHU, DL,
-                                  DAG.getVTList(MVT::i16, MVT::i16), LHS,
-                                  RHS);
+                                  DAG.getVTList(VT, VT), LHS, RHS);
     return DAG.getMergeValues({Product.getValue(0), Product.getValue(1)},
                               DL);
   }
+
+  assert(VT == MVT::i16 &&
+         "software paired multiplication is only used by RC16");
 
   SDValue C8 = DAG.getConstant(8, DL, MVT::i16);
   SDValue C15 = DAG.getConstant(15, DL, MVT::i16);
@@ -590,14 +626,15 @@ SDValue RISCCTargetLowering::lowerMul(SDValue Op, SelectionDAG &DAG) const {
 
 SDValue RISCCTargetLowering::lowerUDivRem(SDValue Op,
                                            SelectionDAG &DAG) const {
-  assert(STI.hasDivu() && Op.getValueType() == MVT::i16 &&
+  MVT VT = Op.getValueType().getSimpleVT();
+  assert(STI.hasDivu() && (VT == MVT::i16 || VT == MVT::i32) &&
          (Op.getOpcode() == ISD::UDIV || Op.getOpcode() == ISD::UREM ||
           Op.getOpcode() == ISD::UDIVREM));
 
   SDLoc DL(Op);
-  SDValue Zero = DAG.getConstant(0, DL, MVT::i16);
+  SDValue Zero = DAG.getConstant(0, DL, VT);
   SDValue Div = DAG.getNode(RISCCISD::DIVU, DL,
-                            DAG.getVTList(MVT::i16, MVT::i16), Zero,
+                            DAG.getVTList(VT, VT), Zero,
                             Op.getOperand(0), Op.getOperand(1));
   if (Op.getOpcode() == ISD::UDIV)
     return Div.getValue(1);
@@ -647,6 +684,28 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op,
 
 SDValue RISCCTargetLowering::lowerRC32Shift(SDValue Op,
                                             SelectionDAG &DAG) const {
+  unsigned TOpc = Op.getOpcode() == ISD::SHL ? RISCCISD::SHL
+                  : Op.getOpcode() == ISD::SRL ? RISCCISD::SRL
+                                               : RISCCISD::SRA;
+  SDLoc DL(Op);
+  if (const auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(1))) {
+    unsigned Amount = C->getZExtValue() & 31;
+    SDValue Value = Op.getOperand(0);
+    const Function &Fn = DAG.getMachineFunction().getFunction();
+    if (!STI.hasWideShift() && Fn.hasMinSize() && Amount >= 11)
+      return lowerRC32FixedShiftLibCall(Value, Op.getOpcode(), Amount, DAG);
+    while (Amount) {
+      unsigned Chunk = STI.hasWideShift() ? std::min(Amount, 8u) : 1;
+      if (!STI.hasWideShift() && Op.getOpcode() == ISD::SHL)
+        Value = DAG.getNode(ISD::ADD, DL, MVT::i32, Value, Value);
+      else
+        Value = DAG.getNode(TOpc, DL, MVT::i32, Value,
+                            DAG.getConstant(Chunk, DL, MVT::i32));
+      Amount -= Chunk;
+    }
+    return Value;
+  }
+
   const char *Name = Op.getOpcode() == ISD::SHL   ? "__ashlsi3"
                      : Op.getOpcode() == ISD::SRL ? "__lshrsi3"
                                                    : "__ashrsi3";
@@ -654,13 +713,36 @@ SDValue RISCCTargetLowering::lowerRC32Shift(SDValue Op,
   ArgListTy Args;
   Args.emplace_back(Op.getOperand(0), I32);
   Args.emplace_back(Op.getOperand(1), I32);
-  SDLoc DL(Op);
   SDValue Callee =
       DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
   CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(DL)
       .setChain(DAG.getEntryNode())
       .setLibCallee(CallingConv::C, I32, Callee, std::move(Args));
+  return LowerCallTo(CLI).first;
+}
+
+SDValue RISCCTargetLowering::lowerRC32FixedShiftLibCall(
+    SDValue Value, unsigned Opcode, unsigned Amount, SelectionDAG &DAG) const {
+  const char *Stem = Opcode == ISD::SHL   ? "__riscc_shlsi"
+                     : Opcode == ISD::SRL ? "__riscc_lshrsi"
+                                          : "__riscc_ashrsi";
+  std::string Name = (Twine(Stem) + Twine(Amount)).str();
+  SDLoc DL(Value);
+  Type *I32 = Type::getInt32Ty(*DAG.getContext());
+  ArgListTy Args;
+  Args.emplace_back(Value, I32);
+
+  const char *Symbol =
+      DAG.getMachineFunction().createExternalSymbolName(Name);
+  SDValue Callee = DAG.getTargetExternalSymbol(
+      Symbol, getPointerTy(DAG.getDataLayout()),
+      RISCCII::MO_SREG_PRESERVING_CALL);
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, I32, Callee, std::move(Args))
+      .setIsPostTypeLegalization(true);
   return LowerCallTo(CLI).first;
 }
 
@@ -1097,6 +1179,21 @@ static bool isEligibleForSiblingCall(
   return true;
 }
 
+static SDValue getRC32DirectCallLiteral(SDValue Callee, SelectionDAG &DAG) {
+  if (auto *Address = dyn_cast<GlobalAddressSDNode>(Callee)) {
+    assert(Address->getOffset() == 0 &&
+           "direct call target unexpectedly has an offset");
+    auto *Value = RISCCConstantPoolSymbol::Create(
+        *DAG.getContext(), Address->getGlobal(), /*IsTPOFF=*/false,
+        /*IsCallTarget=*/true);
+    return DAG.getTargetConstantPool(Value, MVT::i32, Align(4));
+  }
+  auto *External = cast<ExternalSymbolSDNode>(Callee);
+  auto *Value = RISCCConstantPoolSymbol::CreateCallTarget(
+      *DAG.getContext(), External->getSymbol());
+  return DAG.getTargetConstantPool(Value, MVT::i32, Align(4));
+}
+
 static MCRegister getDirectCalleeLink(SDValue Callee) {
   if (auto *Address = dyn_cast<GlobalAddressSDNode>(Callee))
     if (auto *F = dyn_cast<Function>(Address->getGlobal()))
@@ -1218,10 +1315,9 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
 
   SDValue Callee = CLI.Callee;
   if (STI.isRC32()) {
-    if (isa<GlobalAddressSDNode>(Callee))
-      Callee = lowerGlobalAddress(Callee, DAG);
-    else if (isa<ExternalSymbolSDNode>(Callee))
-      Callee = lowerExternalSymbol(Callee, DAG);
+    if (isa<GlobalAddressSDNode>(Callee) ||
+        isa<ExternalSymbolSDNode>(Callee))
+      Callee = getRC32DirectCallLiteral(Callee, DAG);
   } else if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
     Callee = DAG.getTargetGlobalAddress(G->getGlobal(), DL, MVT::i16,
                                         G->getOffset(), RISCCII::MO_None);

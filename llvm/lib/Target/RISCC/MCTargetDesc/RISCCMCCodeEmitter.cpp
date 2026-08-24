@@ -38,7 +38,8 @@ class RISCCMCCodeEmitter final : public MCCodeEmitter {
                      unsigned Offset, RISCC::Fixups DefaultKind,
                      SMLoc Loc) const;
   unsigned branchImmediate(const MCOperand &Op,
-                           SmallVectorImpl<MCFixup> &Fixups, SMLoc Loc) const;
+                           SmallVectorImpl<MCFixup> &Fixups,
+                           RISCC::Fixups Kind, SMLoc Loc) const;
   unsigned codeImmediate(const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
                          unsigned Offset, SMLoc Loc, bool IsRC32) const;
   uint64_t getBinaryCodeForInstr(const MCInst &MI,
@@ -71,7 +72,8 @@ public:
 } // namespace
 
 unsigned RISCCMCCodeEmitter::branchImmediate(
-    const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups, SMLoc Loc) const {
+    const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
+    RISCC::Fixups Kind, SMLoc Loc) const {
   if (Op.isImm()) {
     if (!isInt<8>(Op.getImm())) {
       Ctx.reportError(Loc, "branch displacement exceeds signed 8-bit range");
@@ -85,7 +87,7 @@ unsigned RISCCMCCodeEmitter::branchImmediate(
     Ctx.reportError(Loc, "target modifier is invalid on a short branch");
     Expr = TargetExpr->getSubExpr();
   }
-  Fixups.push_back(MCFixup::create(0, Expr, RISCC::fixup_pcrel8_word, true));
+  Fixups.push_back(MCFixup::create(0, Expr, Kind, true));
   return 0;
 }
 
@@ -155,6 +157,9 @@ unsigned RISCCMCCodeEmitter::immediate(const MCOperand &Op,
       else
         Ctx.reportError(Loc, "tpoff() requires a 16-bit immediate");
       break;
+    case RISCCMCExpr::VK_CALL_TARGET:
+      Ctx.reportError(Loc, "call_target() requires a 32-bit data directive");
+      break;
     }
     Expr = TargetExpr->getSubExpr();
   }
@@ -190,7 +195,10 @@ uint64_t RISCCMCCodeEmitter::getShiftAmountEncoding(
 uint64_t RISCCMCCodeEmitter::getBranchTargetEncoding(
     const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
     const MCSubtargetInfo &) const {
-  return branchImmediate(MI.getOperand(OpNo), Fixups, MI.getLoc());
+  RISCC::Fixups Kind = MI.getOpcode() == RISCC::LDPC
+                           ? RISCC::fixup_pcrel8_word
+                           : RISCC::fixup_pcrel8_branch;
+  return branchImmediate(MI.getOperand(OpNo), Fixups, Kind, MI.getLoc());
 }
 
 uint64_t RISCCMCCodeEmitter::getCodeTargetEncoding(

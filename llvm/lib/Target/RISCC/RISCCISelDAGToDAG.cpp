@@ -90,14 +90,29 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
   SDLoc DL(N);
   switch (N->getOpcode()) {
   case RISCCISD::DIVU:
-    CurDAG->SelectNodeTo(N, RISCC::DIVU, N->getVTList(),
+    CurDAG->SelectNodeTo(N,
+                         Subtarget->isRC32() ? RISCC::DIVU32 : RISCC::DIVU,
+                         N->getVTList(),
                          {N->getOperand(0), N->getOperand(1),
                           N->getOperand(2)});
     return;
   case RISCCISD::MULHU:
-    CurDAG->SelectNodeTo(N, RISCC::MULHU, N->getVTList(),
+    CurDAG->SelectNodeTo(N,
+                         Subtarget->isRC32() ? RISCC::MULHU32 : RISCC::MULHU,
+                         N->getVTList(),
                          {N->getOperand(0), N->getOperand(1)});
     return;
+  case ISD::SIGN_EXTEND_INREG:
+    if (Subtarget->isRC32()) {
+      MVT FromVT = cast<VTSDNode>(N->getOperand(1))->getVT().getSimpleVT();
+      assert((FromVT == MVT::i8 || FromVT == MVT::i16) &&
+             "unexpected RC32 sign extension width");
+      CurDAG->SelectNodeTo(N, FromVT == MVT::i8 ? RISCC::SEXT8_RC32
+                                                : RISCC::SEXT16_RC32,
+                           MVT::i32, {N->getOperand(0)});
+      return;
+    }
+    break;
   case ISD::Constant: {
     if (N->getValueType(0) != Subtarget->getXLenVT())
       break;

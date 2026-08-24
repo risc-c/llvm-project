@@ -323,9 +323,13 @@ bool RISCCAsmParser::matchAndEmitInstruction(
         Inst.getOperand(Inst.getNumOperands() - 1).isImm() &&
         (Inst.getOperand(Inst.getNumOperands() - 1).getImm() & 1))
       return Error(Loc, "word displacement must be even");
-    if ((Inst.getOpcode() == RISCC::SLLI &&
+    if (((Inst.getOpcode() == RISCC::SLLI ||
+          Inst.getOpcode() == RISCC::SLLI32) &&
          !STI->hasFeature(RISCC::FeatureWideShift)) ||
-        ((Inst.getOpcode() == RISCC::SRLI || Inst.getOpcode() == RISCC::SRAI) &&
+        ((Inst.getOpcode() == RISCC::SRLI ||
+          Inst.getOpcode() == RISCC::SRAI ||
+          Inst.getOpcode() == RISCC::SRLI32 ||
+          Inst.getOpcode() == RISCC::SRAI32) &&
          Inst.getOperand(2).isImm() && Inst.getOperand(2).getImm() != 1 &&
          !STI->hasFeature(RISCC::FeatureWideShift)))
       return Error(

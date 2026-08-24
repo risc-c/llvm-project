@@ -22,18 +22,22 @@ class RISCCConstantPoolSymbol final : public MachineConstantPoolValue {
   const GlobalValue *Global = nullptr;
   std::string Symbol;
   bool IsTPOFF = false;
+  bool IsCallTarget = false;
 
   RISCCConstantPoolSymbol(LLVMContext &, StringRef);
-  RISCCConstantPoolSymbol(LLVMContext &, const GlobalValue *, bool);
+  RISCCConstantPoolSymbol(LLVMContext &, const GlobalValue *, bool, bool);
 
 public:
   static RISCCConstantPoolSymbol *Create(LLVMContext &, StringRef);
   static RISCCConstantPoolSymbol *Create(LLVMContext &, const GlobalValue *,
-                                         bool IsTPOFF);
+                                         bool IsTPOFF,
+                                         bool IsCallTarget = false);
+  static RISCCConstantPoolSymbol *CreateCallTarget(LLVMContext &, StringRef);
 
   const GlobalValue *getGlobal() const { return Global; }
   StringRef getSymbol() const { return Symbol; }
   bool isTPOFF() const { return IsTPOFF; }
+  bool isCallTarget() const { return IsCallTarget; }
   int getExistingMachineCPValue(MachineConstantPool *, Align) override;
   void addSelectionDAGCSEId(FoldingSetNodeID &) override;
   void print(raw_ostream &) const override;

@@ -2,6 +2,8 @@
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj %s -o %t
 ; RUN: llvm-readobj -r %t | FileCheck %s --check-prefix=RELOC
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s --check-prefix=FULL
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32,+mdu -verify-machineinstrs < %s | FileCheck %s --check-prefix=MDU
 
 target datalayout = "e-m:e-p:32:32-i8:8-i16:16-i32:32-i64:32-n8:16:32-S32"
 target triple = "riscc-none-elf"
@@ -14,7 +16,7 @@ declare void @wide_callee(i1024)
 
 define void @literal_before_long_body() {
 ; CHECK:       [[EARLY_CALLEE:.Ltmp[0-9]+]]:
-; CHECK-NEXT:  .long callee
+; CHECK-NEXT:  .long call_target(callee)
 ; CHECK-LABEL: literal_before_long_body:
 ; CHECK:       ldpc r0, [[EARLY_CALLEE]]
 ; CHECK:       .zero 300
@@ -25,7 +27,7 @@ define void @literal_before_long_body() {
 
 define i32 @literal_call(i32 %x) {
 ; CHECK:       [[CALLEE:.Ltmp[0-9]+]]:
-; CHECK-NEXT:  .long callee
+; CHECK-NEXT:  .long call_target(callee)
 ; CHECK-LABEL: literal_call:
 ; CHECK:       ldpc r0, [[CALLEE]]
 ; CHECK-NEXT:  jalr s7, r0
@@ -100,6 +102,71 @@ define i32 @four_arguments(i32 %a, i32 %b, i32 %c, i32 %d) {
   %cd = add i32 %c, %d
   %result = add i32 %ab, %cd
   ret i32 %result
+}
+
+define i32 @constant_shl_19(i32 %value) minsize {
+; CHECK:       .long call_target(__riscc_shlsi19)
+; CHECK-LABEL: constant_shl_19:
+; CHECK:       jalr s7, r0
+; FULL-LABEL:  constant_shl_19:
+; FULL:        slli [[SHL:r[0-7]]], r1, 8
+; FULL-NEXT:   slli [[SHL]], [[SHL]], 8
+; FULL-NEXT:   slli r1, [[SHL]], 3
+  %result = shl i32 %value, 19
+  ret i32 %result
+}
+
+define i32 @constant_lshr_19(i32 %value) minsize {
+; CHECK:       .long call_target(__riscc_lshrsi19)
+; CHECK-LABEL: constant_lshr_19:
+; CHECK:       jalr s7, r0
+; FULL-LABEL:  constant_lshr_19:
+; FULL:        srli [[LSHR:r[0-7]]], r1, 8
+; FULL-NEXT:   srli [[LSHR]], [[LSHR]], 8
+; FULL-NEXT:   srli r1, [[LSHR]], 3
+  %result = lshr i32 %value, 19
+  ret i32 %result
+}
+
+define i32 @constant_ashr_19(i32 %value) minsize {
+; CHECK:       .long call_target(__riscc_ashrsi19)
+; CHECK-LABEL: constant_ashr_19:
+; CHECK:       jalr s7, r0
+; FULL-LABEL:  constant_ashr_19:
+; FULL:        srai [[ASHR:r[0-7]]], r1, 8
+; FULL-NEXT:   srai [[ASHR]], [[ASHR]], 8
+; FULL-NEXT:   srai r1, [[ASHR]], 3
+  %result = ashr i32 %value, 19
+  ret i32 %result
+}
+
+define i32 @native_mul(i32 %left, i32 %right) {
+; CHECK:       .long call_target(__mulsi3)
+; CHECK-LABEL: native_mul:
+; CHECK:       jalr s7, r0
+; FULL-LABEL:  native_mul:
+; FULL:        mul r1, r1, r2
+  %result = mul i32 %left, %right
+  ret i32 %result
+}
+
+define i32 @native_udiv(i32 %left, i32 %right) {
+; MDU-LABEL: native_udiv:
+; MDU:       ldi r0, 0
+; MDU-NEXT:  divu r0, r1, r2
+  %result = udiv i32 %left, %right
+  ret i32 %result
+}
+
+define i32 @native_mulhu(i32 %left, i32 %right) {
+; MDU-LABEL: native_mulhu:
+; MDU:       mulhu r0, r1, r2
+  %left64 = zext i32 %left to i64
+  %right64 = zext i32 %right to i64
+  %product = mul i64 %left64, %right64
+  %high64 = lshr i64 %product, 32
+  %high = trunc i64 %high64 to i32
+  ret i32 %high
 }
 
 define void @large_call_frame() {

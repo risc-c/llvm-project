@@ -104,12 +104,12 @@ static bool isAsmComment(const char *Str, const MCAsmInfo &MAI) {
 /// multiple instructions separated by SeparatorString or newlines.
 /// Variable-length instructions are not handled here; this function
 /// may be overloaded in the target code to do that.
-/// We implement a special case of the .space directive which takes only a
-/// single integer argument in base 10 that is the size in bytes. This is a
-/// restricted form of the GAS directive in that we only interpret
+/// We implement special cases of the .space and .zero directives which take
+/// only a single integer argument in base 10 that is the size in bytes. These
+/// are restricted forms of the GAS directives in that we only interpret
 /// simple--i.e. not a logical or arithmetic expression--size values without
-/// the optional fill value. This is primarily used for creating arbitrary
-/// sized inline asm blocks for testing purposes.
+/// optional arguments. This is primarily used for creating arbitrary sized
+/// inline asm blocks for testing purposes.
 unsigned TargetInstrInfo::getInlineAsmLength(
   const char *Str,
   const MCAsmInfo &MAI, const TargetSubtargetInfo *STI) const {
@@ -129,10 +129,12 @@ unsigned TargetInstrInfo::getInlineAsmLength(
 
     if (AtInsnStart && !isSpace(static_cast<unsigned char>(*Str))) {
       unsigned AddLength = MaxInstLength;
-      if (strncmp(Str, ".space", 6) == 0) {
+      if (strncmp(Str, ".space", 6) == 0 ||
+          strncmp(Str, ".zero", 5) == 0) {
+        unsigned DirectiveLength = Str[1] == 's' ? 6 : 5;
         char *EStr;
         int SpaceSize;
-        SpaceSize = strtol(Str + 6, &EStr, 10);
+        SpaceSize = strtol(Str + DirectiveLength, &EStr, 10);
         SpaceSize = SpaceSize < 0 ? 0 : SpaceSize;
         while (*EStr != '\n' && isSpace(static_cast<unsigned char>(*EStr)))
           ++EStr;

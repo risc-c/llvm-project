@@ -53,6 +53,8 @@ def SDT_RISCCSelectCC : SDTypeProfile<1, 5,
    SDTCisVT<5, i16>]>;
 def SDT_RISCCShift : SDTypeProfile<1, 2,
   [SDTCisSameAs<0, 1>, SDTCisVT<0, i16>, SDTCisVT<2, i16>]>;
+def SDT_RISCCShift32 : SDTypeProfile<1, 2,
+  [SDTCisSameAs<0, 1>, SDTCisVT<0, i32>, SDTCisVT<2, i32>]>;
 
 def RISCCcall : SDNode<"RISCCISD::CALL", SDT_RISCCCall,
   [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
@@ -76,6 +78,9 @@ def RISCCselectcc : SDNode<"RISCCISD::SELECT_CC", SDT_RISCCSelectCC>;
 def RISCCshl : SDNode<"RISCCISD::SHL", SDT_RISCCShift>;
 def RISCCsrl : SDNode<"RISCCISD::SRL", SDT_RISCCShift>;
 def RISCCsra : SDNode<"RISCCISD::SRA", SDT_RISCCShift>;
+def RISCCshl32 : SDNode<"RISCCISD::SHL", SDT_RISCCShift32>;
+def RISCCsrl32 : SDNode<"RISCCISD::SRL", SDT_RISCCShift32>;
+def RISCCsra32 : SDNode<"RISCCISD::SRA", SDT_RISCCShift32>;
 def RISCCfsl1 : SDNode<"RISCCISD::FSL1", SDT_RISCCShift>;
 def RISCCfsr1 : SDNode<"RISCCISD::FSR1", SDT_RISCCShift>;
 
@@ -142,6 +147,12 @@ def shiftimm : Operand<i16>, ImmLeaf<i16,
   let EncoderMethod = "getShiftAmountEncoding";
   let DecoderMethod = "decodeShiftAmount";
 }
+def shiftimm32 : Operand<i32>, ImmLeaf<i32,
+  [{ return Imm >= 1 && Imm <= 8; }]> {
+  let ParserMatchClass = ShiftAsmOperand;
+  let EncoderMethod = "getShiftAmountEncoding";
+  let DecoderMethod = "decodeShiftAmount";
+}
 def u16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
   let ParserMatchClass = U16AsmOperand;
 }
@@ -160,6 +171,8 @@ def codeaddr : Operand<i16> {
   let EncoderMethod = "getCodeTargetEncoding";
   let DecoderMethod = "decodeCodeTarget";
 }
+// Code-generation-only RC32 references to a native-width literal pool entry.
+def cpaddr32 : Operand<i32>;
 def condcode : Operand<i16>;
 
 // Loads and stores.  Word displacements are signed bytes.
@@ -281,21 +294,38 @@ def OR32 : RR<0x05, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
 def XOR32 : RR<0x06, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
                "xor\t$rd, $ra, $rb",
                [(set i32:$rd, (xor i32:$ra, i32:$rb))]>;
+let Predicates = [IsRC32Pred, HasMulPred] in
+def MUL32 : RR<0x07, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
+               "mul\t$rd, $ra, $rb",
+               [(set i32:$rd, (mul i32:$ra, i32:$rb))]>;
 }
 }
 
 // MDU writes architecturally paired results. The corresponding target DAG
 // nodes select these directly; the tied inputs model the input register values
 // that the ISA overwrites with the two results.
-let Predicates = [HasMduPred], hasSideEffects = 1 in
+let Predicates = [IsRC16Pred, HasMduPred], hasSideEffects = 1 in
 def DIVU : RRMdu<0x10, (outs GPR:$rr, GPR:$rq),
              (ins GPR:$rr_in, GPR:$rq_in, GPR:$rb),
              "divu\t$rr, $rq, $rb"> {
   let Constraints = "$rr = $rr_in,$rq = $rq_in,@earlyclobber $rr,@earlyclobber $rq";
 }
-let Predicates = [HasMulhuPred], hasSideEffects = 1 in
+let Predicates = [IsRC16Pred, HasMulhuPred], hasSideEffects = 1 in
 def MULHU : RRMdu<0x14, (outs GPR:$rr, GPR:$rq),
               (ins GPR:$rq_in, GPR:$rb), "mulhu\t$rr, $rq, $rb"> {
+  let Constraints = "$rq = $rq_in,@earlyclobber $rr";
+}
+let Predicates = [IsRC32Pred, HasMduPred], DecoderNamespace = "RC32",
+    hasSideEffects = 1 in
+def DIVU32 : RRMdu<0x10, (outs GPR32:$rr, GPR32:$rq),
+               (ins GPR32:$rr_in, GPR32:$rq_in, GPR32:$rb),
+               "divu\t$rr, $rq, $rb"> {
+  let Constraints = "$rr = $rr_in,$rq = $rq_in,@earlyclobber $rr,@earlyclobber $rq";
+}
+let Predicates = [IsRC32Pred, HasMulhuPred], DecoderNamespace = "RC32",
+    hasSideEffects = 1 in
+def MULHU32 : RRMdu<0x14, (outs GPR32:$rr, GPR32:$rq),
+                (ins GPR32:$rq_in, GPR32:$rb), "mulhu\t$rr, $rq, $rb"> {
   let Constraints = "$rq = $rq_in,@earlyclobber $rr";
 }
 
@@ -347,24 +377,49 @@ let Predicates = [IsRC32Pred], mayStore = 1 in
 def STH : RRDirectA<0x0b, 0b010, (outs), (ins GPR32:$rd, GPR32:$ra),
                     "sth\t$rd, [$ra]">;
 
+let Predicates = [IsRC16Pred] in
 def SRLI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "srli\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCsrl GPR:$ra, shiftimm:$amount))]> {
   bits<3> amount;
   let rb = amount;
 }
+let Predicates = [IsRC16Pred] in
 def SRAI : RR<0x0d, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "srai\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCsra GPR:$ra, shiftimm:$amount))]> {
   bits<3> amount;
   let rb = amount;
 }
-let Predicates = [NoNanoPred] in
+let Predicates = [IsRC16Pred, NoNanoPred] in
 def SLLI : RR<0x0f, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
               "slli\t$rd, $ra, $amount",
               [(set i16:$rd, (RISCCshl GPR:$ra, shiftimm:$amount))]> {
   bits<3> amount;
   let rb = amount;
+}
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in {
+def SRLI32 : RR<0x0c, (outs GPR32:$rd),
+                (ins GPR32:$ra, shiftimm32:$amount), "srli\t$rd, $ra, $amount",
+                [(set i32:$rd, (RISCCsrl32 GPR32:$ra,
+                                             shiftimm32:$amount))]> {
+  bits<3> amount;
+  let rb = amount;
+}
+def SRAI32 : RR<0x0d, (outs GPR32:$rd),
+                (ins GPR32:$ra, shiftimm32:$amount), "srai\t$rd, $ra, $amount",
+                [(set i32:$rd, (RISCCsra32 GPR32:$ra,
+                                             shiftimm32:$amount))]> {
+  bits<3> amount;
+  let rb = amount;
+}
+def SLLI32 : RR<0x0f, (outs GPR32:$rd),
+                (ins GPR32:$ra, shiftimm32:$amount), "slli\t$rd, $ra, $amount",
+                [(set i32:$rd, (RISCCshl32 GPR32:$ra,
+                                             shiftimm32:$amount))]> {
+  bits<3> amount;
+  let rb = amount;
+}
 }
 
 // S-register and control instructions.
@@ -443,6 +498,11 @@ def CALL32 : Pseudo<(outs), (ins GPR32:$target),
                     [(RISCCcall GPR32:$target)]> {
   let Size = 2;
 }
+let Predicates = [IsRC32Pred], isCall = 1,
+    isCodeGenOnly = 1, Defs = [S7, R0, R1, R2, R3] in
+def CALL32_LITERAL : Pseudo<(outs), (ins cpaddr32:$target)> {
+  let Size = 4;
+}
 let Predicates = [IsNanoPred], isCall = 1,
     Defs = [R6, R0, R1, R2, R3] in
 def CALL_NANO_REG : Pseudo<(outs), (ins GPR:$target),
@@ -501,6 +561,13 @@ def TAIL_REG : Pseudo<(outs), (ins GPR:$target)> { let Size = 2; }
 let Predicates = [IsRC32Pred], Uses = [S7] in
 def TAIL32 : Pseudo<(outs), (ins GPR32:$target),
                     [(RISCCTail GPR32:$target)]> { let Size = 2; }
+let Predicates = [IsRC32Pred], Uses = [S7], Defs = [R0, S0],
+    isCodeGenOnly = 1 in
+def TAIL32_LITERAL : Pseudo<(outs), (ins cpaddr32:$target)> {
+  // LDPC followed by JALR. The referenced word lives in a normal RC32
+  // literal pool and is deliberately not part of the instruction size.
+  let Size = 4;
+}
 let Predicates = [IsNanoPred], Uses = [R6] in
 def TAIL_NANO_REG : Pseudo<(outs), (ins GPR:$target)> { let Size = 2; }
 }
@@ -543,6 +610,15 @@ let Predicates = [IsNanoPred], Constraints = "$dst = $src" in
 def SEXT8_NANO : Pseudo<(outs GPR:$dst), (ins GPR:$src),
   [(set i16:$dst, (sext_inreg GPR:$src, i8))]> {
   let Size = 6;
+}
+
+let Predicates = [IsRC32Pred], Constraints = "$dst = $src" in
+def SEXT8_RC32 : Pseudo<(outs GPR32:$dst), (ins GPR32:$src)> {
+  let Size = 6;
+}
+let Predicates = [IsRC32Pred], Constraints = "$dst = $src", Defs = [R0] in
+def SEXT16_RC32 : Pseudo<(outs GPR32:$dst), (ins GPR32:$src)> {
+  let Size = 10;
 }
 
 let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
@@ -633,3 +709,11 @@ def : Pat<(RISCCTail (i16 texternalsym:$target)),
           (TAIL_NANO texternalsym:$target)>;
 }
 def : Pat<(RISCCretPrivate), (LINK_S3_RET)>;
+
+let Predicates = [IsRC32Pred] in
+def : Pat<(RISCCcall (i32 tconstpool:$target)),
+          (CALL32_LITERAL tconstpool:$target)>;
+
+let Predicates = [IsRC32Pred] in
+def : Pat<(RISCCTail (i32 tconstpool:$target)),
+          (TAIL32_LITERAL tconstpool:$target)>;

@@ -20,6 +20,10 @@
 // RUN:   FileCheck %s --check-prefix=RC32-NANO
 // RUN: not %clang --target=riscc-none-elf -mcpu=min -mrc32x -c %s -o %t.o 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=RC32X
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mrc32 -mmdu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=RC32-MDU
+// RUN: not %clang -### --target=riscc-none-elf -mrc32 -mcmodel=small -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=CODE-MODEL
 
 // CHECK: "-cc1" "-triple" "riscc-unknown-none-elf"
 // CHECK-SAME: "-target-cpu" "full"
@@ -54,3 +58,6 @@
 // INVALID-CPU-NEXT: note: valid target CPU values are: nano, min, sys, full
 // RC32-NANO: error: invalid feature combination: rc32 has no Nano profile
 // RC32X: error: invalid feature combination: rc32x is not implemented
+// RC32-MDU: "-target-feature" "+mdu"
+// RC32-MDU-SAME: "-target-feature" "+rc32"
+// CODE-MODEL: error: unsupported argument 'small' to option '-mcmodel=' for target 'riscc-unknown-none-elf'

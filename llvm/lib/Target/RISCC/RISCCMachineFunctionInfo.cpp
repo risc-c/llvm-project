@@ -19,8 +19,14 @@ MCRegister llvm::getRISCCMainlineLinkRegister(const Function &F) {
 
 RISCCMachineFunctionInfo::RISCCMachineFunctionInfo(
     const Function &F, const TargetSubtargetInfo *STI) {
-  if (!static_cast<const RISCCSubtarget *>(STI)->isNano())
-    ReturnAddressReg = getRISCCMainlineLinkRegister(F);
+  const auto &Subtarget = *static_cast<const RISCCSubtarget *>(STI);
+  if (!Subtarget.isNano())
+    // RC32 currently uses the public S7 convention for every function. The
+    // RC16-only private-link convention is selected together at both the
+    // caller and callee; applying only its callee half to RC32 would make
+    // local functions return through an uninitialized S3.
+    ReturnAddressReg =
+        Subtarget.isRC32() ? RISCC::S7 : getRISCCMainlineLinkRegister(F);
 }
 
 void RISCCMachineFunctionInfo::setCalleeSavedSReg(MCRegister GPR,

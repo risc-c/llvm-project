@@ -35,6 +35,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
+#include <optional>
 
 using namespace llvm;
 
@@ -72,8 +73,11 @@ public:
     SetupMachineFunction(MF);
     PendingBranchLiteral = nullptr;
     PendingBranchTarget = nullptr;
+    TrailingPool.reset();
     planLiteralPools();
     emitFunctionBody();
+    if (TrailingPool)
+      emitLiteralPool(LiteralPools[*TrailingPool]);
     assert(!PendingBranchLiteral && "unterminated RISC-C long branch");
     return false;
   }
@@ -92,7 +96,8 @@ public:
   void emitBasicBlockEnd(const MachineBasicBlock &MBB) override {
     AsmPrinter::emitBasicBlockEnd(MBB);
     auto It = PoolAfter.find(&MBB);
-    if (It != PoolAfter.end())
+    if (It != PoolAfter.end() &&
+        (!TrailingPool || It->second != *TrailingPool))
       emitLiteralPool(LiteralPools[It->second]);
   }
   void emitMachineConstantPoolValue(MachineConstantPoolValue *Value) override {
@@ -103,6 +108,9 @@ public:
         OutContext);
     if (Symbol->isTPOFF())
       Expr = RISCCMCExpr::create(RISCCMCExpr::VK_TPOFF, Expr, OutContext);
+    else if (Symbol->isCallTarget())
+      Expr = RISCCMCExpr::create(RISCCMCExpr::VK_CALL_TARGET, Expr,
+                                 OutContext);
     OutStreamer->emitValue(Expr, 4);
   }
   void emitLiteralLoad(const MachineInstr *MI) {
@@ -114,11 +122,43 @@ public:
         MCSymbolRefExpr::create(Literal, OutContext));
     EmitToStreamer(*OutStreamer, Load);
   }
+  void emitLiteralCall(const MachineInstr *MI, MCRegister Link) {
+    MCSymbol *Literal = LiteralSymbols.lookup(MI);
+    assert(Literal && "direct call was not assigned a literal pool");
+    if (MF->getSubtarget<RISCCSubtarget>().hasLongJall()) {
+      MCSymbol *Site = OutContext.createTempSymbol();
+      const MCExpr *SiteExpr = MCSymbolRefExpr::create(Site, OutContext);
+      const MCExpr *LiteralExpr =
+          MCSymbolRefExpr::create(Literal, OutContext);
+      OutStreamer->emitRelocDirective(
+          *SiteExpr,
+          Link == RISCC::S7 ? "R_RISCC_RELAX_CALL" : "R_RISCC_RELAX_TAIL",
+          LiteralExpr);
+      OutStreamer->emitLabel(Site);
+    }
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCC::LDPC)
+                       .addReg(RISCC::R0)
+                       .addExpr(MCSymbolRefExpr::create(Literal, OutContext)));
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCC::JALR)
+                       .addReg(Link)
+                       .addReg(RISCC::R0));
+  }
   void emitInstruction(const MachineInstr *MI) override {
-    RISCC_MC::verifyInstructionPredicates(MI->getOpcode(),
-                                           getSubtargetInfo().getFeatureBits());
     if (MI->getOpcode() == RISCC::LDPC && MI->getOperand(1).isCPI()) {
+      RISCC_MC::verifyInstructionPredicates(
+          MI->getOpcode(), getSubtargetInfo().getFeatureBits());
       emitLiteralLoad(MI);
+      return;
+    }
+    if (MI->getOpcode() == RISCC::CALL32_LITERAL ||
+        MI->getOpcode() == RISCC::TAIL32_LITERAL) {
+      RISCC_MC::verifyInstructionPredicates(
+          MI->getOpcode(), getSubtargetInfo().getFeatureBits());
+      emitLiteralCall(MI, MI->getOpcode() == RISCC::CALL32_LITERAL
+                              ? RISCC::S7
+                              : RISCC::S0);
       return;
     }
     MCInst Out;
@@ -137,6 +177,9 @@ public:
                              PendingBranchLiteral, OutContext)));
       return;
     }
+
+    RISCC_MC::verifyInstructionPredicates(MI->getOpcode(),
+                                           getSubtargetInfo().getFeatureBits());
 
     MCRegister Link;
     unsigned TransferOpcode = RISCC::JALR;
@@ -351,6 +394,10 @@ private:
         if (MI.getOpcode() == RISCC::LDPC && MI.getOperand(1).isCPI())
           Uses.push_back(
               {&MI, unsigned(MI.getOperand(1).getIndex()), Offset});
+        else if (MI.getOpcode() == RISCC::CALL32_LITERAL ||
+                 MI.getOpcode() == RISCC::TAIL32_LITERAL)
+          Uses.push_back(
+              {&MI, unsigned(MI.getOperand(0).getIndex()), Offset});
         Offset += TII.getInstSizeInBytes(MI);
       }
 
@@ -383,6 +430,8 @@ private:
       assignPoolUses(LiteralPools[LeftPool], Backward, true);
       assignPoolUses(LiteralPools[RightPool], Forward, false);
       PoolAfter[&MBB] = RightPool;
+      if (&MBB == &MF->back())
+        TrailingPool = RightPool;
       LeftPool = RightPool;
       Uses.clear();
     }
@@ -414,6 +463,7 @@ private:
   SmallVector<LiteralPool, 8> LiteralPools;
   DenseMap<const MachineBasicBlock *, unsigned> PoolAfter;
   DenseMap<const MachineInstr *, MCSymbol *> LiteralSymbols;
+  std::optional<unsigned> TrailingPool;
   MCSymbol *PendingBranchLiteral = nullptr;
   const MCExpr *PendingBranchTarget = nullptr;
 };
