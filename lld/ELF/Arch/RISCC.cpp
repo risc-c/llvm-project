@@ -37,7 +37,7 @@ public:
   uint32_t calcEFlags() const override;
   RelExpr getRelExpr(RelType type, const Symbol &s,
                      const uint8_t *loc) const override;
-  void scanSection(InputSectionBase &sec) override;
+  void scanSection(InputSectionBase &sec, unsigned shard) override;
   void validateOutput() const override;
   bool relaxOnce(int pass) const override;
   void finalizeRelax(int passes) const override;
@@ -192,8 +192,8 @@ RelExpr RISCC::getRelExpr(RelType type, const Symbol &s,
   }
 }
 
-void RISCC::scanSection(InputSectionBase &sec) {
-  TargetInfo::scanSection(sec);
+void RISCC::scanSection(InputSectionBase &sec, unsigned shard) {
+  TargetInfo::scanSection(sec, shard);
 
   for (const Relocation &rel : sec.relocs()) {
     if (!rel.sym)
