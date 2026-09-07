@@ -1,0 +1,187 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %t/input.mir -o %t/min.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %t/input.mir -o %t/full.o
+# RUN: llvm-objdump -d --mattr=+rc32 %t/min.o | FileCheck %s --check-prefix=OBJ
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/alignment.mir -o - | FileCheck %s --check-prefix=ALIGN
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %t/alignment.mir -o %t/alignment.o
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=block-placement -align-all-blocks=9 -max-bytes-for-alignment=2 -verify-machineinstrs %t/alignment.mir -o - | FileCheck %s --check-prefix=PAD
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=block-placement -align-all-blocks=9 -max-bytes-for-alignment=2 -verify-machineinstrs -filetype=obj %t/alignment.mir -o %t/max-padding.o
+
+# Displacements are measured from PC + 2. Ordinary branches beyond 32 bytes
+# and both endpoints of the hardware range must stay short.
+# CHECK-LABEL: forward_64:
+# CHECK:       bnez
+# CHECK-NOT:   ldpc
+# CHECK:       .Lfunc_end
+# CHECK-LABEL: forward_254:
+# CHECK:       bnez
+# CHECK-NOT:   ldpc
+# CHECK:       .Lfunc_end
+# CHECK-LABEL: forward_256:
+# CHECK:       beqz
+# CHECK:       ldpc [[SCRATCH:r[0-7]]],
+# CHECK-NEXT:  jalr s0, [[SCRATCH]]
+# CHECK-LABEL: backward_256:
+# CHECK:       .zero 254
+# CHECK:       bnez
+# CHECK-NOT:   ldpc
+# CHECK:       .Lfunc_end
+# CHECK-LABEL: backward_258:
+# CHECK:       .zero 256
+# CHECK:       beqz
+# CHECK:       ldpc [[SCRATCH:r[0-7]]],
+# CHECK-NEXT:  jalr s0, [[SCRATCH]]
+
+# Min resolves local references; Full retains relocations for the linker.
+# Objdump prints offsets relative to the branch itself, rather than PC + 2.
+# OBJ-LABEL: <forward_64>:
+# OBJ:       bnez .+66
+# OBJ-LABEL: <forward_254>:
+# OBJ:       bnez .+256
+# OBJ-LABEL: <backward_256>:
+# OBJ:       bnez .-254
+
+# The original displacement is +252. A word and its alignment after the
+# intervening return move the destination out of range.
+# CHECK-LABEL: aligned_pool:
+# CHECK:       beqz
+# CHECK:       ldpc [[SCRATCH:r[0-7]]],
+# CHECK-NEXT:  jalr s0, [[SCRATCH]]
+# CHECK:       .long 123456
+
+# Both sides of the barrier share 48 words. The original +98 displacement
+# fits, but the 192-byte pool forces a long branch across it.
+# CHECK-LABEL: shared_pool:
+# CHECK:       beqz
+# CHECK:       ldpc [[SCRATCH:r[0-7]]],
+# CHECK-NEXT:  jalr s0, [[SCRATCH]]
+# CHECK:       ldpc r1, [[FIRST:.Ltmp[0-9]+]]
+# CHECK:       [[FIRST]]:
+# CHECK-NEXT:  .long 100000
+# CHECK-COUNT-47: .long 1000{{[0-9][0-9]}}
+# CHECK:       ldpc r1, [[FIRST]]
+# CHECK-NOT:   .long 1000
+# CHECK:       .Lfunc_end
+
+# A block can require more alignment than its function. Its load needs a
+# local copy, since the preceding pool is separated by up to 510 bytes.
+# ALIGN-LABEL: block_alignment:
+# ALIGN:       ldpc r1, [[BEFORE:.Ltmp[0-9]+]]
+# ALIGN:       [[BEFORE]]:
+# ALIGN-NEXT:  .long 234567
+# ALIGN:       .p2align 9
+# ALIGN:       ldpc r2, [[AFTER:.Ltmp[0-9]+]]
+# ALIGN:       [[AFTER]]:
+# ALIGN-NEXT:  .long 234567
+# PAD-LABEL:   block_alignment:
+# PAD:         .p2align 9, , 2
+
+#--- generate.py
+def emit(name, body, constants=()):
+    print("---")
+    print(f"name: {name}")
+    print("tracksRegLiveness: true")
+    if constants:
+        print("constants:")
+        for index, value in enumerate(constants):
+            print(f"  - {{ id: {index}, value: 'i32 {value}', alignment: 4 }}")
+    print("body: |")
+    print(body)
+    print("...")
+
+
+# The fallthrough block includes a two-byte return.
+for displacement in (64, 254, 256):
+    emit(f"forward_{displacement}", f"""
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    INLINEASM &".space {displacement - 2}", sideeffect attdialect
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+""")
+
+for displacement in (256, 258):
+    emit(f"backward_{displacement}", f"""
+  bb.0:
+    successors: %bb.1
+    liveins: $s7
+    $r0 = LDI32 1
+  bb.1:
+    successors: %bb.2
+    liveins: $r0, $s7
+    INLINEASM &".space {displacement - 2}", sideeffect attdialect
+  bb.2:
+    successors: %bb.1, %bb.3
+    liveins: $r0, $s7
+    BNEZ %bb.1, implicit $r0
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+""")
+
+emit("aligned_pool", """
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    $r1 = LDPC %const.0
+    INLINEASM &".space 248", sideeffect attdialect
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+""", [123456])
+
+loads = "\n".join(f"    $r1 = LDPC %const.{index}" for index in range(48))
+emit("shared_pool", f"""
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+{loads}
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+{loads}
+    RETS implicit $s7
+""", list(range(100000, 100048)))
+
+#--- alignment.mir
+---
+name: alignment_pad
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: block_alignment
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 234567', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $s7
+    $r1 = LDPC %const.0
+    JMP8 %bb.1
+  bb.1 (align 512):
+    liveins: $s7
+    $r2 = LDPC %const.0
+    RETS implicit $s7
+...

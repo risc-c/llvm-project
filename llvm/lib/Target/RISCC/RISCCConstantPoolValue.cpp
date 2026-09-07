@@ -25,20 +25,20 @@ RISCCConstantPoolSymbol::RISCCConstantPoolSymbol(LLVMContext &Context,
       IsTPOFF(IsTPOFF), IsCallTarget(IsCallTarget) {}
 
 RISCCConstantPoolSymbol *RISCCConstantPoolSymbol::Create(LLVMContext &Context,
-                                                          StringRef Name) {
+                                                         StringRef Name) {
   return new RISCCConstantPoolSymbol(Context, Name);
 }
 
 RISCCConstantPoolSymbol *RISCCConstantPoolSymbol::Create(LLVMContext &Context,
-                                                          const GlobalValue *GV,
-                                                          bool IsTPOFF,
-                                                          bool IsCallTarget) {
+                                                         const GlobalValue *GV,
+                                                         bool IsTPOFF,
+                                                         bool IsCallTarget) {
   return new RISCCConstantPoolSymbol(Context, GV, IsTPOFF, IsCallTarget);
 }
 
 RISCCConstantPoolSymbol *
 RISCCConstantPoolSymbol::CreateCallTarget(LLVMContext &Context,
-                                           StringRef Name) {
+                                          StringRef Name) {
   auto *Value = new RISCCConstantPoolSymbol(Context, Name);
   Value->IsCallTarget = true;
   return Value;
@@ -51,8 +51,7 @@ int RISCCConstantPoolSymbol::getExistingMachineCPValue(
   if (IsCallTarget) {
     for (unsigned I = 0; I != Pool->getConstants().size(); ++I) {
       const MachineConstantPoolEntry &Entry = Pool->getConstants()[I];
-      if (Entry.isMachineConstantPoolEntry() &&
-          Entry.Val.MachineCPVal == this)
+      if (Entry.isMachineConstantPoolEntry() && Entry.Val.MachineCPVal == this)
         return I;
     }
     return -1;
@@ -62,8 +61,8 @@ int RISCCConstantPoolSymbol::getExistingMachineCPValue(
     const MachineConstantPoolEntry &Entry = Constants[I];
     if (!Entry.isMachineConstantPoolEntry() || Entry.getAlign() < Alignment)
       continue;
-    auto *Other = static_cast<RISCCConstantPoolSymbol *>(
-        Entry.Val.MachineCPVal);
+    auto *Other =
+        static_cast<RISCCConstantPoolSymbol *>(Entry.Val.MachineCPVal);
     if (!Other->IsCallTarget && Other->Global == Global &&
         Other->Symbol == Symbol && Other->IsTPOFF == IsTPOFF)
       return I;

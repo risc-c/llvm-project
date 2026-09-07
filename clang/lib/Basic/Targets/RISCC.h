@@ -54,11 +54,10 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
     Char32Type = RC32 ? UnsignedInt : UnsignedLong;
     Int16Type = RC32 ? SignedShort : SignedInt;
 
-    resetDataLayout(RC32
-                        ? "e-m:e-p:32:32-i8:8-i16:16-i32:32-i64:32-"
-                          "f32:32-f64:32-a:8:32-n8:16:32-S32"
-                        : "e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-"
-                          "f32:16-f64:16-a:8:16-n8:16-S16");
+    resetDataLayout(RC32 ? "e-m:e-p:32:32-i8:8-i16:16-i32:32-i64:32-"
+                           "f32:32-f64:32-a:8:32-n8:16:32-S32"
+                         : "e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-"
+                           "f32:16-f64:16-a:8:16-n8:16-S16");
   }
 
 public:

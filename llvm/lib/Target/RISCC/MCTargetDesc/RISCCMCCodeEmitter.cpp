@@ -19,6 +19,7 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -38,8 +39,8 @@ class RISCCMCCodeEmitter final : public MCCodeEmitter {
                      unsigned Offset, RISCC::Fixups DefaultKind,
                      SMLoc Loc) const;
   unsigned branchImmediate(const MCOperand &Op,
-                           SmallVectorImpl<MCFixup> &Fixups,
-                           RISCC::Fixups Kind, SMLoc Loc) const;
+                           SmallVectorImpl<MCFixup> &Fixups, RISCC::Fixups Kind,
+                           SMLoc Loc) const;
   unsigned codeImmediate(const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
                          unsigned Offset, SMLoc Loc, bool IsRC32) const;
   uint64_t getBinaryCodeForInstr(const MCInst &MI,
@@ -71,9 +72,10 @@ public:
 };
 } // namespace
 
-unsigned RISCCMCCodeEmitter::branchImmediate(
-    const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
-    RISCC::Fixups Kind, SMLoc Loc) const {
+unsigned RISCCMCCodeEmitter::branchImmediate(const MCOperand &Op,
+                                             SmallVectorImpl<MCFixup> &Fixups,
+                                             RISCC::Fixups Kind,
+                                             SMLoc Loc) const {
   if (Op.isImm()) {
     if (!isInt<8>(Op.getImm())) {
       Ctx.reportError(Loc, "branch displacement exceeds signed 8-bit range");
@@ -91,9 +93,10 @@ unsigned RISCCMCCodeEmitter::branchImmediate(
   return 0;
 }
 
-unsigned RISCCMCCodeEmitter::codeImmediate(
-    const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups, unsigned Offset,
-    SMLoc Loc, bool IsRC32) const {
+unsigned RISCCMCCodeEmitter::codeImmediate(const MCOperand &Op,
+                                           SmallVectorImpl<MCFixup> &Fixups,
+                                           unsigned Offset, SMLoc Loc,
+                                           bool IsRC32) const {
   if (Op.isImm()) {
     int64_t Value = Op.getImm();
     uint64_t Limit = IsRC32 ? 0x1fffff : 0xffff;
@@ -104,14 +107,14 @@ unsigned RISCCMCCodeEmitter::codeImmediate(
     return Value;
   }
   const MCExpr *Expr = Op.getExpr();
-  if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Expr)) {
-    if (TargetExpr->getKind() != RISCCMCExpr::VK_CODE)
+  MCValue Value;
+  if (Expr->evaluateAsRelocatable(Value, nullptr) && Value.getSpecifier()) {
+    if (Value.getSpecifier() != RISCCMCExpr::VK_CODE)
       Ctx.reportError(Loc, "only code() is valid on a direct control target");
-    Expr = TargetExpr->getSubExpr();
   }
-  Fixups.push_back(MCFixup::create(
-      IsRC32 ? 0 : Offset, Expr,
-      IsRC32 ? RISCC::fixup_jall21 : RISCC::fixup_code16));
+  Fixups.push_back(
+      MCFixup::create(IsRC32 ? 0 : Offset, Expr,
+                      IsRC32 ? RISCC::fixup_jall21 : RISCC::fixup_code16));
   return 0;
 }
 
@@ -125,8 +128,9 @@ unsigned RISCCMCCodeEmitter::immediate(const MCOperand &Op,
 
   const MCExpr *Expr = Op.getExpr();
   RISCC::Fixups Kind = DefaultKind;
-  if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Expr)) {
-    switch (TargetExpr->getKind()) {
+  MCValue Value;
+  if (Expr->evaluateAsRelocatable(Value, nullptr)) {
+    switch (Value.getSpecifier()) {
     case RISCCMCExpr::VK_None:
       break;
     case RISCCMCExpr::VK_LO8:
@@ -161,16 +165,16 @@ unsigned RISCCMCCodeEmitter::immediate(const MCOperand &Op,
       Ctx.reportError(Loc, "call_target() requires a 32-bit data directive");
       break;
     }
-    Expr = TargetExpr->getSubExpr();
   }
-  Fixups.push_back(MCFixup::create(
-      Offset, Expr, Kind, Kind == RISCC::fixup_pcrel8_word));
+  Fixups.push_back(
+      MCFixup::create(Offset, Expr, Kind, Kind == RISCC::fixup_pcrel8_word));
   return 0;
 }
 
-uint64_t RISCCMCCodeEmitter::getMachineOpValue(
-    const MCInst &MI, const MCOperand &Op, SmallVectorImpl<MCFixup> &Fixups,
-    const MCSubtargetInfo &) const {
+uint64_t RISCCMCCodeEmitter::getMachineOpValue(const MCInst &MI,
+                                               const MCOperand &Op,
+                                               SmallVectorImpl<MCFixup> &Fixups,
+                                               const MCSubtargetInfo &) const {
   if (Op.isReg())
     return Ctx.getRegisterInfo()->getEncodingValue(Op.getReg()) & 7;
   if (Op.isImm())
@@ -180,50 +184,55 @@ uint64_t RISCCMCCodeEmitter::getMachineOpValue(
   if (MI.getOpcode() == RISCC::LUI)
     Kind = RISCC::fixup_hi8;
   else if (MI.getOpcode() == RISCC::LD || MI.getOpcode() == RISCC::ST ||
-           MI.getOpcode() == RISCC::LD_NANO ||
-           MI.getOpcode() == RISCC::ST_NANO)
+           MI.getOpcode() == RISCC::LD_NANO || MI.getOpcode() == RISCC::ST_NANO)
     Kind = RISCC::fixup_abs8;
   return immediate(Op, Fixups, 0, Kind, MI.getLoc());
 }
 
-uint64_t RISCCMCCodeEmitter::getShiftAmountEncoding(
-    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &,
-    const MCSubtargetInfo &) const {
+uint64_t
+RISCCMCCodeEmitter::getShiftAmountEncoding(const MCInst &MI, unsigned OpNo,
+                                           SmallVectorImpl<MCFixup> &,
+                                           const MCSubtargetInfo &) const {
   return MI.getOperand(OpNo).getImm() - 1;
 }
 
-uint64_t RISCCMCCodeEmitter::getBranchTargetEncoding(
-    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
-    const MCSubtargetInfo &) const {
+uint64_t
+RISCCMCCodeEmitter::getBranchTargetEncoding(const MCInst &MI, unsigned OpNo,
+                                            SmallVectorImpl<MCFixup> &Fixups,
+                                            const MCSubtargetInfo &) const {
   RISCC::Fixups Kind = MI.getOpcode() == RISCC::LDPC
                            ? RISCC::fixup_pcrel8_word
                            : RISCC::fixup_pcrel8_branch;
   return branchImmediate(MI.getOperand(OpNo), Fixups, Kind, MI.getLoc());
 }
 
-uint64_t RISCCMCCodeEmitter::getCodeTargetEncoding(
-    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
-    const MCSubtargetInfo &STI) const {
+uint64_t
+RISCCMCCodeEmitter::getCodeTargetEncoding(const MCInst &MI, unsigned OpNo,
+                                          SmallVectorImpl<MCFixup> &Fixups,
+                                          const MCSubtargetInfo &STI) const {
   return codeImmediate(MI.getOperand(OpNo), Fixups, 2, MI.getLoc(),
                        STI.hasFeature(RISCC::FeatureRC32));
 }
 
-uint64_t RISCCMCCodeEmitter::getRC32WordDispEncoding(
-    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &,
-    const MCSubtargetInfo &) const {
+uint64_t
+RISCCMCCodeEmitter::getRC32WordDispEncoding(const MCInst &MI, unsigned OpNo,
+                                            SmallVectorImpl<MCFixup> &,
+                                            const MCSubtargetInfo &) const {
   const MCOperand &Op = MI.getOperand(OpNo);
   if (!Op.isImm() || !isInt<9>(Op.getImm()) || (Op.getImm() & 3)) {
-    Ctx.reportError(MI.getLoc(),
-                    "RC32 word displacement must be a 4-byte-aligned signed 9-bit value");
+    Ctx.reportError(
+        MI.getLoc(),
+        "RC32 word displacement must be a 4-byte-aligned signed 9-bit value");
     return 0;
   }
   unsigned Words = static_cast<unsigned>(Op.getImm() >> 2) & 0x7f;
   return ((Words & 0x3f) << 2) | ((Words & 0x40) >> 5);
 }
 
-void RISCCMCCodeEmitter::encodeInstruction(
-    const MCInst &MI, SmallVectorImpl<char> &Code,
-    SmallVectorImpl<MCFixup> &Fixups, const MCSubtargetInfo &STI) const {
+void RISCCMCCodeEmitter::encodeInstruction(const MCInst &MI,
+                                           SmallVectorImpl<char> &Code,
+                                           SmallVectorImpl<MCFixup> &Fixups,
+                                           const MCSubtargetInfo &STI) const {
   const unsigned Opcode = MI.getOpcode();
   auto Encode = [&](MCInst Expanded) {
     Expanded.setLoc(MI.getLoc());
@@ -252,10 +261,8 @@ void RISCCMCCodeEmitter::encodeInstruction(
     return;
   }
   case RISCC::NOP: {
-    Encode(MCInstBuilder(RISCC::OR)
-               .addReg(RISCC::R0)
-               .addReg(RISCC::R0)
-               .addReg(RISCC::R0));
+    Encode(MCInstBuilder(RISCC::OR).addReg(RISCC::R0).addReg(RISCC::R0).addReg(
+        RISCC::R0));
     return;
   }
   case RISCC::HALT: {
@@ -269,14 +276,14 @@ void RISCCMCCodeEmitter::encodeInstruction(
     }
     const MCOperand &Imm = MI.getOperand(1);
     if (Imm.isExpr()) {
-      if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Imm.getExpr())) {
-        RISCCMCExpr::VariantKind Variant = TargetExpr->getKind();
+      MCValue Value;
+      if (Imm.getExpr()->evaluateAsRelocatable(Value, nullptr)) {
+        unsigned Variant = Value.getSpecifier();
         if (Variant != RISCCMCExpr::VK_None &&
             Variant != RISCCMCExpr::VK_CODE &&
             Variant != RISCCMCExpr::VK_TPOFF) {
-          Ctx.reportError(
-              MI.getLoc(),
-              "LDI16 accepts only an unmodified, code(), or tpoff() expression");
+          Ctx.reportError(MI.getLoc(), "LDI16 accepts only an unmodified, "
+                                       "code(), or tpoff() expression");
           return;
         }
       }
@@ -287,21 +294,11 @@ void RISCCMCCodeEmitter::encodeInstruction(
       Hi = MCOperand::createImm(Value >> 8);
       Lo = MCOperand::createImm(Value & 0xff);
     } else {
-      const MCExpr *Expr = Imm.getExpr();
-      if (const auto *TargetExpr = dyn_cast<RISCCMCExpr>(Expr)) {
-        RISCCMCExpr::VariantKind Variant = TargetExpr->getKind();
-        if (Variant != RISCCMCExpr::VK_CODE &&
-            Variant != RISCCMCExpr::VK_TPOFF)
-          Ctx.reportError(
-              MI.getLoc(),
-              "LDI16 accepts only an unmodified, code(), or tpoff() expression");
-      }
-      Hi = Lo = MCOperand::createExpr(Expr);
+      Hi = Lo = Imm;
     }
 
-    Encode(MCInstBuilder(RISCC::LUI)
-               .addOperand(MI.getOperand(0))
-               .addOperand(Hi));
+    Encode(
+        MCInstBuilder(RISCC::LUI).addOperand(MI.getOperand(0)).addOperand(Hi));
 
     unsigned FirstLowFixup = Fixups.size();
     Encode(MCInstBuilder(RISCC::ORI)
@@ -328,7 +325,7 @@ void RISCCMCCodeEmitter::encodeInstruction(
 }
 
 MCCodeEmitter *llvm::createRISCCMCCodeEmitter(const MCInstrInfo &MCII,
-                                               MCContext &Ctx) {
+                                              MCContext &Ctx) {
   return new RISCCMCCodeEmitter(MCII, Ctx);
 }
 

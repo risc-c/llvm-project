@@ -1,3 +1,4 @@
+# REQUIRES: riscc
 # RUN: split-file %s %t
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -filetype=obj %t/root.s -o %t/root.o
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -filetype=obj %t/staircase.s -o %t/staircase.o

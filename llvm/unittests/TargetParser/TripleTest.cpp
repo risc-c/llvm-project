@@ -3781,7 +3781,7 @@ TEST(DataLayoutTest, CheriRISCV32) {
 TEST(DataLayoutTest, RISCC) {
   Triple TT("riscc-none-elf");
 
-  EXPECT_EQ("e-m:e-P1-p:16:16-p1:16:16-i8:8-i16:16-i32:16-i64:16-"
+  EXPECT_EQ("e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-"
             "f32:16-f64:16-a:8:16-n8:16-S16",
             TT.computeDataLayout());
 }

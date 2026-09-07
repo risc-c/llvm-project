@@ -9,6 +9,7 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/BinaryFormat/ELF.h"
+#include "llvm/Object/RelocationResolver.h"
 #include "llvm/ObjectYAML/yaml2obj.h"
 #include "llvm/Support/BlockFrequency.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -266,6 +267,28 @@ TEST(ELFObjectFileTest, MachineTestForRISCC) {
                                       "elf64-unknown", "elf64-unknown"};
   for (auto [Idx, Data] : enumerate(generateData(ELF::EM_RISCC)))
     checkFormatAndArch(Data, Formats[Idx], Triple::riscc);
+}
+
+TEST(ELFObjectFileTest, RISCCDataRelocations) {
+  DataForTest Data(ELF::ELFCLASS32, ELF::ELFDATA2LSB, ELF::EM_RISCC);
+  auto Obj = ObjectFile::createELFObjectFile(
+      MemoryBufferRef(toStringRef(Data.Data), "RISCC"));
+  ASSERT_THAT_EXPECTED(Obj, Succeeded());
+  auto [Supports, Resolve] = getRelocationResolver(**Obj);
+
+  EXPECT_TRUE(Supports(ELF::R_RISCC_ABS16));
+  EXPECT_TRUE(Supports(ELF::R_RISCC_ABS32));
+  EXPECT_TRUE(Supports(ELF::R_RISCC_CODE16));
+  EXPECT_TRUE(Supports(ELF::R_RISCC_HI8));
+  EXPECT_EQ(0x1234U, Resolve(ELF::R_RISCC_ABS16, 0, 0x11200, 0, 0x34));
+  EXPECT_EQ(0x12345678U,
+            Resolve(ELF::R_RISCC_ABS32, 0, 0x112345600ULL, 0, 0x78));
+  EXPECT_EQ(0xffffU, Resolve(ELF::R_RISCC_CODE16, 0, 0, 0, -1));
+  EXPECT_EQ(0xffU, Resolve(ELF::R_RISCC_HI8, 0, 0, 0, -1));
+
+  // Instruction relocations cannot be resolved as contiguous data fields.
+  EXPECT_FALSE(Supports(ELF::R_RISCC_PCREL8_WORD));
+  EXPECT_FALSE(Supports(ELF::R_RISCC_JALL21));
 }
 
 TEST(ELFObjectFileTest, MachineTestForLoongArch) {

@@ -7,17 +7,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCCAsmPrinter.h"
+#include "MCTargetDesc/RISCCInstPrinter.h"
+#include "MCTargetDesc/RISCCMCExpr.h"
+#include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "RISCC.h"
 #include "RISCCConstantPoolValue.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCMCInstLower.h"
 #include "RISCCSubtarget.h"
 #include "TargetInfo/RISCCTargetInfo.h"
-#include "MCTargetDesc/RISCCInstPrinter.h"
-#include "MCTargetDesc/RISCCMCExpr.h"
-#include "MCTargetDesc/RISCCMCTargetDesc.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -34,72 +32,19 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <algorithm>
-#include <optional>
 
 using namespace llvm;
 
 #define DEBUG_TYPE "riscc-asm-printer"
 
 namespace {
-struct LiteralUse {
-  const MachineInstr *MI;
-  unsigned CPI;
-  unsigned Offset;
-};
-
-struct LiteralEntry {
-  unsigned CPI;
-  unsigned Offset;
-  MCSymbol *Symbol = nullptr;
-};
-
-struct LiteralPool {
-  unsigned Offset = 0;
-  unsigned LeadingBytes = 0;
-  SmallVector<LiteralEntry, 8> Forward;
-  SmallVector<LiteralEntry, 8> Backward;
-
-  bool empty() const { return Forward.empty() && Backward.empty(); }
-};
-
 class RISCCAsmPrinter final : public AsmPrinter {
 public:
   static char ID;
   RISCCAsmPrinter(TargetMachine &TM, std::unique_ptr<MCStreamer> S)
       : AsmPrinter(TM, std::move(S), ID) {}
   StringRef getPassName() const override { return "RISC-C Assembly Printer"; }
-  bool runOnMachineFunction(MachineFunction &MF) override {
-    SetupMachineFunction(MF);
-    PendingBranchLiteral = nullptr;
-    PendingBranchTarget = nullptr;
-    TrailingPool.reset();
-    planLiteralPools();
-    emitFunctionBody();
-    if (TrailingPool)
-      emitLiteralPool(LiteralPools[*TrailingPool]);
-    assert(!PendingBranchLiteral && "unterminated RISC-C long branch");
-    return false;
-  }
-  void emitConstantPool() override {
-    if (LiteralPools.front().empty())
-      return;
-
-    const Function &F = MF->getFunction();
-    if (MF->front().isBeginSection())
-      MF->setSection(getObjFileLowering().getUniqueSectionForFunction(F, TM));
-    else
-      MF->setSection(getObjFileLowering().SectionForGlobal(&F, TM));
-    OutStreamer->switchSection(MF->getSection());
-    emitLiteralPool(LiteralPools.front());
-  }
-  void emitBasicBlockEnd(const MachineBasicBlock &MBB) override {
-    AsmPrinter::emitBasicBlockEnd(MBB);
-    auto It = PoolAfter.find(&MBB);
-    if (It != PoolAfter.end() &&
-        (!TrailingPool || It->second != *TrailingPool))
-      emitLiteralPool(LiteralPools[It->second]);
-  }
+  void emitConstantPool() override {}
   void emitMachineConstantPoolValue(MachineConstantPoolValue *Value) override {
     auto *Symbol = static_cast<RISCCConstantPoolSymbol *>(Value);
     const MCExpr *Expr = MCSymbolRefExpr::create(
@@ -109,31 +54,20 @@ public:
     if (Symbol->isTPOFF())
       Expr = RISCCMCExpr::create(RISCCMCExpr::VK_TPOFF, Expr, OutContext);
     else if (Symbol->isCallTarget())
-      Expr = RISCCMCExpr::create(RISCCMCExpr::VK_CALL_TARGET, Expr,
-                                 OutContext);
+      Expr = RISCCMCExpr::create(RISCCMCExpr::VK_CALL_TARGET, Expr, OutContext);
     OutStreamer->emitValue(Expr, 4);
   }
-  void emitLiteralLoad(const MachineInstr *MI) {
-    MCSymbol *Literal = LiteralSymbols.lookup(MI);
-    assert(Literal && "literal load was not assigned a pool");
-    MCInst Load;
-    RISCCMCInstLower(OutContext, *this).lower(MI, Load);
-    Load.getOperand(1) = MCOperand::createExpr(
-        MCSymbolRefExpr::create(Literal, OutContext));
-    EmitToStreamer(*OutStreamer, Load);
-  }
   void emitLiteralCall(const MachineInstr *MI, MCRegister Link) {
-    MCSymbol *Literal = LiteralSymbols.lookup(MI);
+    MCSymbol *Literal = MI->getOperand(0).getMCSymbol();
     assert(Literal && "direct call was not assigned a literal pool");
     if (MF->getSubtarget<RISCCSubtarget>().hasLongJall()) {
       MCSymbol *Site = OutContext.createTempSymbol();
       const MCExpr *SiteExpr = MCSymbolRefExpr::create(Site, OutContext);
-      const MCExpr *LiteralExpr =
-          MCSymbolRefExpr::create(Literal, OutContext);
-      OutStreamer->emitRelocDirective(
-          *SiteExpr,
-          Link == RISCC::S7 ? "R_RISCC_RELAX_CALL" : "R_RISCC_RELAX_TAIL",
-          LiteralExpr);
+      const MCExpr *LiteralExpr = MCSymbolRefExpr::create(Literal, OutContext);
+      OutStreamer->emitRelocDirective(*SiteExpr,
+                                      Link == RISCC::S7 ? "R_RISCC_RELAX_CALL"
+                                                        : "R_RISCC_RELAX_TAIL",
+                                      LiteralExpr);
       OutStreamer->emitLabel(Site);
     }
     EmitToStreamer(*OutStreamer,
@@ -141,45 +75,40 @@ public:
                        .addReg(RISCC::R0)
                        .addExpr(MCSymbolRefExpr::create(Literal, OutContext)));
     EmitToStreamer(*OutStreamer,
-                   MCInstBuilder(RISCC::JALR)
-                       .addReg(Link)
-                       .addReg(RISCC::R0));
+                   MCInstBuilder(RISCC::JALR).addReg(Link).addReg(RISCC::R0));
   }
   void emitInstruction(const MachineInstr *MI) override {
-    if (MI->getOpcode() == RISCC::LDPC && MI->getOperand(1).isCPI()) {
-      RISCC_MC::verifyInstructionPredicates(
-          MI->getOpcode(), getSubtargetInfo().getFeatureBits());
-      emitLiteralLoad(MI);
+    if (MI->getOpcode() == RISCC::CONSTPOOL_ENTRY) {
+      OutStreamer->emitLabel(MI->getOperand(0).getMCSymbol());
+      const MachineOperand &Value = MI->getOperand(1);
+      if (Value.isCPI()) {
+        const MachineConstantPoolEntry &Constant =
+            MF->getConstantPool()->getConstants()[Value.getIndex()];
+        if (Constant.isMachineConstantPoolEntry())
+          emitMachineConstantPoolValue(Constant.Val.MachineCPVal);
+        else
+          emitGlobalConstant(getDataLayout(), Constant.Val.ConstVal);
+      } else {
+        OutStreamer->emitValue(
+            MCSymbolRefExpr::create(Value.getMBB()->getSymbol(), OutContext),
+            4);
+      }
       return;
     }
     if (MI->getOpcode() == RISCC::CALL32_LITERAL ||
         MI->getOpcode() == RISCC::TAIL32_LITERAL) {
       RISCC_MC::verifyInstructionPredicates(
           MI->getOpcode(), getSubtargetInfo().getFeatureBits());
-      emitLiteralCall(MI, MI->getOpcode() == RISCC::CALL32_LITERAL
-                              ? RISCC::S7
-                              : RISCC::S0);
+      emitLiteralCall(MI, MI->getOpcode() == RISCC::CALL32_LITERAL ? RISCC::S7
+                                                                   : RISCC::S0);
       return;
     }
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
     unsigned Opcode = MI->getOpcode();
 
-    if (MF->getSubtarget<RISCCSubtarget>().isRC32() &&
-        isLongBranchLoad(*MI)) {
-      assert(!PendingBranchLiteral && "nested RISC-C long branch");
-      PendingBranchLiteral = OutContext.createTempSymbol();
-      PendingBranchTarget = Out.getOperand(1).getExpr();
-      EmitToStreamer(*OutStreamer,
-                     MCInstBuilder(RISCC::LDPC)
-                         .addReg(Out.getOperand(0).getReg())
-                         .addExpr(MCSymbolRefExpr::create(
-                             PendingBranchLiteral, OutContext)));
-      return;
-    }
-
     RISCC_MC::verifyInstructionPredicates(MI->getOpcode(),
-                                           getSubtargetInfo().getFeatureBits());
+                                          getSubtargetInfo().getFeatureBits());
 
     MCRegister Link;
     unsigned TransferOpcode = RISCC::JALR;
@@ -190,81 +119,66 @@ public:
       EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::RET).addReg(RISCC::S7));
       return;
     case RISCC::RET_NANO:
-      EmitToStreamer(*OutStreamer,
-                     MCInstBuilder(RISCC::JALR_NANO)
-                         .addReg(RISCC::R0)
-                         .addOperand(Out.getOperand(0)));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::JALR_NANO)
+                                       .addReg(RISCC::R0)
+                                       .addOperand(Out.getOperand(0)));
       return;
     case RISCC::LINK_S3_RET:
       EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::RET).addReg(RISCC::S3));
       return;
     case RISCC::CALL:
     case RISCC::CALL32:
+    case RISCC::CALL_MIN:
       Link = RISCC::S7;
       break;
     case RISCC::TAIL_REG:
     case RISCC::TAIL32:
+    case RISCC::TAIL_MIN:
+    case RISCC::LINK_S3_TAIL_MIN:
       Link = RISCC::S0;
       break;
     case RISCC::CALL_NANO_REG:
+    case RISCC::CALL_NANO:
       Link = RISCC::R6;
       TransferOpcode = RISCC::JALR_NANO;
       break;
     case RISCC::TAIL_NANO_REG:
+    case RISCC::TAIL_NANO:
       Link = RISCC::R0;
       TransferOpcode = RISCC::JALR_NANO;
       break;
     case RISCC::LINK_S3_CALL_MIN:
       Link = RISCC::S3;
       break;
-    case RISCC::LINK_S3_TAIL_MIN:
-      Link = RISCC::S0;
-      break;
-    case RISCC::CALL_MIN:
-      Link = RISCC::S7;
-      break;
-    case RISCC::TAIL_MIN:
-      Link = RISCC::S0;
-      break;
-    case RISCC::CALL_NANO:
-      Link = RISCC::R6;
-      TransferOpcode = RISCC::JALR_NANO;
-      break;
-    case RISCC::TAIL_NANO:
-      Link = RISCC::R0;
-      TransferOpcode = RISCC::JALR_NANO;
-      break;
     case RISCC::CALL16:
     case RISCC::TAIL16:
     case RISCC::LINK_S3_CALL16:
     case RISCC::LINK_S3_TAIL16:
-      EmitToStreamer(
-          *OutStreamer,
-          MCInstBuilder(RISCC::JAL16)
-              .addReg(Opcode == RISCC::CALL16 ? RISCC::S7 :
-                      Opcode == RISCC::LINK_S3_CALL16 ? RISCC::S3 : RISCC::S0)
-              .addOperand(Out.getOperand(0)));
+      EmitToStreamer(*OutStreamer,
+                     MCInstBuilder(RISCC::JAL16)
+                         .addReg(Opcode == RISCC::CALL16           ? RISCC::S7
+                                 : Opcode == RISCC::LINK_S3_CALL16 ? RISCC::S3
+                                                                   : RISCC::S0)
+                         .addOperand(Out.getOperand(0)));
       return;
     }
 
     if (Link) {
       if (Out.getOperand(0).isReg()) {
         EmitToStreamer(*OutStreamer, MCInstBuilder(TransferOpcode)
-                                        .addReg(Link)
-                                        .addOperand(Out.getOperand(0)));
+                                         .addReg(Link)
+                                         .addOperand(Out.getOperand(0)));
         return;
       }
       EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::LDI16)
-                                          .addReg(RISCC::R0)
-                                          .addOperand(Out.getOperand(0)));
-      EmitToStreamer(*OutStreamer, MCInstBuilder(TransferOpcode)
-                                          .addReg(Link)
-                                          .addReg(RISCC::R0));
+                                       .addReg(RISCC::R0)
+                                       .addOperand(Out.getOperand(0)));
+      EmitToStreamer(
+          *OutStreamer,
+          MCInstBuilder(TransferOpcode).addReg(Link).addReg(RISCC::R0));
       return;
     }
     EmitToStreamer(*OutStreamer, Out);
-    if (PendingBranchLiteral && Opcode == RISCC::JALR)
-      emitPendingBranchLiteral();
   }
   bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
                        const char *ExtraCode, raw_ostream &OS) override {
@@ -283,191 +197,13 @@ public:
                              const char *ExtraCode, raw_ostream &OS) override {
     if (ExtraCode && ExtraCode[0])
       return true;
-    OS << '[' << RISCCInstPrinter::getRegisterName(MI->getOperand(OpNo).getReg())
+    OS << '['
+       << RISCCInstPrinter::getRegisterName(MI->getOperand(OpNo).getReg())
        << ']';
     return false;
   }
-
-private:
-  static SmallVector<LiteralEntry, 8>
-  collectEntries(ArrayRef<LiteralUse> Uses, bool Backward) {
-    SmallVector<LiteralEntry, 8> Entries;
-    for (const LiteralUse &Use : Uses) {
-      auto It = llvm::find_if(Entries, [&](const LiteralEntry &Entry) {
-        return Entry.CPI == Use.CPI;
-      });
-      if (It == Entries.end()) {
-        Entries.push_back({Use.CPI, Use.Offset});
-        continue;
-      }
-      It->Offset = Backward ? std::max(It->Offset, Use.Offset)
-                             : std::min(It->Offset, Use.Offset);
-    }
-    llvm::sort(Entries, [](const LiteralEntry &A, const LiteralEntry &B) {
-      return A.Offset < B.Offset;
-    });
-    return Entries;
-  }
-
-  static unsigned entryIndex(ArrayRef<LiteralEntry> Entries, unsigned CPI) {
-    for (unsigned I = 0; I != Entries.size(); ++I)
-      if (Entries[I].CPI == CPI)
-        return I;
-    llvm_unreachable("literal entry is missing");
-  }
-
-  static bool fitsForward(const LiteralPool &Pool,
-                          ArrayRef<LiteralUse> Uses) {
-    SmallVector<LiteralEntry, 8> Entries = collectEntries(Uses, false);
-    for (const LiteralUse &Use : Uses) {
-      unsigned Index = entryIndex(Entries, Use.CPI);
-      // Alignment can add two bytes before a pool. This is the largest
-      // positive PC-relative displacement that the pool can produce.
-      int64_t Displacement = int64_t(Pool.Offset) + Pool.LeadingBytes +
-                             4 * Index - Use.Offset;
-      if (Displacement > 254)
-        return false;
-    }
-    return true;
-  }
-
-  static bool fitsBackward(unsigned PoolOffset, ArrayRef<LiteralUse> Uses) {
-    SmallVector<LiteralEntry, 8> Entries = collectEntries(Uses, true);
-    for (const LiteralUse &Use : Uses) {
-      unsigned Index = entryIndex(Entries, Use.CPI);
-      int64_t Displacement = int64_t(PoolOffset) - Use.Offset - 2 -
-                             4 * (Entries.size() - Index);
-      if (Displacement < -256)
-        return false;
-    }
-    return true;
-  }
-
-  void assignPoolUses(LiteralPool &Pool, ArrayRef<LiteralUse> Uses,
-                      bool Backward) {
-    SmallVector<LiteralEntry, 8> Entries = collectEntries(Uses, Backward);
-    for (LiteralEntry &Entry : Entries)
-      Entry.Symbol = OutContext.createTempSymbol();
-    for (const LiteralUse &Use : Uses) {
-      unsigned Index = entryIndex(Entries, Use.CPI);
-      LiteralSymbols[Use.MI] = Entries[Index].Symbol;
-    }
-    auto &Destination = Backward ? Pool.Backward : Pool.Forward;
-    Destination.append(Entries);
-  }
-
-  static bool isLongBranchLoad(const MachineInstr &MI) {
-    if (MI.getOpcode() != RISCC::LDI16 || MI.getNumOperands() < 2 ||
-        !MI.getOperand(1).isMBB())
-      return false;
-    auto Next = std::next(MI.getIterator());
-    auto End = MI.getParent()->end();
-    while (Next != End && Next->isDebugInstr())
-      ++Next;
-    return Next != End && Next->getOpcode() == RISCC::JALR;
-  }
-
-  void emitPendingBranchLiteral() {
-    emitAlignment(Align(4));
-    OutStreamer->emitLabel(PendingBranchLiteral);
-    OutStreamer->emitValue(PendingBranchTarget, 4);
-    PendingBranchLiteral = nullptr;
-    PendingBranchTarget = nullptr;
-  }
-
-  void planLiteralPools() {
-    LiteralSymbols.clear();
-    LiteralPools.clear();
-    PoolAfter.clear();
-    LiteralPools.push_back({});
-    unsigned LeftPool = 0;
-    SmallVector<LiteralUse, 8> Uses;
-    unsigned Offset = 0;
-    const auto &TII = *MF->getSubtarget().getInstrInfo();
-    const bool IsRC32 = MF->getSubtarget<RISCCSubtarget>().isRC32();
-
-    // Pools are emitted before a function or after a barrier block. First
-    // assign as many literals as fit in the preceding pool; the rest use this
-    // gap.
-    for (const MachineBasicBlock &MBB : *MF) {
-      for (const MachineInstr &MI : MBB) {
-        if (MI.getOpcode() == RISCC::LDPC && MI.getOperand(1).isCPI())
-          Uses.push_back(
-              {&MI, unsigned(MI.getOperand(1).getIndex()), Offset});
-        else if (MI.getOpcode() == RISCC::CALL32_LITERAL ||
-                 MI.getOpcode() == RISCC::TAIL32_LITERAL)
-          Uses.push_back(
-              {&MI, unsigned(MI.getOperand(0).getIndex()), Offset});
-        Offset += TII.getInstSizeInBytes(MI);
-      }
-
-      auto Last = MBB.getLastNonDebugInstr();
-      if (Last == MBB.end() || !Last->isBarrier())
-        continue;
-
-      unsigned RightPool = LiteralPools.size();
-      LiteralPools.push_back({Offset});
-      if (IsRC32) {
-        for (const MachineInstr &MI : MBB)
-          if (isLongBranchLoad(MI)) {
-            // The long branch writes its target literal before this pool.
-            // Alignment can make it six bytes long.
-            LiteralPools[RightPool].LeadingBytes = 6;
-            break;
-          }
-      }
-      unsigned Split = Uses.size();
-      while (Split && !fitsBackward(LiteralPools[LeftPool].Offset,
-                                    ArrayRef(Uses).take_front(Split)))
-        --Split;
-      if (!fitsForward(LiteralPools[RightPool],
-                       ArrayRef(Uses).drop_front(Split)))
-        report_fatal_error("RISC-C literal has no reachable pool within "
-                           "the LDPC range");
-
-      ArrayRef<LiteralUse> Backward = ArrayRef(Uses).take_front(Split);
-      ArrayRef<LiteralUse> Forward = ArrayRef(Uses).drop_front(Split);
-      assignPoolUses(LiteralPools[LeftPool], Backward, true);
-      assignPoolUses(LiteralPools[RightPool], Forward, false);
-      PoolAfter[&MBB] = RightPool;
-      if (&MBB == &MF->back())
-        TrailingPool = RightPool;
-      LeftPool = RightPool;
-      Uses.clear();
-    }
-
-    if (!Uses.empty())
-      report_fatal_error("RISC-C function has no terminal literal-pool gap");
-  }
-
-  void emitLiteralPool(const LiteralPool &Pool) {
-    if (Pool.empty())
-      return;
-    if (!Pool.LeadingBytes)
-      emitAlignment(Align(4));
-    const auto &Constants = MF->getConstantPool()->getConstants();
-    auto EmitEntries = [&](ArrayRef<LiteralEntry> Entries) {
-      for (const LiteralEntry &Entry : Entries) {
-        OutStreamer->emitLabel(Entry.Symbol);
-        const MachineConstantPoolEntry &Constant = Constants[Entry.CPI];
-        if (Constant.isMachineConstantPoolEntry())
-          emitMachineConstantPoolValue(Constant.Val.MachineCPVal);
-        else
-          emitGlobalConstant(getDataLayout(), Constant.Val.ConstVal);
-      }
-    };
-    EmitEntries(Pool.Forward);
-    EmitEntries(Pool.Backward);
-  }
-
-  SmallVector<LiteralPool, 8> LiteralPools;
-  DenseMap<const MachineBasicBlock *, unsigned> PoolAfter;
-  DenseMap<const MachineInstr *, MCSymbol *> LiteralSymbols;
-  std::optional<unsigned> TrailingPool;
-  MCSymbol *PendingBranchLiteral = nullptr;
-  const MCExpr *PendingBranchTarget = nullptr;
 };
-}
+} // namespace
 
 char RISCCAsmPrinter::ID = 0;
 INITIALIZE_PASS(RISCCAsmPrinter, DEBUG_TYPE, "RISC-C Assembly Printer", false,
@@ -486,8 +222,9 @@ PreservedAnalyses RISCCAsmPrinterBeginPass::run(Module &M,
   AP.doInitialization(M);
   return PreservedAnalyses::all();
 }
-PreservedAnalyses RISCCAsmPrinterPass::run(
-    MachineFunction &MF, MachineFunctionAnalysisManager &MFAM) {
+PreservedAnalyses
+RISCCAsmPrinterPass::run(MachineFunction &MF,
+                         MachineFunctionAnalysisManager &MFAM) {
   auto &AP = static_cast<RISCCAsmPrinter &>(
       MFAM.getResult<ModuleAnalysisManagerMachineFunctionProxy>(MF)
           .getCachedResult<AsmPrinterAnalysis>(*MF.getFunction().getParent())

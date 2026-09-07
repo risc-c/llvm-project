@@ -21,22 +21,22 @@ public:
   explicit RISCCFrameLowering(const RISCCSubtarget &);
   void emitPrologue(MachineFunction &, MachineBasicBlock &) const override;
   void emitEpilogue(MachineFunction &, MachineBasicBlock &) const override;
-  bool assignCalleeSavedSpillSlots(
-      MachineFunction &, const TargetRegisterInfo *,
-      std::vector<CalleeSavedInfo> &) const override;
-  bool restoreCalleeSavedRegisters(
-      MachineBasicBlock &, MachineBasicBlock::iterator,
-      MutableArrayRef<CalleeSavedInfo>,
-      const TargetRegisterInfo *) const override;
+  bool
+  assignCalleeSavedSpillSlots(MachineFunction &, const TargetRegisterInfo *,
+                              std::vector<CalleeSavedInfo> &) const override;
+  bool restoreCalleeSavedRegisters(MachineBasicBlock &,
+                                   MachineBasicBlock::iterator,
+                                   MutableArrayRef<CalleeSavedInfo>,
+                                   const TargetRegisterInfo *) const override;
   bool hasReservedCallFrame(const MachineFunction &) const override {
     return true;
   }
-  MachineBasicBlock::iterator eliminateCallFramePseudoInstr(
-      MachineFunction &, MachineBasicBlock &,
-      MachineBasicBlock::iterator) const override;
+  MachineBasicBlock::iterator
+  eliminateCallFramePseudoInstr(MachineFunction &, MachineBasicBlock &,
+                                MachineBasicBlock::iterator) const override;
   void processFunctionBeforeFrameFinalized(MachineFunction &,
-                                            RegScavenger *) const override;
+                                           RegScavenger *) const override;
 };
-}
+} // namespace llvm
 
 #endif

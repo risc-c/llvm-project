@@ -38,7 +38,7 @@ MCStreamer *createRISCCELFStreamer(const Triple &, MCContext &,
                                    std::unique_ptr<MCAsmBackend> &&,
                                    std::unique_ptr<MCObjectWriter> &&,
                                    std::unique_ptr<MCCodeEmitter> &&);
-}
+} // namespace llvm
 
 #define GET_REGINFO_ENUM
 #include "RISCCGenRegisterInfo.inc"

@@ -40,6 +40,6 @@ enum TOF : unsigned {
   MO_SREG_PRESERVING_CALL
 };
 }
-}
+} // namespace llvm
 
 #endif

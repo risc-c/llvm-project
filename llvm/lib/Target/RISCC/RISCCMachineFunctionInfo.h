@@ -27,12 +27,8 @@ public:
                                     const TargetSubtargetInfo *);
   int getLRSpillFI() const { return LRSpillFI; }
   void setLRSpillFI(int FI) { LRSpillFI = FI; }
-  int getBranchRelaxationSpillFI() const {
-    return BranchRelaxationSpillFI;
-  }
-  void setBranchRelaxationSpillFI(int FI) {
-    BranchRelaxationSpillFI = FI;
-  }
+  int getBranchRelaxationSpillFI() const { return BranchRelaxationSpillFI; }
+  void setBranchRelaxationSpillFI(int FI) { BranchRelaxationSpillFI = FI; }
   int getVarArgsFrameIndex() const { return VarArgsFrameIndex; }
   void setVarArgsFrameIndex(int FI) { VarArgsFrameIndex = FI; }
   Register getReturnAddressReg() const { return ReturnAddressReg; }
@@ -48,6 +44,6 @@ public:
   static MachineFunctionInfo *create(BumpPtrAllocator &, const Function &,
                                      const TargetSubtargetInfo *);
 };
-}
+} // namespace llvm
 
 #endif

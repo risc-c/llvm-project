@@ -435,8 +435,7 @@ void InputSection::copyRelocations(Ctx &ctx, uint8_t *buf) {
       ctx.arg.relax &&
       is_contained({EM_RISCV, EM_LOONGARCH, EM_RISCC}, ctx.arg.emachine);
   if (!ctx.arg.relocatable && (linkerRelax || ctx.arg.branchToBranch)) {
-    // On LoongArch and RISC-V, relaxation might change relocations: copy
-    // from internal ones that are updated by relaxation.
+    // Relaxation may change relocations; copy the updated internal ones.
     InputSectionBase *sec = getRelocatedSection();
     copyRelocations<ELFT, RelTy>(
         ctx, buf,

@@ -191,11 +191,11 @@ let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayStore = 1 in
 def ST_NANO : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
                         "st\t$rd, [$base + $disp]">;
 let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in
-def LD32 : CompactRM32<0, (outs GPR32:$rd),
+def LD32 : CompactRM<0, (outs GPR32:$rd),
                         (ins GPR32:$base, rc32worddisp:$disp),
                         "ld\t$rd, [$base + $disp]">;
 let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayStore = 1 in
-def ST32 : CompactRM32<1, (outs),
+def ST32 : CompactRM<1, (outs),
                         (ins GPR32:$rd, GPR32:$base, rc32worddisp:$disp),
                         "st\t$rd, [$base + $disp]">;
 
@@ -205,10 +205,11 @@ def LDI : RI<0b000, (outs GPR:$rd), (ins u8imm:$imm),
 let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in
 def LDI32 : RI<0b000, (outs GPR32:$rd), (ins u8imm32:$imm),
                 "ldi\t$rd, $imm">;
-let Predicates = [IsRC16Pred], DecoderNamespace = "RC16" in
+let Predicates = [IsRC16Pred] in
 def LUI : RI<0b001, (outs GPR:$rd), (ins u8imm:$imm),
              "lui\t$rd, $imm">;
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in
+let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1,
+    mayStore = 0, hasSideEffects = 0 in
 def LDPC : RIPC<0b001, (outs GPR32:$rd), (ins pcrel8word:$target),
                  "ldpc\t$rd, $target">;
 let Constraints = "$rd = $src" in {
@@ -456,6 +457,19 @@ def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 5; }
 
 def LDI16 : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm),
                      "ldi16\t$rd, $imm", 4>;
+let Predicates = [IsRC32Pred], mayLoad = 1, mayStore = 0,
+    hasSideEffects = 0 in
+def LDPC_BRANCH : Pseudo<(outs GPR32:$rd), (ins codeaddr:$target)> {
+  let Size = 2;
+}
+def CONSTPOOL_ENTRY : Pseudo<(outs),
+                            (ins cpaddr32:$label, cpaddr32:$value)> {
+  let Size = 4;
+  let isNotDuplicable = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+  let hasSideEffects = 0;
+}
 let Predicates = [HasLongJallPred] in
 def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
                         "jall\t$sd, $target"> {
@@ -600,9 +614,12 @@ def ADJCALLSTACKDOWN : Pseudo<(outs), (ins i16imm:$amt1, i16imm:$amt2),
 def ADJCALLSTACKUP : Pseudo<(outs), (ins i16imm:$amt1, i16imm:$amt2),
   [(callseq_end timm:$amt1, timm:$amt2)]>;
 }
+// A small frame address expands to MOV and, when needed, ADDI.
+let Size = 4 in {
 def FRAMEADDR : Pseudo<(outs GPR:$dst), (ins i16imm:$fi, i16imm:$offset)>;
 def FRAMEADDR32 : Pseudo<(outs GPR32:$dst),
                          (ins i16imm:$fi, i16imm:$offset)>;
+}
 
 // Nano has unsigned byte loads. Keep sign extension as one tied pseudo until
 // after register allocation, then expand it to three ordinary immediates.

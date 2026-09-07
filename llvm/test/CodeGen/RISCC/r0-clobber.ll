@@ -21,9 +21,7 @@ define i16 @allocate_r0(i16 %a, i16 %b, i16 %c, i16 %d) {
   ret i16 %v
 }
 
-; SUB defines physical r0 and the conditional branch consumes that exact
-; value.  CHECK-NEXT makes a scheduling regression visible as well as letting
-; the machine verifier check the explicit physical-register dependency.
+; The branch must consume SUB's r0 result before another instruction clobbers it.
 define i16 @compare_branch(i16 %a, i16 %b, i16 %x) {
 ; CHECK-LABEL: compare_branch:
 ; CHECK:       sub	r0, r1, r2

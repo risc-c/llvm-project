@@ -40,13 +40,15 @@ public:
   MCFragment *findAssociatedFragment() const override;
   bool isEqualTo(const MCExpr *Other) const override;
 
-  static bool classof(const MCExpr *E) { return E->getKind() == MCExpr::Target; }
+  static bool classof(const MCExpr *E) {
+    return E->getKind() == MCExpr::Target;
+  }
 
 private:
   RISCCMCExpr(VariantKind Kind, const MCExpr *Expr) : Kind(Kind), Expr(Expr) {}
   VariantKind Kind;
   const MCExpr *Expr;
 };
-}
+} // namespace llvm
 
 #endif

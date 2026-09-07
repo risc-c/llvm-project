@@ -7,17 +7,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCCFixupKinds.h"
-#include "RISCCMCTargetDesc.h"
 #include "RISCCMCExpr.h"
+#include "RISCCMCTargetDesc.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
-#include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/MC/MCValue.h"
+#include "llvm/MC/MCELFObjectWriter.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCTargetOptions.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/EndianStream.h"
@@ -59,20 +59,12 @@ public:
 
   MCFixupKindInfo getFixupKindInfo(MCFixupKind Kind) const override {
     static const MCFixupKindInfo Infos[] = {
-        {"fixup_abs8", 0, 8, 0},
-        {"fixup_abs16", 0, 16, 0},
-        {"fixup_abs32", 0, 32, 0},
-        {"fixup_lo8", 0, 8, 0},
-        {"fixup_hi8", 0, 8, 0},
-        {"fixup_code16", 0, 16, 0},
-        {"fixup_code_lo8", 0, 8, 0},
-        {"fixup_code_hi8", 0, 8, 0},
-        {"fixup_jall21", 0, 32, 0},
-        {"fixup_pcrel8_word", 0, 8, 0},
-        {"fixup_pcrel8_branch", 0, 8, 0},
-        {"fixup_tpoff_lo8", 0, 8, 0},
-        {"fixup_tpoff_hi8", 0, 8, 0},
-        {"fixup_insn_align", 0, 0, 0},
+        {"fixup_abs8", 0, 8, 0},          {"fixup_lo8", 0, 8, 0},
+        {"fixup_hi8", 0, 8, 0},           {"fixup_code16", 0, 16, 0},
+        {"fixup_code_lo8", 0, 8, 0},      {"fixup_code_hi8", 0, 8, 0},
+        {"fixup_jall21", 0, 32, 0},       {"fixup_pcrel8_word", 0, 8, 0},
+        {"fixup_pcrel8_branch", 0, 8, 0}, {"fixup_tpoff_lo8", 0, 8, 0},
+        {"fixup_tpoff_hi8", 0, 8, 0},     {"fixup_insn_align", 0, 0, 0},
     };
     static_assert(std::size(Infos) == RISCC::NumTargetFixupKinds);
     if (mc::isRelocRelocation(Kind))
@@ -87,20 +79,64 @@ public:
                   bool IsResolved) override {
     unsigned Kind = Fixup.getKind();
 
-    // RC32 Sys/Full call relaxation removes literal-pool words. Keep local
-    // compact branches and LDPC references relocatable so lld can update any
-    // reference that crosses a removed pool word.
-    if (Kind == RISCC::fixup_pcrel8_branch ||
-        Kind == RISCC::fixup_pcrel8_word)
-      if (const MCSubtargetInfo *STI = getSubtargetInfo(F);
-          STI && STI->hasFeature(RISCC::FeatureRC32) &&
-          STI->hasFeature(RISCC::FeatureLongJall))
-        IsResolved = false;
+    if (Kind == FK_Data_8 && !IsResolved) {
+      getContext().reportError(Fixup.getLoc(),
+                               "RISC-C does not support 64-bit relocations");
+      return;
+    }
+
+    if (unsigned Specifier = Target.getSpecifier()) {
+      bool Valid;
+      switch (Specifier) {
+      case RISCCMCExpr::VK_LO8:
+        Valid = Kind == FK_Data_1 || Kind == RISCC::fixup_lo8;
+        break;
+      case RISCCMCExpr::VK_HI8:
+        Valid = Kind == FK_Data_1 || Kind == RISCC::fixup_hi8;
+        break;
+      case RISCCMCExpr::VK_CODE_LO8:
+        Valid = Kind == FK_Data_1 || Kind == RISCC::fixup_code_lo8;
+        break;
+      case RISCCMCExpr::VK_CODE_HI8:
+        Valid = Kind == FK_Data_1 || Kind == RISCC::fixup_code_hi8;
+        break;
+      case RISCCMCExpr::VK_CODE:
+        Valid = Kind == FK_Data_2 || Kind == RISCC::fixup_code16 ||
+                Kind == RISCC::fixup_code_lo8 ||
+                Kind == RISCC::fixup_code_hi8 || Kind == RISCC::fixup_jall21;
+        break;
+      case RISCCMCExpr::VK_TPOFF:
+        Valid = Kind == FK_Data_4 || Kind == RISCC::fixup_tpoff_lo8 ||
+                Kind == RISCC::fixup_tpoff_hi8;
+        break;
+      case RISCCMCExpr::VK_CALL_TARGET:
+        Valid = Kind == FK_Data_4;
+        break;
+      default:
+        llvm_unreachable("invalid RISC-C expression modifier");
+      }
+      if (!Valid) {
+        getContext().reportError(
+            Fixup.getLoc(), "relocation modifier is not valid for this field");
+        return;
+      }
+    }
+
+    // LDPC needs the final absolute address for its word-alignment check.
+    // Sys/Full call relaxation can also change local branch displacements.
+    // Use the merged object profile, which includes per-function features.
+    unsigned Flags =
+        static_cast<ELFObjectWriter &>(Asm->getWriter()).getELFHeaderEFlags();
+    unsigned Profile = Flags & ELF::EF_RISCC_PROFILE_MASK;
+    if (Kind == RISCC::fixup_pcrel8_word ||
+        (Kind == RISCC::fixup_pcrel8_branch && (Flags & ELF::EF_RISCC_RC32) &&
+         (Profile == ELF::EF_RISCC_PROFILE_SYS ||
+          Profile == ELF::EF_RISCC_PROFILE_FULL)))
+      IsResolved = false;
 
     maybeAddReloc(F, Fixup, Target, Value, IsResolved);
 
-    // A .reloc R_RISCC_NONE carries a linker reachability edge but has no
-    // encoded field to update.
+    // Marker relocations have no encoded field to update.
     if (mc::isRelocRelocation(Kind))
       return;
 
@@ -190,15 +226,10 @@ public:
     }
 
     MCFixupKindInfo Info = getFixupKindInfo(Fixup.getKind());
-    unsigned Bytes = alignTo(Info.TargetOffset + Info.TargetSize, 8) / 8;
-    // MCAssembler passes Data already advanced to the fixup's location in the
-    // fragment.  Applying the fragment-relative offset again corrupts the
-    // following fixup (and, for a tail fixup, memory beyond the fragment).
-    for (unsigned I = 0; I != Bytes; ++I) {
-      unsigned Mask = I + 1 == Bytes && Info.TargetSize % 8
-                          ? (1u << (Info.TargetSize % 8)) - 1 : 0xff;
-      Data[I] = (Data[I] & ~Mask) | ((Value >> (I * 8)) & Mask);
-    }
+    assert(Info.TargetOffset == 0 && Info.TargetSize % 8 == 0 &&
+           "expected a whole-byte fixup");
+    for (unsigned I = 0; I != Info.TargetSize / 8; ++I)
+      Data[I] = Value >> (I * 8);
   }
 
   bool writeNopData(raw_ostream &OS, uint64_t Count,
@@ -212,11 +243,11 @@ public:
     return true;
   }
 };
-}
+} // namespace
 
 MCAsmBackend *llvm::createRISCCMCAsmBackend(const Target &,
-                                             const MCSubtargetInfo &,
-                                             const MCRegisterInfo &,
-                                             const MCTargetOptions &) {
+                                            const MCSubtargetInfo &,
+                                            const MCRegisterInfo &,
+                                            const MCTargetOptions &) {
   return new RISCCAsmBackend(ELF::ELFOSABI_STANDALONE);
 }

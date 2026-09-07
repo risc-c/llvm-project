@@ -21,6 +21,14 @@ srli r2, r3, 0
 slli r2, r3, 9
 # RANGE: error: shift amount must be in the range 1..8
 
+srli r1, r2, unknown
+# RANGE: error: shift amount must be in the range 1..8
+srai r1, r2, lo8(shift)
+# RANGE: error: shift amount must be in the range 1..8
+
+slli r1, r2, unknown
+# RANGE: error: shift amount must be in the range 1..8
+
 #--- address.s
 ld r0, [r1 + r2]
 # ADDRESS: error: register-indexed word loads use LDX
@@ -30,6 +38,9 @@ ldb r0, [r1 + r2]
 # ADDRESS: error: direct address requires a single register
 ldbs r0, [r1 + r2]
 # ADDRESS: error: direct address requires a single register
+
+ld r1, [r2 + unknown]
+# ADDRESS: error: word displacement must be an absolute constant
 
 #--- encoding.s
 jall s7, 3

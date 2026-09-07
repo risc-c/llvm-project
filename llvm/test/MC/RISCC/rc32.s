@@ -1,6 +1,8 @@
 # REQUIRES: riscc-registered-target
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+rc32 -show-encoding < %s | FileCheck %s --check-prefix=ENC
-# RUN: llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj < %s | llvm-objdump --mattr=+rc32 -d - | FileCheck %s --check-prefix=DIS
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj < %s -o %t
+# RUN: llvm-objdump -d %t | FileCheck %s --check-prefix=DIS
+# RUN: llvm-objdump --mattr=-rc32 -d %t | FileCheck %s --check-prefix=OVERRIDE
 
 ld r1, [r2 + -256]
 # ENC: ld r1, [r2 + -256]{{ *}}; encoding: [0x02,0x4a]
@@ -44,3 +46,5 @@ jmp8 .Ldone
 # DIS: ldhs r1, [r2]
 # DIS: sth r3, [r4]
 # DIS: ldpc r4,
+
+# OVERRIDE: lui r4, 0

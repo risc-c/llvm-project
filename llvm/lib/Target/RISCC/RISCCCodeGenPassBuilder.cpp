@@ -8,14 +8,15 @@
 
 #include "RISCC.h"
 #include "RISCCAsmPrinter.h"
+#include "RISCCConstantIslandPass.h"
 #include "RISCCSRegAllocator.h"
 #include "RISCCTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
 #include "llvm/CodeGen/BranchRelaxation.h"
 #include "llvm/IR/PassInstrumentation.h"
+#include "llvm/MC/MCStreamer.h"
 #include "llvm/Passes/CodeGenPassBuilder.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/MC/MCStreamer.h"
 #include "llvm/Target/CGPassBuilderOption.h"
 
 using namespace llvm;
@@ -43,6 +44,9 @@ public:
   void addPreEmitPass(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(BranchRelaxationPass(), PMW);
   }
+  void addPreEmitPass2(PassManagerWrapper &PMW) const {
+    addMachineFunctionPass(RISCCConstantIslandPass(), PMW);
+  }
   void addAsmPrinterBegin(PassManagerWrapper &PMW) const {
     addModulePass(RISCCAsmPrinterBeginPass(), PMW, true);
   }
@@ -53,9 +57,9 @@ public:
     addModulePass(RISCCAsmPrinterEndPass(), PMW);
   }
 };
-}
+} // namespace
 
-void RISCCTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
+void RISCCTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB){
 #define GET_PASS_REGISTRY "RISCCPassRegistry.def"
 #include "llvm/Passes/TargetPassRegistry.inc"
 }

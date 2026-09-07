@@ -17,8 +17,7 @@ namespace llvm {
 class FunctionPass;
 class PassRegistry;
 
-class RISCCSRegAllocatorPass
-    : public PassInfoMixin<RISCCSRegAllocatorPass> {
+class RISCCSRegAllocatorPass : public PassInfoMixin<RISCCSRegAllocatorPass> {
 public:
   PreservedAnalyses run(MachineFunction &MF,
                         MachineFunctionAnalysisManager &MFAM);

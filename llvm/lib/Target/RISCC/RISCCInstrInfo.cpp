@@ -10,8 +10,8 @@
 #include "RISCC.h"
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
-#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/IR/Constants.h"
@@ -30,9 +30,11 @@ RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
                         RISCC::ADJCALLSTACKUP),
       RI(STI), STI(STI) {}
 
-void RISCCInstrInfo::materializeImmediate(
-    MachineBasicBlock &MBB, MachineBasicBlock::iterator I, const DebugLoc &DL,
-    Register Destination, int64_t Value, MachineInstr::MIFlag Flag) const {
+void RISCCInstrInfo::materializeImmediate(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator I,
+                                          const DebugLoc &DL,
+                                          Register Destination, int64_t Value,
+                                          MachineInstr::MIFlag Flag) const {
   if (STI.isRC32()) {
     if (!isUInt<8>(Value))
       report_fatal_error("RC32 immediate requires a literal-pool load");
@@ -67,12 +69,9 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register Src = MI.getOperand(1).getReg();
     const DebugLoc &DL = MI.getDebugLoc();
     if (MI.getOpcode() == RISCC::SEXT8_RC32) {
-      BuildMI(MBB, MI, DL, get(RISCC::ANDI32), Dst)
-          .addReg(Src).addImm(0xff);
-      BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst)
-          .addReg(Dst).addImm(0x80);
-      BuildMI(MBB, MI, DL, get(RISCC::ADDI32), Dst)
-          .addReg(Dst).addImm(-128);
+      BuildMI(MBB, MI, DL, get(RISCC::ANDI32), Dst).addReg(Src).addImm(0xff);
+      BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst).addReg(Dst).addImm(0x80);
+      BuildMI(MBB, MI, DL, get(RISCC::ADDI32), Dst).addReg(Dst).addImm(-128);
     } else {
       MachineFunction *MF = MBB.getParent();
       MachineConstantPool *Pool = MF->getConstantPool();
@@ -85,12 +84,15 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       };
       LoadR0(0xffff);
       BuildMI(MBB, MI, DL, get(RISCC::AND32), Dst)
-          .addReg(Src).addReg(RISCC::R0);
+          .addReg(Src)
+          .addReg(RISCC::R0);
       LoadR0(0x8000);
       BuildMI(MBB, MI, DL, get(RISCC::XOR32), Dst)
-          .addReg(Dst).addReg(RISCC::R0);
+          .addReg(Dst)
+          .addReg(RISCC::R0);
       BuildMI(MBB, MI, DL, get(RISCC::SUB32), Dst)
-          .addReg(Dst).addReg(RISCC::R0);
+          .addReg(Dst)
+          .addReg(RISCC::R0);
     }
     MI.eraseFromParent();
     return true;
@@ -146,14 +148,15 @@ void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   llvm_unreachable("unsupported RISC-C physical-register copy");
 }
 
-void RISCCInstrInfo::storeRegToStackSlot(
-    MachineBasicBlock &MBB, MachineBasicBlock::iterator I, Register Src,
-    bool Kill, int FI, const TargetRegisterClass *RC, Register,
-    MachineInstr::MIFlag Flags) const {
+void RISCCInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
+                                         MachineBasicBlock::iterator I,
+                                         Register Src, bool Kill, int FI,
+                                         const TargetRegisterClass *RC,
+                                         Register,
+                                         MachineInstr::MIFlag Flags) const {
   const bool GPR = STI.getGPRClass()->hasSubClassEq(RC);
   const bool SReg = STI.getSRegClass()->hasSubClassEq(RC);
-  assert((GPR || SReg) &&
-         "only GPR and S-register spills are supported");
+  assert((GPR || SReg) && "only GPR and S-register spills are supported");
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
@@ -163,25 +166,33 @@ void RISCCInstrInfo::storeRegToStackSlot(
     BuildMI(MBB, I, DebugLoc(), get(RISCC::MFS), RISCC::R0)
         .addReg(Src, getKillRegState(Kill));
     BuildMI(MBB, I, DebugLoc(), get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
-        .addReg(RISCC::R0).addFrameIndex(FI).addImm(0)
-        .addMemOperand(MMO).setMIFlag(Flags);
+        .addReg(RISCC::R0)
+        .addFrameIndex(FI)
+        .addImm(0)
+        .addMemOperand(MMO)
+        .setMIFlag(Flags);
     return;
   }
   BuildMI(MBB, I, DebugLoc(),
-          get(STI.isRC32() ? RISCC::ST32
-                           : STI.isNano() ? RISCC::ST_NANO : RISCC::ST))
-      .addReg(Src, getKillRegState(Kill)).addFrameIndex(FI).addImm(0)
-      .addMemOperand(MMO).setMIFlag(Flags);
+          get(STI.isRC32()   ? RISCC::ST32
+              : STI.isNano() ? RISCC::ST_NANO
+                             : RISCC::ST))
+      .addReg(Src, getKillRegState(Kill))
+      .addFrameIndex(FI)
+      .addImm(0)
+      .addMemOperand(MMO)
+      .setMIFlag(Flags);
 }
 
-void RISCCInstrInfo::loadRegFromStackSlot(
-    MachineBasicBlock &MBB, MachineBasicBlock::iterator I, Register Dst,
-    int FI, const TargetRegisterClass *RC, Register, unsigned,
-    MachineInstr::MIFlag Flags) const {
+void RISCCInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator I,
+                                          Register Dst, int FI,
+                                          const TargetRegisterClass *RC,
+                                          Register, unsigned,
+                                          MachineInstr::MIFlag Flags) const {
   const bool GPR = STI.getGPRClass()->hasSubClassEq(RC);
   const bool SReg = STI.getSRegClass()->hasSubClassEq(RC);
-  assert((GPR || SReg) &&
-         "only GPR and S-register reloads are supported");
+  assert((GPR || SReg) && "only GPR and S-register reloads are supported");
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
@@ -190,14 +201,22 @@ void RISCCInstrInfo::loadRegFromStackSlot(
   if (SReg) {
     BuildMI(MBB, I, DebugLoc(), get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
             RISCC::R0)
-        .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
+        .addFrameIndex(FI)
+        .addImm(0)
+        .addMemOperand(MMO)
+        .setMIFlag(Flags);
     BuildMI(MBB, I, DebugLoc(), get(RISCC::MTS), Dst).addReg(RISCC::R0);
     return;
   }
   BuildMI(MBB, I, DebugLoc(),
-          get(STI.isRC32() ? RISCC::LD32
-                           : STI.isNano() ? RISCC::LD_NANO : RISCC::LD), Dst)
-      .addFrameIndex(FI).addImm(0).addMemOperand(MMO).setMIFlag(Flags);
+          get(STI.isRC32()   ? RISCC::LD32
+              : STI.isNano() ? RISCC::LD_NANO
+                             : RISCC::LD),
+          Dst)
+      .addFrameIndex(FI)
+      .addImm(0)
+      .addMemOperand(MMO)
+      .setMIFlag(Flags);
 }
 
 bool RISCCInstrInfo::isConditionalBranchOpcode(unsigned Opcode) {
@@ -229,9 +248,11 @@ bool RISCCInstrInfo::reverseBranchCondition(
   return false;
 }
 
-bool RISCCInstrInfo::analyzeBranch(
-    MachineBasicBlock &MBB, MachineBasicBlock *&TBB, MachineBasicBlock *&FBB,
-    SmallVectorImpl<MachineOperand> &Cond, bool) const {
+bool RISCCInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
+                                   MachineBasicBlock *&TBB,
+                                   MachineBasicBlock *&FBB,
+                                   SmallVectorImpl<MachineOperand> &Cond,
+                                   bool) const {
   auto I = MBB.getLastNonDebugInstr();
   if (I == MBB.end())
     return false;
@@ -244,16 +265,14 @@ bool RISCCInstrInfo::analyzeBranch(
     --I;
     while (I->isDebugInstr() && I != MBB.begin())
       --I;
-    if (isConditionalBranchOpcode(I->getOpcode()) &&
-        I->getOperand(0).isMBB()) {
+    if (isConditionalBranchOpcode(I->getOpcode()) && I->getOperand(0).isMBB()) {
       FBB = TBB;
       TBB = I->getOperand(0).getMBB();
       Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
     }
     return false;
   }
-  if (isConditionalBranchOpcode(I->getOpcode()) &&
-      I->getOperand(0).isMBB()) {
+  if (isConditionalBranchOpcode(I->getOpcode()) && I->getOperand(0).isMBB()) {
     TBB = I->getOperand(0).getMBB();
     Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
     return false;
@@ -266,9 +285,9 @@ unsigned RISCCInstrInfo::removeBranch(MachineBasicBlock &MBB,
   unsigned Count = 0, Bytes = 0;
   while (!MBB.empty()) {
     auto I = MBB.getLastNonDebugInstr();
-    if (I == MBB.end() || (!isConditionalBranchOpcode(I->getOpcode()) &&
-                           I->getOpcode() != RISCC::JMP8 &&
-                           I->getOpcode() != RISCC::JMP16))
+    if (I == MBB.end() ||
+        (!isConditionalBranchOpcode(I->getOpcode()) &&
+         I->getOpcode() != RISCC::JMP8 && I->getOpcode() != RISCC::JMP16))
       break;
     Bytes += getInstSizeInBytes(*I);
     I->eraseFromParent();
@@ -309,14 +328,6 @@ bool RISCCInstrInfo::isBranchOffsetInRange(unsigned Opcode,
     return true;
   if (Opcode != RISCC::JMP8 && !isConditionalBranchOpcode(Opcode))
     return true;
-  // RC32 literal islands are emitted by the AsmPrinter after branch
-  // relaxation. Their bytes are intentionally absent from MachineInstr
-  // offsets, so a nominally short branch may span considerably more than the
-  // relaxation pass can see. Route RC32 branches through the existing
-  // LDPC/JALR long-branch sequence; the inverse conditional used to skip that
-  // sequence remains an adjacent short branch.
-  if (STI.isRC32() && std::abs(BrOffset) > 32)
-    return false;
   // Short branches encode a signed word displacement from the following
   // instruction.
   int64_t Displacement = BrOffset - 2;
@@ -332,10 +343,11 @@ RISCCInstrInfo::getBranchDestBlock(const MachineInstr &MI) const {
   return MI.getOperand(0).isMBB() ? MI.getOperand(0).getMBB() : nullptr;
 }
 
-void RISCCInstrInfo::insertIndirectBranch(
-    MachineBasicBlock &MBB, MachineBasicBlock &DestBB,
-    MachineBasicBlock &RestoreBB, const DebugLoc &DL, int64_t,
-    RegScavenger *RS) const {
+void RISCCInstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
+                                          MachineBasicBlock &DestBB,
+                                          MachineBasicBlock &RestoreBB,
+                                          const DebugLoc &DL, int64_t,
+                                          RegScavenger *RS) const {
   assert(MBB.empty() && MBB.pred_size() == 1 &&
          "expected a fresh long-branch block");
   assert(RestoreBB.empty() && "expected an empty restore block");
@@ -349,7 +361,9 @@ void RISCCInstrInfo::insertIndirectBranch(
   MachineRegisterInfo &MRI = MF.getRegInfo();
   Register VirtualScratch = MRI.createVirtualRegister(STI.getGPRClass());
   MachineInstr &Address =
-      *BuildMI(MBB, MBB.end(), DL, get(RISCC::LDI16), VirtualScratch)
+      *BuildMI(MBB, MBB.end(), DL,
+               get(STI.isRC32() ? RISCC::LDPC_BRANCH : RISCC::LDI16),
+               VirtualScratch)
            .addMBB(&DestBB);
   if (STI.isNano())
     BuildMI(MBB, MBB.end(), DL, get(RISCC::JALR_NANO), RISCC::R0)
@@ -366,16 +380,15 @@ void RISCCInstrInfo::insertIndirectBranch(
     RS->setRegUsed(Scratch);
   } else {
     Scratch = RISCC::R0;
-    int FI = MF.getInfo<RISCCMachineFunctionInfo>()
-                 ->getBranchRelaxationSpillFI();
+    int FI =
+        MF.getInfo<RISCCMachineFunctionInfo>()->getBranchRelaxationSpillFI();
     if (FI < 0)
       report_fatal_error("RISC-C function size was underestimated");
 
     storeRegToStackSlot(MBB, Address.getIterator(), Scratch, true, FI,
-                        STI.getGPRClass(), Register(),
-                        MachineInstr::NoFlags);
-    STI.getRegisterInfo()->eliminateFrameIndex(
-        std::prev(Address.getIterator()), 0, 1, RS);
+                        STI.getGPRClass(), Register(), MachineInstr::NoFlags);
+    STI.getRegisterInfo()->eliminateFrameIndex(std::prev(Address.getIterator()),
+                                               0, 1, RS);
 
     Address.getOperand(1).setMBB(&RestoreBB);
     loadRegFromStackSlot(RestoreBB, RestoreBB.end(), Scratch, FI,

@@ -32,8 +32,8 @@ public:
                             MachineInstr::MIFlag = MachineInstr::NoFlags) const;
 
   void copyPhysReg(MachineBasicBlock &, MachineBasicBlock::iterator,
-                   const DebugLoc &, Register, Register, bool,
-                   bool = false, bool = false) const override;
+                   const DebugLoc &, Register, Register, bool, bool = false,
+                   bool = false) const override;
   void storeRegToStackSlot(MachineBasicBlock &, MachineBasicBlock::iterator,
                            Register, bool, int, const TargetRegisterClass *,
                            Register, MachineInstr::MIFlag) const override;
@@ -57,6 +57,6 @@ public:
                             MachineBasicBlock &, const DebugLoc &, int64_t,
                             RegScavenger *) const override;
 };
-}
+} // namespace llvm
 
 #endif

@@ -13,6 +13,10 @@
 
 namespace llvm {
 
+/// Expand out-of-range branches, updating the machine CFG and block layout.
+/// Returns true if any branches were changed.
+LLVM_ABI bool relaxBranches(MachineFunction &MF);
+
 class BranchRelaxationPass
     : public RequiredPassInfoMixin<BranchRelaxationPass> {
 public:

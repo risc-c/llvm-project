@@ -1,8 +1,8 @@
-// RUN: %clang_cc1 -triple riscc-none-elf -target-cpu full -emit-llvm \
+// RUN: %clang_cc1 -mrelocation-model static -triple riscc-none-elf -target-cpu full -emit-llvm \
 // RUN:   -disable-llvm-passes -o - %s | FileCheck %s
 
-// CHECK: @tls_initialized = thread_local global i16 4660, align 2
-// CHECK: @tls_zeroed = thread_local global i16 0, align 2
+// CHECK: @tls_initialized = dso_local thread_local global i16 4660, align 2
+// CHECK: @tls_zeroed = dso_local thread_local global i16 0, align 2
 __thread unsigned short tls_initialized = 0x1234;
 _Thread_local unsigned short tls_zeroed;
 

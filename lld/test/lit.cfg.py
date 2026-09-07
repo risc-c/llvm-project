@@ -94,6 +94,7 @@ llvm_config.feature_config(
                 "Mips": "mips",
                 "MSP430": "msp430",
                 "PowerPC": "ppc",
+                "RISCC": "riscc",
                 "RISCV": "riscv",
                 "Sparc": "sparc",
                 "SystemZ": "systemz",

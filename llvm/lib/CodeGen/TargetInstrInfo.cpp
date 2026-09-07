@@ -129,8 +129,7 @@ unsigned TargetInstrInfo::getInlineAsmLength(
 
     if (AtInsnStart && !isSpace(static_cast<unsigned char>(*Str))) {
       unsigned AddLength = MaxInstLength;
-      if (strncmp(Str, ".space", 6) == 0 ||
-          strncmp(Str, ".zero", 5) == 0) {
+      if (strncmp(Str, ".space", 6) == 0 || strncmp(Str, ".zero", 5) == 0) {
         unsigned DirectiveLength = Str[1] == 's' ? 6 : 5;
         char *EStr;
         int SpaceSize;
@@ -139,7 +138,7 @@ unsigned TargetInstrInfo::getInlineAsmLength(
         while (*EStr != '\n' && isSpace(static_cast<unsigned char>(*EStr)))
           ++EStr;
         if (*EStr == '\0' || *EStr == '\n' ||
-            isAsmComment(EStr, MAI)) // Successfully parsed .space argument
+            isAsmComment(EStr, MAI)) // Successfully parsed the padding amount.
           AddLength = SpaceSize;
       }
       Length += AddLength;

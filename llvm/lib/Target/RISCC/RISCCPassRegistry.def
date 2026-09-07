@@ -4,4 +4,5 @@
 #endif
 MACHINE_FUNCTION_PASS("riscc-isel",
                       RISCCISelDAGToDAGPass(*this, getOptLevel()))
+MACHINE_FUNCTION_PASS("riscc-constant-islands", RISCCConstantIslandPass())
 #undef MACHINE_FUNCTION_PASS

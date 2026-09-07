@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple riscc-none-elf -target-cpu full -emit-llvm \
+// RUN: %clang_cc1 -mrelocation-model static -triple riscc-none-elf -target-cpu full -emit-llvm \
 // RUN:   -disable-llvm-passes -o - %s | FileCheck %s
 
 // CHECK: target datalayout = "e{{.*}}p:16:16{{.*}}"
@@ -13,7 +13,7 @@ typedef struct {
   unsigned short word[5];
 } large_t;
 
-// CHECK: @function_pointer = global ptr @add_one, align 2
+// CHECK: @function_pointer = dso_local global ptr @add_one, align 2
 int add_one(int value) { return value + 1; }
 int (*function_pointer)(int) = add_one;
 
@@ -29,7 +29,7 @@ void *function_as_data(void) { return (void *)add_one; }
 // CHECK: define{{.*}} signext i8 @byte_argument(i8 noundef signext %value)
 signed char byte_argument(signed char value) { return value; }
 
-// CHECK: define{{.*}} i32 @return_pair(i16 noundef %lo, i16 noundef %hi)
+// CHECK: define{{.*}} i32 @return_pair(i16 noundef zeroext %lo, i16 noundef zeroext %hi)
 pair_t return_pair(unsigned short lo, unsigned short hi) {
   pair_t value = {lo, hi};
   return value;

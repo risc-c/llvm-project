@@ -10,9 +10,6 @@ target triple = "riscc-none-elf"
 @tls_zeroed = thread_local global i32 0, align 4
 
 define i32 @read_tls() {
-; CHECK-DAG:   .long __riscc_current_context
-; CHECK-DAG:   .long tpoff(tls_initialized)
-; CHECK-DAG:   .long tpoff(tls_zeroed)
 ; CHECK-LABEL: read_tls:
 ; CHECK:       ldpc [[BASE:r[0-7]]],
 ; CHECK-NEXT:  ld [[BASE]], {{\[}}[[BASE]] + 0]
@@ -20,6 +17,9 @@ define i32 @read_tls() {
 ; CHECK:       ldpc
 ; CHECK:       ldpc
 ; CHECK:       add
+; CHECK-DAG:   .long __riscc_current_context
+; CHECK-DAG:   .long tpoff(tls_initialized)
+; CHECK-DAG:   .long tpoff(tls_zeroed)
   %a = load i32, ptr @tls_initialized, align 4
   %b = load i32, ptr @tls_zeroed, align 4
   %sum = add i32 %a, %b

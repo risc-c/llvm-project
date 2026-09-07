@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCCMCInstLower.h"
-#include "RISCC.h"
 #include "MCTargetDesc/RISCCMCExpr.h"
+#include "RISCC.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -71,12 +71,15 @@ void RISCCMCInstLower::lower(const MachineInstr *MI, MCInst &Out) const {
           MO, Printer.GetBlockAddressSymbol(MO.getBlockAddress())));
       break;
     case MachineOperand::MO_ConstantPoolIndex:
-      Out.addOperand(lowerSymbolOperand(
-          MO, Printer.GetCPISymbol(MO.getIndex())));
+      Out.addOperand(
+          lowerSymbolOperand(MO, Printer.GetCPISymbol(MO.getIndex())));
+      break;
+    case MachineOperand::MO_MCSymbol:
+      Out.addOperand(lowerSymbolOperand(MO, MO.getMCSymbol()));
       break;
     case MachineOperand::MO_JumpTableIndex:
-      Out.addOperand(lowerSymbolOperand(
-          MO, Printer.GetJTISymbol(MO.getIndex())));
+      Out.addOperand(
+          lowerSymbolOperand(MO, Printer.GetJTISymbol(MO.getIndex())));
       break;
     case MachineOperand::MO_RegisterMask:
     case MachineOperand::MO_RegisterLiveOut:

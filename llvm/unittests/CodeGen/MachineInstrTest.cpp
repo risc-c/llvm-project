@@ -37,6 +37,18 @@ namespace {
 // Include helper functions to ease the manipulation of MachineFunctions.
 #include "MFCommon.inc"
 
+TEST(TargetInstrInfoTest, InlineAsmPaddingDirectives) {
+  BogusTargetInstrInfo TII;
+  MCAsmInfo MAI{MCTargetOptions()};
+  EXPECT_EQ(300u, TII.getInlineAsmLength(".space 300", MAI));
+  EXPECT_EQ(300u, TII.getInlineAsmLength(".zero 300", MAI));
+  EXPECT_EQ(316u, TII.getInlineAsmLength(".space 16\n.zero 300", MAI));
+  EXPECT_EQ(308u, TII.getInlineAsmLength("insn\n.zero 300\ninsn", MAI));
+  EXPECT_EQ(300u, TII.getInlineAsmLength(".zero 300 # padding", MAI));
+  // Symbolic amounts still use the ordinary instruction-size estimate.
+  EXPECT_EQ(MAI.getMaxInstLength(), TII.getInlineAsmLength(".zero count", MAI));
+}
+
 MCTargetOptions MCOptions;
 
 std::unique_ptr<MCContext> createMCContext(const MCAsmInfo &AsmInfo) {

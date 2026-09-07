@@ -34,6 +34,6 @@ public:
     return true;
   }
 };
-}
+} // namespace llvm
 
 #endif

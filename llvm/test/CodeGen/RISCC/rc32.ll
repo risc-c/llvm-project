@@ -15,10 +15,10 @@ declare i32 @callee(i32)
 declare void @wide_callee(i1024)
 
 define void @literal_before_long_body() {
-; CHECK:       [[EARLY_CALLEE:.Ltmp[0-9]+]]:
-; CHECK-NEXT:  .long call_target(callee)
 ; CHECK-LABEL: literal_before_long_body:
-; CHECK:       ldpc r0, [[EARLY_CALLEE]]
+; CHECK:       ldpc r0, [[EARLY_CALLEE:.Ltmp[0-9]+]]
+; CHECK:       [[EARLY_CALLEE]]:
+; CHECK-NEXT:  .long call_target(callee)
 ; CHECK:       .zero 300
   %call = call i32 @callee(i32 0)
   call void asm sideeffect ".space 300", ""()
@@ -26,30 +26,30 @@ define void @literal_before_long_body() {
 }
 
 define i32 @literal_call(i32 %x) {
-; CHECK:       [[CALLEE:.Ltmp[0-9]+]]:
-; CHECK-NEXT:  .long call_target(callee)
 ; CHECK-LABEL: literal_call:
-; CHECK:       ldpc r0, [[CALLEE]]
+; CHECK:       ldpc r0, [[CALLEE:.Ltmp[0-9]+]]
 ; CHECK-NEXT:  jalr s7, r0
 ; CHECK:       addi r1, 1
 ; CHECK:       ret s7
+; CHECK:       [[CALLEE]]:
+; CHECK-NEXT:  .long call_target(callee)
   %call = call i32 @callee(i32 %x)
   %result = add i32 %call, 1
   ret i32 %result
 }
 
 define i32 @memory(i32 %value) {
-; CHECK:       [[WORD:.Ltmp[0-9]+]]:
-; CHECK-NEXT:  .long word
-; CHECK-NEXT:  [[HALF:.Ltmp[0-9]+]]:
-; CHECK-NEXT:  .long half
 ; CHECK-LABEL: memory:
-; CHECK:       ldpc r0, [[WORD]]
+; CHECK:       ldpc r0, [[WORD:.Ltmp[0-9]+]]
 ; CHECK:       ld {{r[0-7]}}, [r{{[0-7]}} + 0]
 ; CHECK:       st r1, [r{{[0-7]}} + 0]
-; CHECK:       ldpc r0, [[HALF]]
+; CHECK:       ldpc r0, [[HALF:.Ltmp[0-9]+]]
 ; CHECK:       ldhs {{r[0-7]}}, [r{{[0-7]}}]
 ; CHECK:       ret s7
+; CHECK:       [[WORD]]:
+; CHECK-NEXT:  .long word
+; CHECK-NEXT:  [[HALF]]:
+; CHECK-NEXT:  .long half
   %old = load i32, ptr @word, align 4
   store i32 %value, ptr @word, align 4
   %short = load i16, ptr @half, align 2
@@ -105,9 +105,9 @@ define i32 @four_arguments(i32 %a, i32 %b, i32 %c, i32 %d) {
 }
 
 define i32 @constant_shl_19(i32 %value) minsize {
-; CHECK:       .long call_target(__riscc_shlsi19)
 ; CHECK-LABEL: constant_shl_19:
 ; CHECK:       jalr s7, r0
+; CHECK:       .long call_target(__riscc_shlsi19)
 ; FULL-LABEL:  constant_shl_19:
 ; FULL:        slli [[SHL:r[0-7]]], r1, 8
 ; FULL-NEXT:   slli [[SHL]], [[SHL]], 8
@@ -117,9 +117,9 @@ define i32 @constant_shl_19(i32 %value) minsize {
 }
 
 define i32 @constant_lshr_19(i32 %value) minsize {
-; CHECK:       .long call_target(__riscc_lshrsi19)
 ; CHECK-LABEL: constant_lshr_19:
 ; CHECK:       jalr s7, r0
+; CHECK:       .long call_target(__riscc_lshrsi19)
 ; FULL-LABEL:  constant_lshr_19:
 ; FULL:        srli [[LSHR:r[0-7]]], r1, 8
 ; FULL-NEXT:   srli [[LSHR]], [[LSHR]], 8
@@ -129,9 +129,9 @@ define i32 @constant_lshr_19(i32 %value) minsize {
 }
 
 define i32 @constant_ashr_19(i32 %value) minsize {
-; CHECK:       .long call_target(__riscc_ashrsi19)
 ; CHECK-LABEL: constant_ashr_19:
 ; CHECK:       jalr s7, r0
+; CHECK:       .long call_target(__riscc_ashrsi19)
 ; FULL-LABEL:  constant_ashr_19:
 ; FULL:        srai [[ASHR:r[0-7]]], r1, 8
 ; FULL-NEXT:   srai [[ASHR]], [[ASHR]], 8
@@ -141,9 +141,9 @@ define i32 @constant_ashr_19(i32 %value) minsize {
 }
 
 define i32 @native_mul(i32 %left, i32 %right) {
-; CHECK:       .long call_target(__mulsi3)
 ; CHECK-LABEL: native_mul:
 ; CHECK:       jalr s7, r0
+; CHECK:       .long call_target(__mulsi3)
 ; FULL-LABEL:  native_mul:
 ; FULL:        mul r1, r1, r2
   %result = mul i32 %left, %right

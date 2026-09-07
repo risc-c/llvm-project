@@ -325,9 +325,7 @@ enum {
   EM_VE = 251,            // NEC SX-Aurora VE
   EM_CSKY = 252,          // C-SKY 32-bit processor
   EM_LOONGARCH = 258,     // LoongArch
-  // Provisional downstream value for the RISC-C architecture. Keep this
-  // isolated so it can be replaced if an official value is assigned.
-  EM_RISCC = 0xC8C8,
+  EM_RISCC = 0xC8C8,      // RISC-C (provisional downstream value)
 };
 
 // Object file classes.

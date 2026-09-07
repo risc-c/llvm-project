@@ -1,0 +1,39 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -verify-machineinstrs %t/input.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -verify-machineinstrs -filetype=obj %t/input.mir -o %t/out.o
+
+# FRAMEADDR32 expands during frame lowering. Its size must count toward the
+# early branch-spill estimate, even though the frame itself is only one word.
+# Every GPR is live at the branch target, so the long branch needs that slot.
+# CHECK-LABEL: frame_addresses:
+# CHECK:       st r0, [r7 + 0]
+# CHECK-NEXT:  ldpc r0,
+# CHECK-NEXT:  jalr s0, r0
+# CHECK:       ld r0, [r7 + 0]
+
+#--- generate.py
+print("""---
+name: frame_addresses
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: default, size: 4, alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.2
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    JMP8 %bb.2
+  bb.1:
+    liveins: $s7
+""")
+for _ in range(70):
+    print("    $r1 = FRAMEADDR32 %stack.0, 0")
+    print("    ST32 killed $r1, $r7, 0")
+print("""    RETS implicit $s7
+  bb.2:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r0, implicit $r1, implicit $r2, implicit $r3, implicit $r4, implicit $r5, implicit $r6
+...
+""")

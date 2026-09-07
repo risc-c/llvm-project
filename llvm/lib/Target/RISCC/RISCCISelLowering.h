@@ -47,29 +47,21 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerGlobalTLSAddress(SDValue, SelectionDAG &) const;
   SDValue lowerExternalSymbol(SDValue, SelectionDAG &) const;
   SDValue lowerBlockAddress(SDValue, SelectionDAG &) const;
-  SDValue lowerAddrSpaceCast(SDValue, SelectionDAG &) const;
   SDValue lowerConstant(SDValue, SelectionDAG &) const;
   SDValue lowerBRCC(SDValue, SelectionDAG &) const;
   SDValue lowerSETCC(SDValue, SelectionDAG &) const;
   SDValue lowerSELECTCC(SDValue, SelectionDAG &) const;
   SDValue lowerShift(SDValue, SelectionDAG &) const;
-  SDValue lowerRC32Shift(SDValue, SelectionDAG &) const;
-  SDValue lowerRC32FixedShiftLibCall(SDValue, unsigned Opcode,
-                                     unsigned Amount, SelectionDAG &) const;
   SDValue lowerFunnelShift(SDValue, SelectionDAG &) const;
-  SDValue lowerShiftLibCall(SDValue, unsigned Opcode, unsigned Amount,
-                            SelectionDAG &) const;
-  SDValue lowerVariableShiftLibCall(SDValue, SDValue, unsigned Opcode,
-                                    SelectionDAG &) const;
+  SDValue lowerShiftLibCall(SDValue, SelectionDAG &) const;
   SDValue lowerMULLOHI(SDValue, SelectionDAG &, bool Signed) const;
   SDValue lowerMul(SDValue, SelectionDAG &) const;
   SDValue lowerUDivRem(SDValue, SelectionDAG &) const;
   SDValue lowerDivRem(SDValue, SelectionDAG &) const;
   SDValue lowerVASTART(SDValue, SelectionDAG &) const;
   SDValue lowerCallResult(SDValue, SDValue, CallingConv::ID, bool,
-                          const SmallVectorImpl<ISD::InputArg> &,
-                          const SDLoc &, SelectionDAG &,
-                          SmallVectorImpl<SDValue> &) const;
+                          const SmallVectorImpl<ISD::InputArg> &, const SDLoc &,
+                          SelectionDAG &, SmallVectorImpl<SDValue> &) const;
 
 public:
   RISCCTargetLowering(const TargetMachine &, const RISCCSubtarget &);
@@ -77,10 +69,10 @@ public:
   void ReplaceNodeResults(SDNode *, SmallVectorImpl<SDValue> &,
                           SelectionDAG &) const override;
   SDValue PerformDAGCombine(SDNode *, DAGCombinerInfo &) const override;
-  SDValue LowerFormalArguments(
-      SDValue, CallingConv::ID, bool,
-      const SmallVectorImpl<ISD::InputArg> &, const SDLoc &, SelectionDAG &,
-      SmallVectorImpl<SDValue> &) const override;
+  SDValue LowerFormalArguments(SDValue, CallingConv::ID, bool,
+                               const SmallVectorImpl<ISD::InputArg> &,
+                               const SDLoc &, SelectionDAG &,
+                               SmallVectorImpl<SDValue> &) const override;
   SDValue LowerCall(CallLoweringInfo &,
                     SmallVectorImpl<SDValue> &) const override;
   bool CanLowerReturn(CallingConv::ID, MachineFunction &, bool,
@@ -90,8 +82,9 @@ public:
                       const SmallVectorImpl<ISD::OutputArg> &,
                       const SmallVectorImpl<SDValue> &, const SDLoc &,
                       SelectionDAG &) const override;
-  MachineBasicBlock *EmitInstrWithCustomInserter(
-      MachineInstr &, MachineBasicBlock *) const override;
+  MachineBasicBlock *
+  EmitInstrWithCustomInserter(MachineInstr &,
+                              MachineBasicBlock *) const override;
 
   MVT getScalarShiftAmountTy(const DataLayout &, EVT) const override;
   MVT::SimpleValueType getCmpLibcallReturnType() const override;
@@ -100,6 +93,6 @@ public:
   getRegForInlineAsmConstraint(const TargetRegisterInfo *, StringRef,
                                MVT) const override;
 };
-}
+} // namespace llvm
 
 #endif

@@ -2,9 +2,7 @@
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -show-encoding < %s | FileCheck %s --check-prefix=ENC
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj < %s | llvm-objdump -d - | FileCheck %s --check-prefix=DIS
 
-# Exercise every full-profile instruction format, the boundary registers, and
-# the boundary immediates.  Keep these bytes in sync with the ISA assembler
-# oracle in tools/riscc_asm.py.
+# Full-profile formats with boundary registers and immediates.
 
 ld r1, [r2 + 126]
 # ENC: ld	r1, [r2 + 126]{{ *}}; encoding: [0x7e,0x4a]

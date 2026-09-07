@@ -1,0 +1,68 @@
+# REQUIRES: riscc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj %t/local.s -o %t/local.o
+# RUN: llvm-readobj -r %t/local.o | FileCheck %s --check-prefix=RELOCS
+# RUN: ld.lld -m elf32lriscc -Ttext=0 %t/local.o -o %t/local
+# RUN: llvm-readobj --hex-dump=.text %t/local | FileCheck %s --check-prefix=LOCAL
+# RUN: not ld.lld -m elf32lriscc -T %t/at2.ld %t/local.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=LOCAL-ALIGN
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj %t/external.s -o %t/external.o
+# RUN: ld.lld -m elf32lriscc -T %t/at2.ld --defsym=literal=0x80 %t/external.o -o %t/external
+# RUN: llvm-readobj --hex-dump=.text %t/external | FileCheck %s --check-prefix=EXTERNAL
+# RUN: not ld.lld -m elf32lriscc -T %t/at2.ld --defsym=literal=0x82 %t/external.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXTERNAL-ALIGN
+# RUN: yaml2obj %t/truncated.yaml -o %t/truncated.o
+# RUN: not ld.lld -m elf32lriscc -e 0 %t/truncated.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=TRUNCATED
+
+## Keep local LDPC references relocatable: the section address determines
+## whether the literal is word aligned. Both possible PC residues are valid.
+# RELOCS: 0x0 R_RISCC_PCREL8_WORD
+# RELOCS: 0x2 R_RISCC_PCREL8_WORD
+# LOCAL: 06810489 f8c728c0 78563412
+# LOCAL-ALIGN-COUNT-2: improper alignment for relocation R_RISCC_PCREL8_WORD: 0xA is not aligned to 4 bytes
+# EXTERNAL: 7c81f8c7
+# EXTERNAL-ALIGN: improper alignment for relocation R_RISCC_PCREL8_WORD: 0x82 is not aligned to 4 bytes
+# TRUNCATED: R_RISCC_PCREL8_WORD requires a complete instruction
+
+#--- local.s
+.globl _start
+_start:
+  ldpc r0, .Lliteral
+  ldpc r1, .Lliteral
+  ret s7
+  nop
+.Lliteral:
+  .long 0x12345678
+
+#--- external.s
+.globl _start
+_start:
+  ldpc r0, literal
+  ret s7
+
+#--- at2.ld
+SECTIONS { .text 2 : SUBALIGN(2) { *(.text) } }
+
+#--- truncated.yaml
+--- !ELF
+FileHeader:
+  Class: ELFCLASS32
+  Data: ELFDATA2LSB
+  Type: ET_REL
+  Machine: EM_RISCC
+  Flags: [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_MIN, EF_RISCC_RC32 ]
+Sections:
+  - Name: .text
+    Type: SHT_PROGBITS
+    Flags: [ SHF_ALLOC, SHF_EXECINSTR ]
+    Content: '00'
+  - Name: .rela.text
+    Type: SHT_RELA
+    Link: .symtab
+    Info: .text
+    Relocations:
+      - Offset: 0
+        Type: R_RISCC_PCREL8_WORD
+        Symbol: literal
+Symbols:
+  - Name: literal
+    Index: SHN_ABS
+    Value: 0

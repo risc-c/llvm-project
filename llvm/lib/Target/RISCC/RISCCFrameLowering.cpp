@@ -15,6 +15,9 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Target/CGPassBuilderOption.h"
+#include "llvm/Target/TargetMachine.h"
+#include <algorithm>
 
 using namespace llvm;
 
@@ -31,8 +34,7 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     return;
   if (IsRC32) {
     while (Amount) {
-      int64_t Step = Amount > 0 ? std::min<int64_t>(Amount, 127)
-                                : std::max<int64_t>(Amount, -128);
+      int64_t Step = std::clamp<int64_t>(Amount, -128, 127);
       BuildMI(MBB, I, DL, TII.get(RISCC::ADDI32), RISCC::R7)
           .addReg(RISCC::R7)
           .addImm(Step)
@@ -93,18 +95,17 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
         .addFrameIndex(FI)
         .addImm(0)
         .setMIFlag(MachineInstr::FrameDestroy);
-    BuildMI(MBB, I, DL, TII.get(RISCC::MTS),
-            FuncInfo.getReturnAddressReg())
+    BuildMI(MBB, I, DL, TII.get(RISCC::MTS), FuncInfo.getReturnAddressReg())
         .addReg(RISCC::R0, RegState::Kill)
         .setMIFlag(MachineInstr::FrameDestroy);
   }
   // A Nano tail return may hold its target in r0 while a large stack
   // adjustment needs a temporary.
-  Register Scratch =
-      STI.isNano() && I != MBB.end() && I->getOpcode() == RISCC::RET_NANO &&
-              I->getOperand(0).getReg() == RISCC::R0
-          ? RISCC::R6
-          : RISCC::R0;
+  Register Scratch = STI.isNano() && I != MBB.end() &&
+                             I->getOpcode() == RISCC::RET_NANO &&
+                             I->getOperand(0).getReg() == RISCC::R0
+                         ? RISCC::R6
+                         : RISCC::R0;
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
            MachineInstr::FrameDestroy, STI.isRC32(), Scratch);
 }
@@ -128,9 +129,9 @@ bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
       }
     }
 
-    const TargetRegisterClass *RC =
-        RISCC::SREGRegClass.contains(Info.getReg()) ? STI.getSRegClass()
-                                                    : STI.getGPRClass();
+    const TargetRegisterClass *RC = RISCC::SREGRegClass.contains(Info.getReg())
+                                        ? STI.getSRegClass()
+                                        : STI.getGPRClass();
     Align Alignment = std::min(TRI->getSpillAlign(*RC), getStackAlign());
     int FI = MFI.CreateStackObject(TRI->getSpillSize(*RC), Alignment, true);
     MFI.setIsCalleeSavedObjectIndex(FI, true);
@@ -141,8 +142,7 @@ bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
 
 bool RISCCFrameLowering::restoreCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-    MutableArrayRef<CalleeSavedInfo> CSI,
-    const TargetRegisterInfo *TRI) const {
+    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
   const auto *TII = STI.getInstrInfo();
   for (const CalleeSavedInfo &Info : reverse(CSI))
     restoreCalleeSavedRegister(MBB, I, Info, TII, TRI);
@@ -153,8 +153,7 @@ bool RISCCFrameLowering::restoreCalleeSavedRegisters(
     if (!Term->isReturn())
       continue;
     for (const CalleeSavedInfo &Info : CSI)
-      Term->addOperand(
-          MachineOperand::CreateReg(Info.getReg(), false, true));
+      Term->addOperand(MachineOperand::CreateReg(Info.getReg(), false, true));
   }
   return true;
 }
@@ -162,21 +161,21 @@ bool RISCCFrameLowering::restoreCalleeSavedRegisters(
 MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
     MachineFunction &, MachineBasicBlock &MBB,
     MachineBasicBlock::iterator I) const {
-  // Outgoing arguments live in the function's reserved call frame.  Keeping
-  // SP fixed is important because wide-operation custom expansion can put the
-  // setup and destroy pseudos in different basic blocks.
+  // The reserved call frame keeps SP fixed even when custom expansion puts
+  // call setup and teardown in different blocks.
   return MBB.erase(I);
 }
 
 static bool needsFrameScavengerSlot(const MachineFunction &MF) {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  // Fixed incoming objects also carry a caller-frame offset. Keep their
-  // handling conservative instead of duplicating frame-layout calculations.
+  // Incoming arguments may lie beyond the short displacement range too.
   return MFI.getNumFixedObjects() || MFI.estimateStackSize(MF) > 127;
 }
 
 void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
     MachineFunction &MF, RegScavenger *RS) const {
+  if (MF.getFrameInfo().getMaxAlign() > getStackAlign())
+    report_fatal_error("RISC-C does not support stack realignment");
   bool HasReturningCall = llvm::any_of(MF, [](const MachineBasicBlock &MBB) {
     return llvm::any_of(MBB, [](const MachineInstr &MI) {
       return MI.isCall() && !MI.isReturn();
@@ -184,25 +183,58 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   });
   if (!STI.isNano() && HasReturningCall &&
       MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI() < 0) {
-    int FI = MF.getFrameInfo().CreateStackObject(STI.getSlotSize(),
-                                                 STI.getStackAlignment(), false);
+    int FI = MF.getFrameInfo().CreateStackObject(
+        STI.getSlotSize(), STI.getStackAlignment(), false);
     MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
   }
-  // Min's largest forward short-branch displacement is 254 bytes. Reserve 14
-  // bytes for frame setup/teardown when deciding whether an indirect long
-  // branch may need to spill its scavenged address register.
-  constexpr int64_t MinBranchSpillThreshold = 254 - 14;
+  // RC16 reserves 14 bytes for frame setup/teardown in this estimate.
+  int64_t EstimatedSize = MF.estimateFunctionSizeInBytes() + 14;
+  if (STI.isRC32()) {
+    // A small frame needs at most an SP adjustment and two LR instructions
+    // at entry and each return. Larger frames reserve a scavenger slot below.
+    EstimatedSize = 6;
+    const RISCCInstrInfo &TII = *STI.getInstrInfo();
+    for (const MachineBasicBlock &MBB : MF) {
+      // Pool insertion may change the padding before an aligned block.
+      EstimatedSize += std::max(MBB.getAlignment(), Align(2)).value() - 2;
+      for (const MachineInstr &MI : MBB) {
+        EstimatedSize += TII.getInstSizeInBytes(MI);
+        if (MI.isReturn())
+          EstimatedSize += 6;
+        // Each use may need its own word, two alignment bytes, and a skip.
+        switch (MI.getOpcode()) {
+        default:
+          break;
+        case RISCC::LDPC:
+        case RISCC::LDPC_BRANCH:
+        case RISCC::CALL32_LITERAL:
+        case RISCC::TAIL32_LITERAL:
+          EstimatedSize += 8;
+          break;
+        case RISCC::SEXT16_RC32:
+          // Expanded after frame finalization into two literal loads.
+          EstimatedSize += 16;
+          break;
+        }
+      }
+    }
+  }
+  // Below this bound every short branch fits without relaxation.
   bool NeedsBranchSpill =
-      (!STI.hasLongJall() || STI.isRC32()) &&
-      MF.estimateFunctionSizeInBytes() >= MinBranchSpillThreshold;
-  // Only large frame offsets and long branches need a scavenged GPR. Avoid
-  // growing every ordinary frame by a word just to reserve an unused slot.
+      (!STI.hasLongJall() || STI.isRC32()) && EstimatedSize >= 254;
+  // Section splitting happens after frame finalization. Even a small function
+  // can then need an indirect transfer between sections.
+  if (STI.isRC32()) {
+    const TargetMachine &TM = MF.getTarget();
+    NeedsBranchSpill |= TM.getBBSectionsType() != BasicBlockSection::None ||
+                        TM.Options.EnableMachineFunctionSplitter ||
+                        getCGPassBuilderOption().EnableMachineFunctionSplitter;
+  }
+  // Reserve a scavenger slot only for large frame offsets or long branches.
   if (RS && (needsFrameScavengerSlot(MF) || NeedsBranchSpill)) {
     int FI = MF.getFrameInfo().CreateSpillStackObject(STI.getSlotSize(),
-                                                       STI.getStackAlignment());
+                                                      STI.getStackAlignment());
     RS->addScavengingFrameIndex(FI);
-    if (NeedsBranchSpill)
-      MF.getInfo<RISCCMachineFunctionInfo>()
-          ->setBranchRelaxationSpillFI(FI);
+    MF.getInfo<RISCCMachineFunctionInfo>()->setBranchRelaxationSpillFI(FI);
   }
 }

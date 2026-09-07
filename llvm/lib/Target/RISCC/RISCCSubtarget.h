@@ -34,8 +34,8 @@ class RISCCSubtarget final : public RISCCGenSubtargetInfo {
   std::unique_ptr<const SelectionDAGTargetInfo> TSInfo;
 
 public:
-  RISCCSubtarget(const Triple &, const std::string &CPU,
-                 const std::string &FS, const TargetMachine &);
+  RISCCSubtarget(const Triple &, const std::string &CPU, const std::string &FS,
+                 const TargetMachine &);
   ~RISCCSubtarget() override;
   RISCCSubtarget &initializeSubtargetDependencies(StringRef CPU, StringRef FS);
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
@@ -68,6 +68,6 @@ public:
   const SelectionDAGTargetInfo *getSelectionDAGInfo() const override;
   void initLibcallLoweringInfo(LibcallLoweringInfo &Info) const override;
 };
-}
+} // namespace llvm
 
 #endif

@@ -18,6 +18,7 @@
 # RUN: %python patch-flags.py full.o missing-abi.o 0x10
 # RUN: %python patch-flags.py full.o unknown-abi.o 0x12
 # RUN: %python patch-flags.py full.o nano.o 0x41
+# RUN: %python patch-flags.py full.o nano-rc32.o 0x141
 # RUN: %python patch-flags.py full.o rc32.o 0x111
 # RUN: %python patch-flags.py full.o rc32x.o 0x311
 # RUN: %python patch-flags.py full.o missing-profile.o 0x1
@@ -29,6 +30,8 @@
 # RUN:   FileCheck %s --check-prefix=UNKNOWN-ABI
 # RUN: ld.lld -m elf32lriscc -e 0 nano.o -o nano
 # RUN: llvm-readobj --file-headers nano | FileCheck %s --check-prefix=NANO
+# RUN: not ld.lld -m elf32lriscc -e 0 nano-rc32.o -o bad 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=NANO-RC32
 # RUN: not ld.lld -m elf32lriscc -e 0 nano.o min.o -o bad 2>&1 | \
 # RUN:   FileCheck %s --check-prefix=MIXED-NANO
 # RUN: not ld.lld -m elf32lriscc -e 0 full.o rc32.o -o bad 2>&1 | \
@@ -82,6 +85,7 @@
 # NANO: Flags [ (0x41)
 # NANO: EF_RISCC_ABI_V0 (0x1)
 # NANO: EF_RISCC_PROFILE_NANO (0x40)
+# NANO-RC32: error: nano-rc32.o: RC32 has no Nano profile
 # MIXED-NANO: error: cannot link incompatible RISC-C Nano and mainline profiles
 # MIXED-CONFIG: error: cannot link RISC-C objects with different RC16, RC32, or RC32X ABIs
 # RC32X: error: rc32x.o: RC32X is not implemented

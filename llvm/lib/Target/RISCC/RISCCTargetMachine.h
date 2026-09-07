@@ -10,6 +10,7 @@
 #define LLVM_LIB_TARGET_RISCC_RISCCTARGETMACHINE_H
 
 #include "RISCCSubtarget.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include <memory>
 
@@ -17,6 +18,7 @@ namespace llvm {
 class RISCCTargetMachine final : public CodeGenTargetMachineImpl {
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
   RISCCSubtarget Subtarget;
+  mutable StringMap<std::unique_ptr<RISCCSubtarget>> SubtargetMap;
 
 public:
   RISCCTargetMachine(const Target &, const Triple &, StringRef CPU,
@@ -26,13 +28,11 @@ public:
                      bool JIT);
   ~RISCCTargetMachine() override;
 
-  const RISCCSubtarget *getSubtargetImpl(const Function &) const override {
-    return &Subtarget;
-  }
+  const RISCCSubtarget *getSubtargetImpl(const Function &) const override;
   TargetPassConfig *createPassConfig(PassManagerBase &) override;
-  MachineFunctionInfo *createMachineFunctionInfo(
-      BumpPtrAllocator &, const Function &,
-      const TargetSubtargetInfo *) const override;
+  MachineFunctionInfo *
+  createMachineFunctionInfo(BumpPtrAllocator &, const Function &,
+                            const TargetSubtargetInfo *) const override;
   void registerPassBuilderCallbacks(PassBuilder &) override;
   Error buildCodeGenPipeline(ModulePassManager &, ModuleAnalysisManager &,
                              raw_pwrite_stream &, raw_pwrite_stream *,
@@ -43,6 +43,6 @@ public:
     return TLOF.get();
   }
 };
-}
+} // namespace llvm
 
 #endif

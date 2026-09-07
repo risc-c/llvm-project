@@ -1,7 +1,7 @@
-// RUN: %clang_cc1 -triple riscc-none-elf -target-cpu full -emit-llvm -o - %s | \
+// RUN: %clang_cc1 -mrelocation-model static -triple riscc-none-elf -target-cpu full -emit-llvm -o - %s | \
 // RUN:   FileCheck %s --check-prefix=IR
-// RUN: %clang_cc1 -triple riscc-none-elf -target-cpu full -S -O0 -o %t.s %s
-// RUN: %clang_cc1 -triple riscc-none-elf -target-cpu full -S -O2 -o - %s | \
+// RUN: %clang_cc1 -mrelocation-model static -triple riscc-none-elf -target-cpu full -S -O0 -o %t.s %s
+// RUN: %clang_cc1 -mrelocation-model static -triple riscc-none-elf -target-cpu full -S -O2 -o - %s | \
 // RUN:   FileCheck %s --check-prefix=ASM
 
 unsigned copy_register(unsigned value) {

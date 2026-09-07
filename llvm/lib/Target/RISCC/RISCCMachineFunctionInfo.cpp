@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RISCC.h"
 #include "RISCCMachineFunctionInfo.h"
+#include "RISCC.h"
 #include "RISCCSubtarget.h"
 #include "llvm/IR/Function.h"
 
@@ -21,10 +21,7 @@ RISCCMachineFunctionInfo::RISCCMachineFunctionInfo(
     const Function &F, const TargetSubtargetInfo *STI) {
   const auto &Subtarget = *static_cast<const RISCCSubtarget *>(STI);
   if (!Subtarget.isNano())
-    // RC32 currently uses the public S7 convention for every function. The
-    // RC16-only private-link convention is selected together at both the
-    // caller and callee; applying only its callee half to RC32 would make
-    // local functions return through an uninitialized S3.
+    // The private S3 calling convention is used only on RC16.
     ReturnAddressReg =
         Subtarget.isRC32() ? RISCC::S7 : getRISCCMainlineLinkRegister(F);
 }
@@ -41,8 +38,7 @@ void RISCCMachineFunctionInfo::setCalleeSavedSReg(MCRegister GPR,
     R6SaveReg = SReg;
 }
 
-MCRegister
-RISCCMachineFunctionInfo::getCalleeSavedSReg(MCRegister GPR) const {
+MCRegister RISCCMachineFunctionInfo::getCalleeSavedSReg(MCRegister GPR) const {
   assert((GPR == RISCC::R4 || GPR == RISCC::R5 || GPR == RISCC::R6) &&
          "only callee-saved GPRs have S-register backups");
   if (GPR == RISCC::R4)
@@ -52,9 +48,9 @@ RISCCMachineFunctionInfo::getCalleeSavedSReg(MCRegister GPR) const {
 
 void RISCCMachineFunctionInfo::anchor() {}
 
-MachineFunctionInfo *RISCCMachineFunctionInfo::create(
-    BumpPtrAllocator &Allocator, const Function &F,
-    const TargetSubtargetInfo *STI) {
+MachineFunctionInfo *
+RISCCMachineFunctionInfo::create(BumpPtrAllocator &Allocator, const Function &F,
+                                 const TargetSubtargetInfo *STI) {
   return new (Allocator.Allocate<RISCCMachineFunctionInfo>())
       RISCCMachineFunctionInfo(F, STI);
 }

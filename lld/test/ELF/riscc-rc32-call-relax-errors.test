@@ -1,0 +1,71 @@
+# RUN: yaml2obj %s -o %t.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: yaml2obj %s -DTYPE=R_RISCC_CALL_TARGET -DOFFSET=8 -DSYMBOL=target -DPAIR=R_RISCC_NONE -o %t.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: yaml2obj %s -DTYPE=R_RISCC_ABS16 -DOFFSET=10 -DSYMBOL=target -DPAIR=R_RISCC_NONE -o %t.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: yaml2obj %s -DTYPE=R_RISCC_ABS32 -DOFFSET=6 -DSYMBOL=target -DPAIR=R_RISCC_NONE -o %t.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: yaml2obj %s -DTYPE=R_RISCC_ABS32 -DOFFSET=12 -DSYMBOL=literal1 -DADDEND=2 -DPAIR=R_RISCC_NONE -o %t.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=SHARED
+# RUN: yaml2obj %s -DTYPE=R_RISCC_NONE -DPAIR=R_RISCC_NONE -o %t.o
+# RUN: ld.lld -m elf32lriscc -Ttext=0 %t.o -o %t
+# RUN: llvm-readobj --hex-dump=.text %t | FileCheck %s --check-prefix=UNSORTED
+
+## Relaxation owns the call pair and all four bytes of its literal. Reject
+## duplicate markers, overlapping fields, and references into the literal.
+# OVERLAP: error: {{.*}}relaxable RISC-C call or literal overlaps another relocation
+# SHARED: error: {{.*}}relaxable RISC-C call literal is shared or has unexpected references
+## Relocations need not arrive in offset order.
+# UNSORTED: 34380c00 f8c728c0 0c000000 f8c7
+
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_RISCC
+  Flags:   [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_SYS, EF_RISCC_RC32 ]
+Sections:
+  - Name: .text
+    Type: SHT_PROGBITS
+    Flags: [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign: 4
+    Content: '0081F9F8F8C728C00000000000000000F8C7'
+  - Name: .rela.text
+    Type: SHT_RELA
+    Link: .symtab
+    Info: .text
+    Relocations:
+      - Offset: 12
+        Type: R_RISCC_CALL_TARGET
+        Symbol: target
+      - Offset: 8
+        Type: R_RISCC_CALL_TARGET
+        Symbol: target
+      - Offset: 0
+        Type: R_RISCC_PCREL8_WORD
+        Symbol: literal1
+      - Offset: 0
+        Type: R_RISCC_RELAX_CALL
+        Symbol: literal1
+      - Offset: '[[OFFSET=0]]'
+        Type: '[[TYPE=R_RISCC_RELAX_CALL]]'
+        Symbol: '[[SYMBOL=literal2]]'
+        Addend: '[[ADDEND=0]]'
+      - Offset: 0
+        Type: '[[PAIR=R_RISCC_PCREL8_WORD]]'
+        Symbol: literal2
+Symbols:
+  - Name: literal1
+    Section: .text
+    Value: 8
+  - Name: literal2
+    Section: .text
+    Value: 12
+  - Name: target
+    Section: .text
+    Value: 16
+  - Name: _start
+    Binding: STB_GLOBAL
+    Section: .text

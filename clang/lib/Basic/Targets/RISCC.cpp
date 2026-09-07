@@ -20,9 +20,8 @@ const char *const RISCCTargetInfo::GCCRegNames[] = {
 };
 
 const TargetInfo::GCCRegAlias RISCCTargetInfo::GCCRegAliases[] = {
-    {{"S0"}, "s0"}, {{"S1"}, "s1"}, {{"S2"}, "s2"},
-    {{"S3"}, "s3"}, {{"S4"}, "s4"}, {{"S5"}, "s5"},
-    {{"S6"}, "s6"}, {{"S7"}, "s7"},
+    {{"S0"}, "s0"}, {{"S1"}, "s1"}, {{"S2"}, "s2"}, {{"S3"}, "s3"},
+    {{"S4"}, "s4"}, {{"S5"}, "s5"}, {{"S6"}, "s6"}, {{"S7"}, "s7"},
 };
 
 ArrayRef<const char *> RISCCTargetInfo::getGCCRegNames() const {
@@ -38,8 +37,7 @@ ArrayRef<TargetInfo::GCCRegAlias> RISCCTargetInfo::getGCCRegAliases() const {
 }
 
 bool RISCCTargetInfo::isValidCPUName(StringRef Name) const {
-  return Name == "nano" || Name == "min" || Name == "sys" ||
-         Name == "full";
+  return Name == "nano" || Name == "min" || Name == "sys" || Name == "full";
 }
 
 void RISCCTargetInfo::fillValidCPUList(
@@ -65,13 +63,9 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("nano", CPU == "nano")
       .Case("min", CPU == "min")
       .Case("full", CPU == "full")
-      .Case("mdu", HasMdu)
-      .Case("mulhu", HasMdu)
-      .Case("divu", HasMdu)
-      .Cases({"sys", "system", "jal16"},
-             CPU == "sys" || CPU == "full")
-      .Cases({"wide-shift", "wide-shifts"},
-             CPU == "sys" || CPU == "full")
+      .Cases({"mdu", "mulhu", "divu"}, HasMdu)
+      .Cases({"sys", "system", "jal16"}, CPU == "sys" || CPU == "full")
+      .Cases({"wide-shift", "wide-shifts"}, CPU == "full")
       .Case("mul", CPU == "full")
       .Default(false);
 }

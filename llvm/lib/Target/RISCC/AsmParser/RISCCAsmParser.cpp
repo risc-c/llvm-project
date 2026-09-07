@@ -19,8 +19,8 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Compiler.h"
 #include <optional>
 
 using namespace llvm;
@@ -31,7 +31,6 @@ class RISCCOperand final : public MCParsedAsmOperand {
   std::string Tok;
   MCRegister RegNo;
   const MCExpr *Expr = nullptr;
-  bool KeepExpr = false;
   SMLoc Start, End;
 
   RISCCOperand(KindTy K, SMLoc S, SMLoc E) : Kind(K), Start(S), End(E) {}
@@ -47,11 +46,9 @@ public:
     Op->RegNo = R;
     return Op;
   }
-  static std::unique_ptr<RISCCOperand> imm(const MCExpr *E, SMLoc S, SMLoc L,
-                                           bool Keep = false) {
+  static std::unique_ptr<RISCCOperand> imm(const MCExpr *E, SMLoc S, SMLoc L) {
     auto Op = std::unique_ptr<RISCCOperand>(new RISCCOperand(Imm, S, L));
     Op->Expr = E;
-    Op->KeepExpr = Keep;
     return Op;
   }
 
@@ -67,7 +64,11 @@ public:
     int64_t V;
     return Expr->evaluateAsAbsolute(V) && isInt<9>(V) && !(V & 3);
   }
-  bool isShiftImm() const { return isIntInRange(1, 8); }
+  bool isShiftImm() const {
+    int64_t Value;
+    return isImm() && !isa<RISCCMCExpr>(Expr) &&
+           Expr->evaluateAsAbsolute(Value) && Value >= 1 && Value <= 8;
+  }
   bool isU16Imm() const { return isIntInRange(0, 65535); }
 
   bool isIntInRange(int64_t Min, int64_t Max) const {
@@ -90,14 +91,11 @@ public:
   }
   void addImmOperands(MCInst &MI, unsigned N) const {
     assert(N == 1 && isImm());
-    if (!KeepExpr) {
-      int64_t Value;
-      if (Expr->evaluateAsAbsolute(Value)) {
-        MI.addOperand(MCOperand::createImm(Value));
-        return;
-      }
-    }
-    MI.addOperand(MCOperand::createExpr(Expr));
+    int64_t Value;
+    if (Expr->evaluateAsAbsolute(Value))
+      MI.addOperand(MCOperand::createImm(Value));
+    else
+      MI.addOperand(MCOperand::createExpr(Expr));
   }
 
   void print(raw_ostream &OS, const MCAsmInfo &MAI) const override {
@@ -137,9 +135,8 @@ public:
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
   }
 
-  bool matchAndEmitInstruction(SMLoc, unsigned &, OperandVector &,
-                               MCStreamer &, uint64_t &,
-                               bool) override;
+  bool matchAndEmitInstruction(SMLoc, unsigned &, OperandVector &, MCStreamer &,
+                               uint64_t &, bool) override;
   bool parseInstruction(ParseInstructionInfo &, StringRef, SMLoc,
                         OperandVector &) override;
   bool parseRegister(MCRegister &, SMLoc &, SMLoc &) override;
@@ -147,7 +144,7 @@ public:
   ParseStatus parseDirective(AsmToken) override { return ParseStatus::NoMatch; }
   bool parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) override;
 };
-}
+} // namespace
 
 static MCRegister MatchRegisterName(StringRef Name);
 
@@ -213,8 +210,8 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
       return Error(LBracLoc, "LDX address requires two registers");
     if (!isDirectMemoryMnemonic(CurrentMnemonic)) {
       Operands.push_back(RISCCOperand::token("+", E));
-      Operands.push_back(RISCCOperand::imm(
-          MCConstantExpr::create(0, getContext()), E, E));
+      Operands.push_back(
+          RISCCOperand::imm(MCConstantExpr::create(0, getContext()), E, E));
     }
   } else {
     bool Negative = Parser.getTok().is(AsmToken::Minus);
@@ -224,8 +221,7 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
     Parser.Lex();
     if (isDirectMemoryMnemonic(CurrentMnemonic))
       return Error(ES, "direct address requires a single register");
-    // Normalize both `[base + expr]` and `[base - expr]` to the token stream
-    // described by the TableGen spelling: `[`, base, `+`, displacement, `]`.
+    // TableGen expects a '+' token even for negative displacements.
     Operands.push_back(RISCCOperand::token("+", ES));
     if (CurrentMnemonic == "ldx") {
       if (Negative)
@@ -235,21 +231,18 @@ bool RISCCAsmParser::parseMemory(OperandVector &Operands) {
       if (parseRegister(Index, IS, IE))
         return true;
       Operands.push_back(RISCCOperand::reg(Index, IS, IE));
-      SMLoc RBracLoc = Parser.getTok().getLoc();
-      if (Parser.parseToken(AsmToken::RBrac, "expected ']'"))
+    } else {
+      if (Parser.getTok().is(AsmToken::Identifier) &&
+          MatchRegisterName(Parser.getTok().getIdentifier().lower()))
+        return Error(ES, "register-indexed word loads use LDX");
+      const MCExpr *Expr;
+      if (Parser.parseExpression(Expr))
         return true;
-      Operands.push_back(RISCCOperand::token("]", RBracLoc));
-      return false;
+      if (Negative)
+        Expr = MCUnaryExpr::createMinus(Expr, getContext());
+      Operands.push_back(
+          RISCCOperand::imm(Expr, ES, Parser.getTok().getEndLoc()));
     }
-    if (Parser.getTok().is(AsmToken::Identifier) &&
-        MatchRegisterName(Parser.getTok().getIdentifier().lower()))
-      return Error(ES, "register-indexed word loads use LDX");
-    const MCExpr *Expr;
-    if (Parser.parseExpression(Expr))
-      return true;
-    if (Negative)
-      Expr = MCUnaryExpr::createMinus(Expr, getContext());
-    Operands.push_back(RISCCOperand::imm(Expr, ES, Parser.getTok().getEndLoc()));
   }
   SMLoc RBracLoc = Parser.getTok().getLoc();
   if (Parser.parseToken(AsmToken::RBrac, "expected ']'"))
@@ -275,21 +268,12 @@ bool RISCCAsmParser::parseOperand(OperandVector &Operands) {
   const MCExpr *Expr;
   if (Parser.parseExpression(Expr))
     return Error(S, "expected register, immediate, or expression");
-  bool IsPCRelative = CurrentMnemonic == "beqz" ||
-                      CurrentMnemonic == "bnez" ||
-                      CurrentMnemonic == "bltz" ||
-                      CurrentMnemonic == "bgez" ||
-                      CurrentMnemonic == "jmp8" || CurrentMnemonic == "ldpc";
-  int64_t Value;
-  bool KeepExpr = IsPCRelative && !Expr->evaluateAsAbsolute(Value);
-  Operands.push_back(RISCCOperand::imm(Expr, S, Parser.getTok().getEndLoc(),
-                                       KeepExpr));
+  Operands.push_back(RISCCOperand::imm(Expr, S, Parser.getTok().getEndLoc()));
   return false;
 }
 
 bool RISCCAsmParser::parseInstruction(ParseInstructionInfo &, StringRef Name,
-                                      SMLoc NameLoc,
-                                      OperandVector &Operands) {
+                                      SMLoc NameLoc, OperandVector &Operands) {
   std::string Lower = Name.lower();
   CurrentMnemonic = Lower;
   Operands.push_back(RISCCOperand::token(Lower, NameLoc));
@@ -309,31 +293,34 @@ bool RISCCAsmParser::parseInstruction(ParseInstructionInfo &, StringRef Name,
   return false;
 }
 
-bool RISCCAsmParser::matchAndEmitInstruction(
-    SMLoc Loc, unsigned &, OperandVector &Operands, MCStreamer &Out,
-    uint64_t &ErrorInfo, bool MatchingInlineAsm) {
+bool RISCCAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &,
+                                             OperandVector &Operands,
+                                             MCStreamer &Out,
+                                             uint64_t &ErrorInfo,
+                                             bool MatchingInlineAsm) {
   MCInst Inst;
-  unsigned Result = MatchInstructionImpl(Operands, Inst, ErrorInfo,
-                                         MatchingInlineAsm);
+  unsigned Result =
+      MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm);
   if (Result == Match_Success) {
-    if ((Inst.getOpcode() == RISCC::LD ||
-         Inst.getOpcode() == RISCC::ST ||
-         Inst.getOpcode() == RISCC::LD_NANO ||
-         Inst.getOpcode() == RISCC::ST_NANO) &&
-        Inst.getOperand(Inst.getNumOperands() - 1).isImm() &&
-        (Inst.getOperand(Inst.getNumOperands() - 1).getImm() & 1))
-      return Error(Loc, "word displacement must be even");
+    if (Inst.getOpcode() == RISCC::LD || Inst.getOpcode() == RISCC::ST ||
+        Inst.getOpcode() == RISCC::LD_NANO ||
+        Inst.getOpcode() == RISCC::ST_NANO) {
+      const MCOperand &Disp = Inst.getOperand(Inst.getNumOperands() - 1);
+      if (!Disp.isImm())
+        return Error(Loc, "word displacement must be an absolute constant");
+      if (Disp.getImm() & 1)
+        return Error(Loc, "word displacement must be even");
+    }
     if (((Inst.getOpcode() == RISCC::SLLI ||
           Inst.getOpcode() == RISCC::SLLI32) &&
          !STI->hasFeature(RISCC::FeatureWideShift)) ||
-        ((Inst.getOpcode() == RISCC::SRLI ||
-          Inst.getOpcode() == RISCC::SRAI ||
+        ((Inst.getOpcode() == RISCC::SRLI || Inst.getOpcode() == RISCC::SRAI ||
           Inst.getOpcode() == RISCC::SRLI32 ||
           Inst.getOpcode() == RISCC::SRAI32) &&
          Inst.getOperand(2).isImm() && Inst.getOperand(2).getImm() != 1 &&
          !STI->hasFeature(RISCC::FeatureWideShift)))
-      return Error(
-          Loc, "instruction or shift count is unavailable in this profile");
+      return Error(Loc,
+                   "instruction or shift count is unavailable in this profile");
     Inst.setLoc(Loc);
     Out.emitInstruction(Inst, *STI);
     return false;
@@ -349,6 +336,9 @@ bool RISCCAsmParser::matchAndEmitInstruction(
     return Error(E, "immediate must be in the range -128..127");
   if (Result == Match_InvalidShiftImm)
     return Error(E, "shift amount must be in the range 1..8");
+  if (Result == Match_InvalidRC32WordDisp)
+    return Error(
+        E, "word displacement must be a multiple of 4 in the range -256..252");
   if (Result == Match_InvalidU16Imm)
     return Error(E, "immediate must be in the range 0..65535");
   return Error(E, "invalid operand for RISC-C instruction");

@@ -1,3 +1,4 @@
+# REQUIRES: riscc
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 calls.s -o calls.o
 # RUN: ld.lld -m elf32lriscc --emit-relocs -T layout.ld calls.o -o relaxed

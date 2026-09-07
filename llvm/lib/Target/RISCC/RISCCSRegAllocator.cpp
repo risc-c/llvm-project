@@ -84,6 +84,17 @@ static void moveSpillToSReg(MachineFunction &MF, int FI, MCRegister SReg,
   for (MachineBasicBlock &MBB : MF) {
     for (auto I = MBB.begin(), E = MBB.end(); I != E;) {
       MachineInstr &MI = *I++;
+      if (MI.isDebugInstr() && referencesFrameIndex(MI, FI)) {
+        // The slot is going away. Tracking the replacement register here
+        // would also require updating the variable's live range.
+        if (MI.isDebugValue()) {
+          for (MachineOperand &MO : MI.debug_operands())
+            if (MO.isFI() && MO.getIndex() == FI)
+              MO.ChangeToRegister(Register(), false);
+        } else
+          MI.eraseFromParent();
+        continue;
+      }
       if (MI.getNumOperands() < 3 || !MI.getOperand(1).isFI() ||
           MI.getOperand(1).getIndex() != FI)
         continue;
@@ -105,8 +116,7 @@ static void moveSpillToSReg(MachineFunction &MF, int FI, MCRegister SReg,
   MF.getFrameInfo().RemoveStackObject(FI);
 }
 
-static bool takeRegister(SmallVectorImpl<MCRegister> &Free,
-                         MCRegister Reg) {
+static bool takeRegister(SmallVectorImpl<MCRegister> &Free, MCRegister Reg) {
   auto I = llvm::find(Free, Reg);
   if (I == Free.end())
     return false;
@@ -156,9 +166,8 @@ static bool allocateSRegisters(MachineFunction &MF,
   uint64_t EntryFrequency = MBFI.getEntryFreq().getFrequency();
   for (MCRegister Reg : {RISCC::R4, RISCC::R5, RISCC::R6})
     if (MRI.isPhysRegUsed(Reg))
-      Candidates.push_back(
-          {SaturatingMultiply(EntryFrequency, uint64_t(2)),
-           CandidateKind::CalleeSave, -1, Reg});
+      Candidates.push_back({SaturatingMultiply(EntryFrequency, uint64_t(2)),
+                            CandidateKind::CalleeSave, -1, Reg});
 
   bool HasLink = Link && MRI.isPhysRegUsed(Link);
   bool IsLinkClobbered =
@@ -168,9 +177,8 @@ static bool allocateSRegisters(MachineFunction &MF,
         });
       });
   if (HasLink && !IsLinkClobbered)
-    Candidates.push_back(
-        {SaturatingMultiply(EntryFrequency, uint64_t(4)),
-         CandidateKind::ReturnAddress, -1, Link});
+    Candidates.push_back({SaturatingMultiply(EntryFrequency, uint64_t(4)),
+                          CandidateKind::ReturnAddress, -1, Link});
 
   llvm::stable_sort(Candidates, [](const Candidate &A, const Candidate &B) {
     if (A.Weight != B.Weight)
@@ -210,11 +218,10 @@ static bool allocateSRegisters(MachineFunction &MF,
       continue;
     }
 
-    auto SRegIt = llvm::find_if(
-        Free, [](MCRegister Reg) {
-          return Reg == RISCC::S2 || Reg == RISCC::S3 || Reg == RISCC::S4 ||
-                 Reg == RISCC::S7;
-        });
+    auto SRegIt = llvm::find_if(Free, [](MCRegister Reg) {
+      return Reg == RISCC::S2 || Reg == RISCC::S3 || Reg == RISCC::S4 ||
+             Reg == RISCC::S7;
+    });
     if (SRegIt == Free.end())
       continue;
     Info->setCalleeSavedSReg(C.Reg, *SRegIt);

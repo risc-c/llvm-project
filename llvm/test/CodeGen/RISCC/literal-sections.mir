@@ -1,0 +1,50 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs -filetype=obj %s -o %t
+# RUN: llvm-readobj --relocations %t | FileCheck %s --check-prefix=RELOC
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs -filetype=obj %s -o %t
+# RUN: llvm-readobj --relocations %t | FileCheck %s --check-prefix=RELOC
+
+# The body is only 16 bytes before frame lowering. Splitting its two blocks
+# into sections still requires a long branch, with all GPRs live at its target.
+# Frame lowering must reserve a scratch slot before section splitting runs.
+# CHECK-LABEL: section_spill:
+# CHECK-NOT:   jmp8
+# CHECK:       st r0, [r7 + 0]
+# CHECK-NEXT:  ldpc r0, [[WORD:.Ltmp[0-9]+]]{{$}}
+# CHECK-NEXT:  jalr s0, r0
+# CHECK:       [[WORD]]:
+# CHECK-NEXT:  .long section_spill.__part.1
+# CHECK:       section_spill.__part.1:
+# CHECK-NEXT:  ld r0, [r7 + 0]
+# CHECK:       add r1, r0, r1
+# RELOC:       R_RISCC_ABS32 .text.section_spill 0x0
+
+--- |
+  define i32 @section_spill() {
+  entry:
+    br label %sum
+  sum:
+    ret i32 0
+  }
+...
+---
+name: section_spill
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    successors: %bb.1
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    JMP8 %bb.1
+  bb.1.sum:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    $r1 = ADD32 killed $r0, $r1
+    $r1 = ADD32 $r1, killed $r2
+    $r1 = ADD32 $r1, killed $r3
+    $r1 = ADD32 $r1, killed $r4
+    $r1 = ADD32 $r1, killed $r5
+    $r1 = ADD32 $r1, killed $r6
+    RETS implicit $s7, implicit $r1
+...

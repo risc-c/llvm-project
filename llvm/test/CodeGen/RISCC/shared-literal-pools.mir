@@ -1,0 +1,109 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-after=branch-relaxation -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-after=branch-relaxation -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-after=branch-relaxation -filetype=obj %s -o %t
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-after=branch-relaxation -filetype=obj %s -o %t
+# RUN: sed 's/bb.1:/bb.1 (align 16):/' %s > %t.mir
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-after=branch-relaxation -verify-machineinstrs -filetype=obj %t.mir -o %t
+
+# The preheader and loop share two words. The island's jump is before the
+# loop label, so backedges execute neither the jump nor the literal words.
+# CHECK-LABEL: loop_pool:
+# CHECK:       .zero 300
+# CHECK:       ldpc r1, [[A:.Ltmp[0-9]+]]
+# CHECK-NEXT:  jmp8 [[LOOP:.LBB[0-9_]+]]
+# CHECK-NEXT:  .p2align 2
+# CHECK:       [[A]]:
+# CHECK-NEXT:  .long 123456
+# CHECK-NEXT:  [[B:.Ltmp[0-9]+]]:
+# CHECK-NEXT:  .long 654321
+# CHECK-NEXT:  [[LOOP]]:
+# CHECK-NEXT:  ldpc r1, [[A]]
+# CHECK-NEXT:  ldpc r2, [[B]]
+# CHECK-NEXT:  ldpc r3, [[A]]
+# CHECK-NEXT:  addi r0, -1
+# CHECK-NEXT:  bnez [[LOOP]]
+# CHECK-NOT:   .long
+# CHECK:       ret s7
+
+# An existing unconditional branch provides a free gap for the loop's
+# literals, even when a later long block needs an island of its own.
+# CHECK-LABEL: barrier_pool:
+# CHECK:       .zero 300
+# CHECK-NEXT:  {{.*}}NO_APP
+# CHECK-NEXT:  jmp8 [[LOOP:.LBB[0-9_]+]]
+# CHECK-NEXT:  .p2align 2
+# CHECK:       [[B:.Ltmp[0-9]+]]:
+# CHECK-NEXT:  .long 654321
+# CHECK-NEXT:  [[A:.Ltmp[0-9]+]]:
+# CHECK-NEXT:  .long 123456
+# CHECK-NEXT:  [[LOOP]]:
+# CHECK-NEXT:  ldpc r1, [[A]]
+# CHECK-NEXT:  ldpc r2, [[B]]
+# CHECK-NEXT:  ldpc r3, [[A]]
+# CHECK-NEXT:  addi r0, -1
+# CHECK-NEXT:  bnez [[LOOP]]
+# CHECK:       .zero 300
+# CHECK:       ldpc r3, [[LITERAL:.Ltmp[0-9]+]]
+# CHECK-NEXT:  jmp8 [[CONTINUE:.LBB[0-9_]+]]
+# CHECK:       [[LITERAL]]:
+# CHECK:       .long 999999
+# CHECK-NEXT:  [[CONTINUE]]:
+# CHECK:       .zero 300
+# CHECK-NOT:   .long
+# CHECK:       ret s7
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @loop_pool() { ret void }
+  define void @barrier_pool() { ret void }
+...
+---
+name: loop_pool
+tracksRegLiveness: false
+constants:
+  - { id: 0, value: 'i32 123456', alignment: 4 }
+  - { id: 1, value: 'i32 654321', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1
+    $r0 = LDI32 3
+    INLINEASM &".space 300", sideeffect attdialect
+    $r1 = LDPC %const.0
+  bb.1:
+    successors: %bb.1, %bb.2
+    $r1 = LDPC %const.0
+    $r2 = LDPC %const.1
+    $r3 = LDPC %const.0
+    $r0 = ADDI32 $r0, -1
+    BNEZ %bb.1, implicit $r0
+  bb.2:
+    INLINEASM &".space 300", sideeffect attdialect
+    RETS implicit $s7
+...
+---
+name: barrier_pool
+tracksRegLiveness: false
+constants:
+  - { id: 0, value: 'i32 123456', alignment: 4 }
+  - { id: 1, value: 'i32 654321', alignment: 4 }
+  - { id: 2, value: 'i32 999999', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1
+    $r0 = LDI32 3
+    INLINEASM &".space 300", sideeffect attdialect
+    JMP8 %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    $r1 = LDPC %const.0
+    $r2 = LDPC %const.1
+    $r3 = LDPC %const.0
+    $r0 = ADDI32 $r0, -1
+    BNEZ %bb.1, implicit $r0
+  bb.2:
+    INLINEASM &".space 300", sideeffect attdialect
+    $r3 = LDPC %const.2
+    INLINEASM &".space 300", sideeffect attdialect
+    RETS implicit $s7
+...

@@ -1,5 +1,5 @@
 # REQUIRES: riscc-registered-target
-# RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=riscc-sreg-allocator,prolog-epilog %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=riscc-sreg-allocator,prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s
 
 # Five loop-local spills fit in S2..S6 without displacing the S7 return
 # address. Save the callee-saved S5/S6 entries once outside the loop, then
@@ -35,7 +35,7 @@
 # across that call.
 # CHECK-LABEL: name: spill_across_preserving_call
 # CHECK:       $s2 = MTS killed $r1
-# CHECK:       CALL $r0, csr_riscc_sregpreservingcall
+# CHECK:       CALL $r2, csr_riscc_sregpreservingcall
 # CHECK:       $r1 = MFS $s2
 # CHECK-NOT:   ST $r1
 # CHECK:       RETS implicit $s7
@@ -44,7 +44,7 @@
 # S5 across the call and prologue/epilogue saves the cache register.
 # CHECK-LABEL: name: spill_across_ordinary_call
 # CHECK:       $s5 = MTS killed $r1
-# CHECK:       CALL $r0, csr_riscc
+# CHECK:       CALL $r2, csr_riscc
 # CHECK:       $r1 = MFS $s5
 # CHECK:       RETS implicit $s7, implicit $r1, implicit $s5
 
@@ -134,10 +134,10 @@ stack:
       stack-id: default, callee-saved-register: '', callee-saved-restored: true }
 body:             |
   bb.0.entry:
-    liveins: $r0, $r1
+    liveins: $r1, $r2
 
     ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
-    CALL $r0, csr_riscc_sregpreservingcall
+    CALL $r2, csr_riscc_sregpreservingcall
     $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
     RETS implicit $s7, implicit $r1
 ...
@@ -155,10 +155,10 @@ stack:
       stack-id: default, callee-saved-register: '', callee-saved-restored: true }
 body:             |
   bb.0.entry:
-    liveins: $r0, $r1
+    liveins: $r1, $r2
 
     ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
-    CALL $r0, csr_riscc
+    CALL $r2, csr_riscc
     $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
     RETS implicit $s7, implicit $r1
 ...

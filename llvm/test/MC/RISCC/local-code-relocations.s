@@ -1,8 +1,7 @@
 # REQUIRES: riscc-registered-target
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj < %s | llvm-readobj -r - | FileCheck %s
 
-# Even a same-section code expression must retain its code-address domain so
-# the linker performs byte-offset-to-word-index conversion.
+# Keep code relocations for local labels so the linker checks alignment and code-address range.
 .text
   .short code(local)
   ldi16 r1, code(local)

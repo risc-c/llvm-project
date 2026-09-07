@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCCFixupKinds.h"
-#include "RISCCMCTargetDesc.h"
 #include "RISCCMCExpr.h"
+#include "RISCCMCTargetDesc.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCELFObjectWriter.h"
 #include "llvm/MC/MCValue.h"
@@ -39,9 +39,8 @@ public:
         return ELF::R_RISCC_ABS8;
       }
     case FK_Data_2:
-      return Target.getSpecifier() == RISCCMCExpr::VK_CODE
-                 ? ELF::R_RISCC_CODE16
-                 : ELF::R_RISCC_ABS16;
+      return Target.getSpecifier() == RISCCMCExpr::VK_CODE ? ELF::R_RISCC_CODE16
+                                                           : ELF::R_RISCC_ABS16;
     case FK_Data_4:
       switch (Target.getSpecifier()) {
       case RISCCMCExpr::VK_TPOFF:
@@ -53,10 +52,6 @@ public:
       }
     case RISCC::fixup_abs8:
       return ELF::R_RISCC_ABS8;
-    case RISCC::fixup_abs16:
-      return ELF::R_RISCC_ABS16;
-    case RISCC::fixup_abs32:
-      return ELF::R_RISCC_ABS32;
     case RISCC::fixup_lo8:
       return ELF::R_RISCC_LO8;
     case RISCC::fixup_hi8:
@@ -88,7 +83,7 @@ public:
     return Type == ELF::R_RISCC_CALL_TARGET;
   }
 };
-}
+} // namespace
 
 std::unique_ptr<MCObjectTargetWriter>
 llvm::createRISCCELFObjectWriter(uint8_t OSABI) {

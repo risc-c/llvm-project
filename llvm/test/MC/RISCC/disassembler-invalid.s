@@ -2,17 +2,17 @@
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -disassemble < %s 2>&1 | FileCheck %s --check-prefix=FULL
 # RUN: llvm-mc -triple=riscc-none-elf -mcpu=min -disassemble < %s 2>&1 | FileCheck %s --check-prefix=MIN
 
-# Return-control selector 001 is reserved.
+# Reserved return-control encoding.
 0xf8 0xc8
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# The former control-group selector is reserved.
+# Reserved control-group encoding.
 0xfc 0xc0
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# The former CLI/STI sub-op is reserved.
+# Reserved CLI/STI encoding.
 0xfe 0xc8
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
@@ -20,13 +20,12 @@
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# The former STI selector is reserved.
+# Reserved STI encoding.
 0xff 0xc0
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding
 
-# The old LDPH fffff=01_001 slot is reserved, including encodings whose aaa
-# field the former decoder ignored.
+# f5=0b01001 encodings are reserved regardless of aaa/bbb.
 0x4f 0xc0
 # FULL: warning: invalid instruction encoding
 # MIN: warning: invalid instruction encoding

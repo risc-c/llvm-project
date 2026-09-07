@@ -13,27 +13,27 @@ target triple = "riscc-none-elf"
 declare i32 @callee(i32)
 
 define i32 @direct_tail(i32 %value) {
-; LONG:       [[DIRECT:.Ltmp[0-9]+]]:
-; LONG-NEXT:  .long call_target(callee)
 ; LONG-LABEL: direct_tail:
-; SYS:        .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[DIRECT]]
-; LONG:       ldpc r0, [[DIRECT]]
+; LONG-DAG:   ldpc r0, [[DIRECT:.Ltmp[0-9]+]]
+; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[DIRECT]]
 ; LONG-NEXT:  jalr s0, r0
 ; LONG-NOT:   ret
+; LONG:       [[DIRECT]]:
+; LONG-NEXT:  .long call_target(callee)
   %result = tail call i32 @callee(i32 %value)
   ret i32 %result
 }
 
 define i32 @framed_tail(i32 %value) {
-; LONG:       [[FRAMED:.Ltmp[0-9]+]]:
-; LONG-NEXT:  .long call_target(callee)
 ; LONG-LABEL: framed_tail:
 ; LONG:       addi r7, -4
 ; LONG:       ld r1, [r7 + 0]
 ; LONG-NEXT:  addi r7, 4
-; SYS-NEXT:   .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[FRAMED]]
-; LONG:       ldpc r0, [[FRAMED]]
+; LONG-DAG:   ldpc r0, [[FRAMED:.Ltmp[0-9]+]]
+; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[FRAMED]]
 ; LONG-NEXT:  jalr s0, r0
+; LONG:       [[FRAMED]]:
+; LONG-NEXT:  .long call_target(callee)
   %slot = alloca i32, align 4
   store volatile i32 %value, ptr %slot
   %reloaded = load volatile i32, ptr %slot
@@ -42,46 +42,46 @@ define i32 @framed_tail(i32 %value) {
 }
 
 define i32 @call_then_tail(i32 %value) {
-; LONG:       [[CALLED:.Ltmp[0-9]+]]:
-; LONG-NEXT:  .long call_target(callee)
-; LONG:       [[TAILED:.Ltmp[0-9]+]]:
-; LONG-NEXT:  .long call_target(callee)
 ; LONG-LABEL: call_then_tail:
-; SYS:        .reloc {{.*}}, R_RISCC_RELAX_CALL, [[CALLED]]
-; LONG:       ldpc r0, [[CALLED]]
+; LONG-DAG:   ldpc r0, [[CALLED:.Ltmp[0-9]+]]
+; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_CALL, [[CALLED]]
 ; LONG-NEXT:  jalr s7, r0
 ; LONG:       ld r0, [r7 + 0]
 ; LONG-NEXT:  mts s7, r0
 ; LONG-NEXT:  addi r7, 4
-; SYS-NEXT:   .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[TAILED]]
-; LONG:       ldpc r0, [[TAILED]]
+; LONG-DAG:   ldpc r0, [[TAILED:.Ltmp[0-9]+]]
+; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[TAILED]]
 ; LONG-NEXT:  jalr s0, r0
+; LONG:       [[CALLED]]:
+; LONG-NEXT:  .long call_target(callee)
+; LONG:       [[TAILED]]:
+; LONG-NEXT:  .long call_target(callee)
   %first = call i32 @callee(i32 %value)
   %result = tail call i32 @callee(i32 %first)
   ret i32 %result
 }
 
 define i32 @callee_saved_tail(i32 %value) {
-; LONG:       [[SAVED:.Ltmp[0-9]+]]:
-; LONG-NEXT:  .long call_target(callee)
 ; LONG-LABEL: callee_saved_tail:
 ; LONG:       st r4, [r7 + 0]
 ; LONG:       ld r4, [r7 + 0]
 ; LONG-NEXT:  addi r7, 4
-; SYS-NEXT:   .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[SAVED]]
-; LONG:       ldpc r0, [[SAVED]]
+; LONG-DAG:   ldpc r0, [[SAVED:.Ltmp[0-9]+]]
+; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[SAVED]]
 ; LONG-NEXT:  jalr s0, r0
+; LONG:       [[SAVED]]:
+; LONG-NEXT:  .long call_target(callee)
   call void asm sideeffect "", "~{r4}"()
   %result = tail call i32 @callee(i32 %value)
   ret i32 %result
 }
 
 define i32 @local_call(i32 %value) {
-; LONG:       [[LOCAL:.Ltmp[0-9]+]]:
-; LONG-NEXT:  .long call_target(local_callee)
 ; LONG-LABEL: local_call:
-; SYS:        .reloc {{.*}}, R_RISCC_RELAX_CALL, [[LOCAL]]
-; LONG:       ldpc r0, [[LOCAL]]
+; LONG-DAG:   ldpc r0, [[LOCAL:.Ltmp[0-9]+]]
+; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_CALL, [[LOCAL]]
+; LONG:       [[LOCAL]]:
+; LONG-NEXT:  .long call_target(local_callee)
   %result = call i32 @local_callee(i32 %value)
   %adjusted = add i32 %result, 1
   ret i32 %adjusted

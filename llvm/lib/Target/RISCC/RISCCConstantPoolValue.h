@@ -9,8 +9,8 @@
 #ifndef LLVM_LIB_TARGET_RISCC_RISCCCONSTANTPOOLVALUE_H
 #define LLVM_LIB_TARGET_RISCC_RISCCCONSTANTPOOLVALUE_H
 
-#include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/CodeGen/MachineConstantPool.h"
 #include <string>
 
 namespace llvm {

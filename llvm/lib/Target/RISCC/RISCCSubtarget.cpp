@@ -44,11 +44,8 @@ const SelectionDAGTargetInfo *RISCCSubtarget::getSelectionDAGInfo() const {
   return TSInfo.get();
 }
 
-void RISCCSubtarget::initLibcallLoweringInfo(
-    LibcallLoweringInfo &Info) const {
-  // A new bare-metal architecture is not part of LLVM's generic system
-  // library availability tables.  Select the compiler-rt/libgcc spellings
-  // explicitly; the freestanding RISC-C runtime supplies these entry points.
+void RISCCSubtarget::initLibcallLoweringInfo(LibcallLoweringInfo &Info) const {
+  // These runtime helpers are not covered by LLVM's system-library tables.
   static constexpr struct {
     RTLIB::Libcall Op;
     RTLIB::LibcallImpl Impl;

@@ -70,7 +70,7 @@ void RISCCMCExpr::printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const {
 bool RISCCMCExpr::evaluateAsRelocatableImpl(MCValue &Res,
                                             const MCAssembler *Asm) const {
   MCValue Inner;
-  if (!Expr->evaluateAsRelocatable(Inner, Asm))
+  if (!Expr->evaluateAsRelocatable(Inner, Asm) || Inner.getSpecifier())
     return false;
   Res = MCValue::get(Inner.getAddSym(), Inner.getSubSym(), Inner.getConstant(),
                      Kind);

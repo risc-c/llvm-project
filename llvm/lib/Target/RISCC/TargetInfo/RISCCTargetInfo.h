@@ -12,6 +12,6 @@
 namespace llvm {
 class Target;
 Target &getTheRISCCTarget();
-}
+} // namespace llvm
 
 #endif

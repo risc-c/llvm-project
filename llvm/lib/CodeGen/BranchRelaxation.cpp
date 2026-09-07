@@ -129,7 +129,7 @@ public:
   BranchRelaxationLegacy() : MachineFunctionPass(ID) {}
 
   bool runOnMachineFunction(MachineFunction &MF) override {
-    return BranchRelaxation().run(MF);
+    return relaxBranches(MF);
   }
 
   StringRef getPassName() const override { return BRANCH_RELAX_NAME; }
@@ -771,9 +771,13 @@ bool BranchRelaxation::relaxBranchInstructions() {
 PreservedAnalyses
 BranchRelaxationPass::run(MachineFunction &MF,
                           MachineFunctionAnalysisManager &MFAM) {
-  if (BranchRelaxation().run(MF))
+  if (relaxBranches(MF))
     return getMachineFunctionPassPreservedAnalyses();
   return PreservedAnalyses::all();
+}
+
+bool llvm::relaxBranches(MachineFunction &MF) {
+  return BranchRelaxation().run(MF);
 }
 
 bool BranchRelaxation::run(MachineFunction &mf) {

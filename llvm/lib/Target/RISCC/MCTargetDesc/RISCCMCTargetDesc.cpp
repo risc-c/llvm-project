@@ -6,11 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RISCCMCTargetDesc.h"
 #include "RISCCInstPrinter.h"
 #include "RISCCMCAsmInfo.h"
-#include "RISCCMCTargetDesc.h"
 #include "TargetInfo/RISCCTargetInfo.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -43,9 +45,18 @@ static MCAsmInfo *createRISCCMCAsmInfo(const MCRegisterInfo &, const Triple &TT,
   return new RISCCMCAsmInfo(TT, Options);
 }
 
-static MCSubtargetInfo *createRISCCMCSubtargetInfo(const Triple &TT,
-                                                   StringRef CPU,
-                                                   StringRef FS) {
+static MCObjectFileInfo *createRISCCMCObjectFileInfo(MCContext &Ctx, bool PIC,
+                                                     bool LargeCodeModel) {
+  auto &MAI =
+      static_cast<RISCCMCAsmInfo &>(const_cast<MCAsmInfo &>(Ctx.getAsmInfo()));
+  MAI.setRC32(Ctx.getSubtargetInfo()->hasFeature(RISCC::FeatureRC32));
+  auto *MOFI = new MCObjectFileInfo();
+  MOFI->initMCObjectFileInfo(Ctx, PIC, LargeCodeModel);
+  return MOFI;
+}
+
+static MCSubtargetInfo *
+createRISCCMCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
   if (CPU.empty())
     CPU = "full";
   return createRISCCMCSubtargetInfoImpl(TT, CPU, CPU, FS);
@@ -58,9 +69,11 @@ static MCInstPrinter *createRISCCMCInstPrinter(const Triple &, unsigned Variant,
   return Variant == 0 ? new RISCCInstPrinter(MAI, MII, MRI) : nullptr;
 }
 
-extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCCTargetMC() {
+extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
+LLVMInitializeRISCCTargetMC() {
   Target &T = getTheRISCCTarget();
   TargetRegistry::RegisterMCAsmInfo(T, createRISCCMCAsmInfo);
+  TargetRegistry::RegisterMCObjectFileInfo(T, createRISCCMCObjectFileInfo);
   TargetRegistry::RegisterMCInstrInfo(T, createRISCCMCInstrInfo);
   TargetRegistry::RegisterMCRegInfo(T, createRISCCMCRegisterInfo);
   TargetRegistry::RegisterMCSubtargetInfo(T, createRISCCMCSubtargetInfo);
@@ -69,5 +82,5 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCCTargetMC() 
   TargetRegistry::RegisterMCAsmBackend(T, createRISCCMCAsmBackend);
   TargetRegistry::RegisterELFStreamer(T, createRISCCELFStreamer);
   TargetRegistry::RegisterObjectTargetStreamer(T,
-                                                createRISCCObjectTargetStreamer);
+                                               createRISCCObjectTargetStreamer);
 }

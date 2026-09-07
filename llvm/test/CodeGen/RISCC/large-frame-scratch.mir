@@ -1,10 +1,8 @@
 # REQUIRES: riscc-registered-target
 # RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=prolog-epilog %s -o - | FileCheck %s
 
-# A killed store source is free immediately after the store, which is where
-# RegScavenger's liveness cursor sits during backwards frame-index elimination.
-# It must nevertheless be excluded from the address scratch chosen for code
-# inserted before the store.  Check the corresponding load while here too.
+# A killed store source must remain unavailable to address materialization
+# inserted before the store. Check the load case too.
 # CHECK-LABEL: name: large_frame_spill
 # CHECK:       $r0 = LDI 202
 # CHECK-NEXT:  $r0 = ADD $r7, killed $r0

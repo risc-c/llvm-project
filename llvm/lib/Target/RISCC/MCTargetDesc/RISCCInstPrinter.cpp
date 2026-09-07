@@ -46,8 +46,7 @@ void RISCCInstPrinter::printBranchOperand(const MCInst *MI, unsigned OpNo,
 }
 
 void RISCCInstPrinter::printInst(const MCInst *MI, uint64_t Address,
-                                 StringRef Annot,
-                                 const MCSubtargetInfo &STI,
+                                 StringRef Annot, const MCSubtargetInfo &STI,
                                  raw_ostream &OS) {
   printInstruction(MI, Address, STI, OS);
   printAnnotation(OS, Annot);

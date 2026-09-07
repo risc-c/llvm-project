@@ -393,6 +393,12 @@ Expected<SubtargetFeatures> ELFObjectFileBase::getFeatures() const {
     return getMIPSFeatures();
   case ELF::EM_ARM:
     return getARMFeatures();
+  case ELF::EM_RISCC: {
+    SubtargetFeatures Features;
+    if (getPlatformFlags() & ELF::EF_RISCC_RC32)
+      Features.AddFeature("rc32");
+    return Features;
+  }
   case ELF::EM_RISCV:
     return getRISCVFeatures();
   case ELF::EM_LOONGARCH:
@@ -415,6 +421,19 @@ std::optional<StringRef> ELFObjectFileBase::tryGetCPUName() const {
     return StringRef("future");
   case ELF::EM_BPF:
     return StringRef("v4");
+  case ELF::EM_RISCC:
+    switch (getPlatformFlags() & ELF::EF_RISCC_PROFILE_MASK) {
+    case ELF::EF_RISCC_PROFILE_MIN:
+      return StringRef("min");
+    case ELF::EF_RISCC_PROFILE_SYS:
+      return StringRef("sys");
+    case ELF::EF_RISCC_PROFILE_FULL:
+      return StringRef("full");
+    case ELF::EF_RISCC_PROFILE_NANO:
+      return StringRef("nano");
+    default:
+      return std::nullopt;
+    }
   default:
     return std::nullopt;
   }

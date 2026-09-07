@@ -45,8 +45,7 @@ static constexpr MCRegister SREGDecoderTable[] = {
     RISCC::S4, RISCC::S5, RISCC::S6, RISCC::S7,
 };
 
-static DecodeStatus DecodeGPRRegisterClass(MCInst &MI, uint64_t RegNo,
-                                           uint64_t,
+static DecodeStatus DecodeGPRRegisterClass(MCInst &MI, uint64_t RegNo, uint64_t,
                                            const MCDisassembler *) {
   if (RegNo >= std::size(GPRDecoderTable))
     return MCDisassembler::Fail;
@@ -61,8 +60,7 @@ static DecodeStatus DecodeGPR32RegisterClass(MCInst &MI, uint64_t RegNo,
 }
 
 static DecodeStatus DecodeSREGRegisterClass(MCInst &MI, uint64_t RegNo,
-                                            uint64_t,
-                                            const MCDisassembler *) {
+                                            uint64_t, const MCDisassembler *) {
   if (RegNo >= std::size(SREGDecoderTable))
     return MCDisassembler::Fail;
   MI.addOperand(MCOperand::createReg(SREGDecoderTable[RegNo]));
@@ -86,8 +84,8 @@ static DecodeStatus decodeBranch8(MCInst &MI, uint64_t Value, uint64_t,
 static DecodeStatus decodeRC32WordDisp(MCInst &MI, uint64_t Value, uint64_t,
                                        const MCDisassembler *) {
   uint8_t Encoded = static_cast<uint8_t>(Value);
-  uint8_t Words = static_cast<uint8_t>(((Encoded >> 2) & 0x3f) |
-                                       ((Encoded & 0x02) << 5));
+  uint8_t Words =
+      static_cast<uint8_t>(((Encoded >> 2) & 0x3f) | ((Encoded & 0x02) << 5));
   MI.addOperand(MCOperand::createImm(SignExtend32<7>(Words) * 4));
   return MCDisassembler::Success;
 }
@@ -96,9 +94,8 @@ static DecodeStatus decodeShiftAmount(MCInst &MI, uint64_t Value, uint64_t,
                                       const MCDisassembler *Decoder) {
   bool HasWideShift =
       Decoder->getSubtargetInfo().hasFeature(RISCC::FeatureWideShift);
-  if (!HasWideShift &&
-      (MI.getOpcode() == RISCC::SLLI || MI.getOpcode() == RISCC::SLLI32 ||
-       Value != 0))
+  if (!HasWideShift && (MI.getOpcode() == RISCC::SLLI ||
+                        MI.getOpcode() == RISCC::SLLI32 || Value != 0))
     return MCDisassembler::Fail;
   MI.addOperand(MCOperand::createImm(Value + 1));
   return MCDisassembler::Success;
@@ -115,9 +112,10 @@ static DecodeStatus decodeCodeTarget(MCInst &MI, uint64_t Value, uint64_t,
 
 #include "RISCCGenDisassemblerTables.inc"
 
-DecodeStatus RISCCDisassembler::getInstruction(
-    MCInst &MI, uint64_t &Size, ArrayRef<uint8_t> Bytes, uint64_t Address,
-    raw_ostream &) const {
+DecodeStatus RISCCDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
+                                               ArrayRef<uint8_t> Bytes,
+                                               uint64_t Address,
+                                               raw_ostream &) const {
   if (Bytes.size() < 2)
     return Fail;
 
@@ -158,8 +156,6 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
 LLVMInitializeRISCCDisassembler() {
   TargetRegistry::RegisterMCDisassembler(
       getTheRISCCTarget(),
-      [](const Target &, const MCSubtargetInfo &STI,
-         MCContext &Ctx) -> MCDisassembler * {
-        return new RISCCDisassembler(STI, Ctx);
-      });
+      [](const Target &, const MCSubtargetInfo &STI, MCContext &Ctx)
+          -> MCDisassembler * { return new RISCCDisassembler(STI, Ctx); });
 }

@@ -7,13 +7,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCCRegisterInfo.h"
+#include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCSubtarget.h"
-#include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
+#include <algorithm>
 
 using namespace llvm;
 
@@ -47,17 +48,19 @@ static void reserveNanoReturnRegister(MachineBasicBlock::iterator I,
   }
 }
 
-static Register scavengeFrameAddressRegister(
-    const MachineInstr &MI, MachineBasicBlock::iterator I, RegScavenger *RS,
-    const RISCCSubtarget &STI, int SPAdj) {
+static Register scavengeFrameAddressRegister(const MachineInstr &MI,
+                                             MachineBasicBlock::iterator I,
+                                             RegScavenger *RS,
+                                             const RISCCSubtarget &STI,
+                                             int SPAdj) {
   assert(RS && "register scavenging required for large frame offset");
   reserveInstructionRegisters(MI, *RS);
   if (STI.isNano())
     reserveNanoReturnRegister(I, *RS);
   Register Scratch = RS->FindUnusedReg(STI.getGPRClass());
   if (!Scratch)
-    Scratch = RS->scavengeRegisterBackwards(*STI.getGPRClass(), I, false,
-                                             SPAdj);
+    Scratch =
+        RS->scavengeRegisterBackwards(*STI.getGPRClass(), I, false, SPAdj);
   assert(Scratch && "unable to scavenge frame-address register");
   return Scratch;
 }
@@ -67,8 +70,8 @@ RISCCRegisterInfo::getCalleeSavedRegs(const MachineFunction *) const {
   return STI.isNano() ? CSR_RISCC_Nano_SaveList : CSR_RISCC_SaveList;
 }
 
-const uint32_t *RISCCRegisterInfo::getCallPreservedMask(
-    const MachineFunction &, CallingConv::ID) const {
+const uint32_t *RISCCRegisterInfo::getCallPreservedMask(const MachineFunction &,
+                                                        CallingConv::ID) const {
   return STI.isNano() ? CSR_RISCC_Nano_CallPreserved_RegMask
                       : CSR_RISCC_CallPreserved_RegMask;
 }
@@ -81,20 +84,20 @@ const uint32_t *RISCCRegisterInfo::getSRegPreservingCallMask() const {
 BitVector RISCCRegisterInfo::getReservedRegs(const MachineFunction &) const {
   BitVector R(getNumRegs());
   R.set(RISCC::R7);
-  for (MCRegister Reg : {RISCC::S0, RISCC::S1, RISCC::S2, RISCC::S3,
-                         RISCC::S4, RISCC::S5, RISCC::S6, RISCC::S7})
+  for (MCRegister Reg : {RISCC::S0, RISCC::S1, RISCC::S2, RISCC::S3, RISCC::S4,
+                         RISCC::S5, RISCC::S6, RISCC::S7})
     R.set(Reg);
   return R;
 }
 
-const TargetRegisterClass *RISCCRegisterInfo::getPointerRegClass(
-    unsigned) const {
+const TargetRegisterClass *
+RISCCRegisterInfo::getPointerRegClass(unsigned) const {
   return STI.getGPRClass();
 }
 
-bool RISCCRegisterInfo::eliminateFrameIndex(
-    MachineBasicBlock::iterator II, int SPAdj, unsigned FIOperandNum,
-    RegScavenger *RS) const {
+bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
+                                            int SPAdj, unsigned FIOperandNum,
+                                            RegScavenger *RS) const {
   MachineInstr &MI = *II;
   MachineFunction &MF = *MI.getParent()->getParent();
   int FI = MI.getOperand(FIOperandNum).getIndex();
@@ -103,7 +106,8 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
                    MI.getOperand(FIOperandNum + 1).getImm() + SPAdj;
   const bool IsRC32 = STI.isRC32();
 
-  if (MI.getOpcode() == RISCC::FRAMEADDR || MI.getOpcode() == RISCC::FRAMEADDR32) {
+  if (MI.getOpcode() == RISCC::FRAMEADDR ||
+      MI.getOpcode() == RISCC::FRAMEADDR32) {
     Register Dst = MI.getOperand(0).getReg();
     const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
     DebugLoc DL = MI.getDebugLoc();
@@ -114,22 +118,22 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
       if (isInt<8>(Offset))
         BuildMI(*MI.getParent(), II, DL,
                 TII.get(IsRC32 ? RISCC::ADDI32 : RISCC::ADDI), Dst)
-            .addReg(Dst).addImm(Offset);
+            .addReg(Dst)
+            .addImm(Offset);
       else if (IsRC32) {
         for (int64_t Remaining = Offset; Remaining;) {
-          int64_t Step = Remaining > 0 ? std::min<int64_t>(Remaining, 127)
-                                       : std::max<int64_t>(Remaining, -128);
+          int64_t Step = std::clamp<int64_t>(Remaining, -128, 127);
           BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI32), Dst)
-              .addReg(Dst).addImm(Step);
+              .addReg(Dst)
+              .addImm(Step);
           Remaining -= Step;
         }
-      }
-      else {
-        Register Scratch =
-            scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
+      } else {
+        Register Scratch = scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
         TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
         BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Dst)
-            .addReg(Dst).addReg(Scratch, RegState::Kill);
+            .addReg(Dst)
+            .addReg(Scratch, RegState::Kill);
       }
     }
     MI.eraseFromParent();
@@ -150,16 +154,17 @@ bool RISCCRegisterInfo::eliminateFrameIndex(
     BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::MOV32), Scratch)
         .addReg(RISCC::R7);
     for (int64_t Remaining = Offset; Remaining;) {
-      int64_t Step = Remaining > 0 ? std::min<int64_t>(Remaining, 127)
-                                   : std::max<int64_t>(Remaining, -128);
+      int64_t Step = std::clamp<int64_t>(Remaining, -128, 127);
       BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI32), Scratch)
-          .addReg(Scratch).addImm(Step);
+          .addReg(Scratch)
+          .addImm(Step);
       Remaining -= Step;
     }
   } else {
     TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
     BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Scratch)
-        .addReg(RISCC::R7).addReg(Scratch, RegState::Kill);
+        .addReg(RISCC::R7)
+        .addReg(Scratch, RegState::Kill);
   }
   MI.getOperand(FIOperandNum).ChangeToRegister(Scratch, false);
   MI.getOperand(FIOperandNum + 1).ChangeToImmediate(0);

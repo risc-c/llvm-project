@@ -13,15 +13,20 @@
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
-class RISCCAsmPrinterBeginPass : public RequiredPassInfoMixin<RISCCAsmPrinterBeginPass> {
-public: PreservedAnalyses run(Module &, ModuleAnalysisManager &);
+class RISCCAsmPrinterBeginPass
+    : public RequiredPassInfoMixin<RISCCAsmPrinterBeginPass> {
+public:
+  PreservedAnalyses run(Module &, ModuleAnalysisManager &);
 };
 class RISCCAsmPrinterPass : public RequiredPassInfoMixin<RISCCAsmPrinterPass> {
-public: PreservedAnalyses run(MachineFunction &, MachineFunctionAnalysisManager &);
+public:
+  PreservedAnalyses run(MachineFunction &, MachineFunctionAnalysisManager &);
 };
-class RISCCAsmPrinterEndPass : public RequiredPassInfoMixin<RISCCAsmPrinterEndPass> {
-public: PreservedAnalyses run(Module &, ModuleAnalysisManager &);
+class RISCCAsmPrinterEndPass
+    : public RequiredPassInfoMixin<RISCCAsmPrinterEndPass> {
+public:
+  PreservedAnalyses run(Module &, ModuleAnalysisManager &);
 };
-}
+} // namespace llvm
 
 #endif

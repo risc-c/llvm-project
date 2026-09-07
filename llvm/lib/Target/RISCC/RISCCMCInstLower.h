@@ -30,6 +30,6 @@ public:
   void lower(const MachineInstr *, MCInst &) const;
   MCOperand lowerSymbolOperand(const MachineOperand &, MCSymbol *) const;
 };
-}
+} // namespace llvm
 
 #endif

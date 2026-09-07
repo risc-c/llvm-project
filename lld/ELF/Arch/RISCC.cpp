@@ -14,6 +14,7 @@
 #include "InputFiles.h"
 #include "InputSection.h"
 #include "OutputSections.h"
+#include "RelocScan.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Target.h"
@@ -38,6 +39,9 @@ public:
   RelExpr getRelExpr(RelType type, const Symbol &s,
                      const uint8_t *loc) const override;
   void scanSection(InputSectionBase &sec, unsigned shard) override;
+  template <class ELFT, class RelTy>
+  void scanSectionImpl(InputSectionBase &sec, Relocs<RelTy> rels,
+                       unsigned shard);
   void validateOutput() const override;
   bool relaxOnce(int pass) const override;
   void finalizeRelax(int passes) const override;
@@ -87,12 +91,39 @@ static bool getInputSectionOffset(const Relocation &rel, InputSection *&sec,
   return true;
 }
 
+static bool hasOverlappingRelocation(ArrayRef<Relocation> rels, uint64_t offset,
+                                     const Relocation *first,
+                                     const Relocation *second = nullptr) {
+  for (const Relocation &rel : rels) {
+    if (&rel == first || &rel == second)
+      continue;
+    unsigned size = 1;
+    switch (rel.type) {
+    case R_RISCC_ABS16:
+    case R_RISCC_CODE16:
+      size = 2;
+      break;
+    case R_RISCC_ABS32:
+    case R_RISCC_TPOFF32:
+    case R_RISCC_CALL_TARGET:
+    case R_RISCC_JALL21:
+      size = 4;
+      break;
+    default:
+      break;
+    }
+    if (rel.offset < offset + 4 && rel.offset + size > offset)
+      return true;
+  }
+  return false;
+}
+
 uint32_t RISCC::calcEFlags() const {
   if (ctx.objectFiles.empty())
     return 0;
 
-  constexpr uint32_t knownMask = EF_RISCC_ABI_MASK | EF_RISCC_PROFILE_MASK |
-                                 EF_RISCC_CONFIG_MASK;
+  constexpr uint32_t knownMask =
+      EF_RISCC_ABI_MASK | EF_RISCC_PROFILE_MASK | EF_RISCC_CONFIG_MASK;
 
   // Capability order is min < sys < full, although the numeric e_flags
   // encodings are not ordered that way. Nano is an incompatible profile:
@@ -102,8 +133,7 @@ uint32_t RISCC::calcEFlags() const {
   bool sawConfiguration = false;
   uint32_t configuration = 0;
   for (InputFile *file : ctx.objectFiles) {
-    uint32_t flags =
-        cast<ObjFile<ELF32LE>>(file)->getObj().getHeader().e_flags;
+    uint32_t flags = cast<ObjFile<ELF32LE>>(file)->getObj().getHeader().e_flags;
     if (uint32_t unknown = flags & ~knownMask)
       ErrAlways(ctx) << file << ": unsupported RISC-C ELF flags 0x"
                      << utohexstr(unknown);
@@ -137,6 +167,8 @@ uint32_t RISCC::calcEFlags() const {
       rank = 3;
       break;
     case EF_RISCC_PROFILE_NANO:
+      if (config & EF_RISCC_RC32)
+        ErrAlways(ctx) << file << ": RC32 has no Nano profile";
       sawNano = true;
       break;
     default:
@@ -153,10 +185,8 @@ uint32_t RISCC::calcEFlags() const {
   if (sawNano)
     return EF_RISCC_ABI_V0 | EF_RISCC_PROFILE_NANO;
 
-  constexpr uint32_t profiles[] = {EF_RISCC_PROFILE_MIN,
-                                   EF_RISCC_PROFILE_MIN,
-                                   EF_RISCC_PROFILE_SYS,
-                                   EF_RISCC_PROFILE_FULL};
+  constexpr uint32_t profiles[] = {EF_RISCC_PROFILE_MIN, EF_RISCC_PROFILE_MIN,
+                                   EF_RISCC_PROFILE_SYS, EF_RISCC_PROFILE_FULL};
   return EF_RISCC_ABI_V0 | profiles[outputRank] | configuration;
 }
 
@@ -192,8 +222,32 @@ RelExpr RISCC::getRelExpr(RelType type, const Symbol &s,
   }
 }
 
+template <class ELFT, class RelTy>
+void RISCC::scanSectionImpl(InputSectionBase &sec, Relocs<RelTy> rels,
+                            unsigned shard) {
+  RelocScan rs(ctx, &sec, shard);
+  sec.relocations.reserve(rels.size());
+  for (auto it = rels.begin(); it != rels.end(); ++it) {
+    auto type = it->getType(false);
+    // NONE keeps its target alive during GC but has no field to relocate.
+    if (type == R_RISCC_NONE)
+      continue;
+    if (type == R_RISCC_PCREL8_WORD &&
+        (it->r_offset >= sec.size || sec.size - it->r_offset < 2)) {
+      Err(ctx) << sec.getLocation(it->r_offset)
+               << ": R_RISCC_PCREL8_WORD requires a complete instruction";
+      continue;
+    }
+    rs.scan<ELFT, RelTy>(it, type, rs.getAddend<ELFT>(*it, type));
+  }
+}
+
 void RISCC::scanSection(InputSectionBase &sec, unsigned shard) {
-  TargetInfo::scanSection(sec, shard);
+  elf::scanSection1<RISCC, ELF32LE>(*this, sec, shard);
+  llvm::stable_sort(sec.relocs(),
+                    [](const Relocation &lhs, const Relocation &rhs) {
+                      return lhs.offset < rhs.offset;
+                    });
 
   for (const Relocation &rel : sec.relocs()) {
     if (!rel.sym)
@@ -203,9 +257,8 @@ void RISCC::scanSection(InputSectionBase &sec, unsigned shard) {
     case R_RISCC_TPOFF_HI8:
     case R_RISCC_TPOFF32:
       if (!rel.sym->isTls())
-        Err(ctx) << sec.getLocation(rel.offset) << ": relocation "
-                 << rel.type << " against " << rel.sym
-                 << " requires a TLS symbol";
+        Err(ctx) << sec.getLocation(rel.offset) << ": relocation " << rel.type
+                 << " against " << rel.sym << " requires a TLS symbol";
       break;
     default:
       break;
@@ -233,13 +286,12 @@ void RISCC::validateOutput() const {
     if (section->addr & 1)
       Err(ctx) << "executable section " << section->name << " address 0x"
                << utohexstr(section->addr) << " is not 2-byte aligned";
-    if (section->addr >= codeLimit ||
-        section->size > codeLimit - section->addr)
+    if (section->addr >= codeLimit || section->size > codeLimit - section->addr)
       Err(ctx) << "executable section " << section->name << " range [0x"
                << utohexstr(section->addr) << ", 0x"
                << utohexstr(section->addr + section->size)
-               << ") is outside the RISC-C code byte address range "
-                  "[0x0, 0x10000)";
+               << ") is outside the RISC-C code byte address range [0x0, 0x"
+               << utohexstr(codeLimit) << ")";
   }
 
   uint64_t entry;
@@ -250,8 +302,7 @@ void RISCC::validateOutput() const {
         if (const OutputSection *section = symbol->getOutputSection();
             section && !(section->flags & SHF_EXECINSTR))
           Err(ctx) << "entry symbol " << symbol
-                   << " is defined in non-executable section "
-                   << section->name;
+                   << " is defined in non-executable section " << section->name;
         entry = symbol->getVA(ctx);
         hasEntry = true;
       }
@@ -261,8 +312,8 @@ void RISCC::validateOutput() const {
   }
   if (hasEntry && ((entry & 1) || entry >= codeLimit))
     Err(ctx) << "entry point 0x" << utohexstr(entry)
-             << " is not an aligned RISC-C code byte address in "
-                "[0x0, 0x10000)";
+             << " is not an aligned RISC-C code byte address in [0x0, 0x"
+             << utohexstr(codeLimit) << ")";
 }
 
 void RISCC::initRelaxation() const {
@@ -285,8 +336,7 @@ void RISCC::initRelaxation() const {
         continue;
       MutableArrayRef<Relocation> rels = sec->relocs();
       for (auto [callIndex, call] : llvm::enumerate(rels)) {
-        if (call.type != R_RISCC_RELAX_CALL &&
-            call.type != R_RISCC_RELAX_TAIL)
+        if (call.type != R_RISCC_RELAX_CALL && call.type != R_RISCC_RELAX_TAIL)
           continue;
 
         if (!supportsRelaxation) {
@@ -315,8 +365,7 @@ void RISCC::initRelaxation() const {
           continue;
         }
 
-        if ((call.offset & 1) || sec->size < 4 ||
-            call.offset > sec->size - 4) {
+        if ((call.offset & 1) || sec->size < 4 || call.offset > sec->size - 4) {
           Err(ctx) << sec->getLocation(call.offset)
                    << ": relaxable RISC-C call has an invalid instruction "
                       "offset";
@@ -331,9 +380,8 @@ void RISCC::initRelaxation() const {
         if ((load & 0xff00) != 0x8100 || transfer != expectedTransfer) {
           Err(ctx) << sec->getLocation(call.offset)
                    << ": RISC-C relaxation marker is not attached to the "
-                   << (call.type == R_RISCC_RELAX_TAIL
-                           ? "LDPC r0/JALR s0,r0"
-                           : "LDPC r0/JALR s7,r0")
+                   << (call.type == R_RISCC_RELAX_TAIL ? "LDPC r0/JALR s0,r0"
+                                                       : "LDPC r0/JALR s7,r0")
                    << " instruction pair";
           continue;
         }
@@ -376,6 +424,14 @@ void RISCC::initRelaxation() const {
           continue;
         }
         Relocation &target = literalRels[literalIndex];
+        if (hasOverlappingRelocation(rels, call.offset, &call,
+                                     &rels[loadIndex]) ||
+            hasOverlappingRelocation(literalRels, literalOffset, &target)) {
+          Err(ctx) << sec->getLocation(call.offset)
+                   << ": relaxable RISC-C call or literal overlaps another "
+                      "relocation";
+          continue;
+        }
         if (!target.sym) {
           Err(ctx) << literalSec->getLocation(literalOffset)
                    << ": R_RISCC_CALL_TARGET has no target symbol";
@@ -385,14 +441,11 @@ void RISCC::initRelaxation() const {
         uint64_t targetOffset = 0;
         if (auto *targetDef = dyn_cast_or_null<Defined>(target.sym);
             targetDef && targetDef->isSection()) {
-          targetSec = dyn_cast_or_null<InputSection>(targetDef->section);
-          int64_t offset = int64_t(targetDef->value) + target.addend;
-          if (!targetSec || offset < 0 || uint64_t(offset) > targetSec->size) {
+          if (!getInputSectionOffset(target, targetSec, targetOffset)) {
             Err(ctx) << literalSec->getLocation(literalOffset)
                      << ": R_RISCC_CALL_TARGET has an invalid section offset";
             continue;
           }
-          targetOffset = offset;
         }
         callRelaxations.push_back(
             {sec, callIndex, loadIndex, literalSec, literalIndex, target.sym,
@@ -416,14 +469,14 @@ void RISCC::initRelaxation() const {
       for (auto [i, rel] : llvm::enumerate(sec->relocs())) {
         InputSection *targetSec;
         uint64_t targetOffset;
+        uint64_t literalOffset =
+            call.literalSec->relocs()[call.literalRelocIndex].offset;
         if (!getInputSectionOffset(rel, targetSec, targetOffset) ||
-            targetSec != call.literalSec ||
-            targetOffset != call.literalSec->relocs()[call.literalRelocIndex]
-                                .offset)
+            targetSec != call.literalSec || targetOffset < literalOffset ||
+            targetOffset >= literalOffset + 4)
           continue;
-        bool paired =
-            sec == call.callSec &&
-            (i == call.callRelocIndex || i == call.loadRelocIndex);
+        bool paired = sec == call.callSec &&
+                      (i == call.callRelocIndex || i == call.loadRelocIndex);
         if (!paired || ++references > 2)
           call.valid = false;
       }
@@ -520,8 +573,7 @@ bool RISCC::relaxSection(InputSection &sec) const {
   return changed;
 }
 
-uint32_t RISCC::droppedBefore(const InputSection &sec,
-                              uint64_t offset) const {
+uint32_t RISCC::droppedBefore(const InputSection &sec, uint64_t offset) const {
   if (!sec.relaxAux || !sec.relaxAux->relocDeltas)
     return 0;
   uint32_t delta = 0;
@@ -546,15 +598,12 @@ bool RISCC::relaxOnce(int pass) const {
       continue;
     }
     uint64_t target =
-        call.targetSec
-            ? call.targetSec->getVA() + call.targetOffset -
-                  droppedBefore(*call.targetSec, call.targetOffset)
-            : call.target->getVA(ctx, call.targetAddend);
+        call.targetSec ? call.targetSec->getVA() + call.targetOffset -
+                             droppedBefore(*call.targetSec, call.targetOffset)
+                       : call.target->getVA(ctx, call.targetAddend);
     bool candidate = !(target & 1) && target <= 0x1fffff;
-    // Linker-script expressions can move a target in the opposite direction
-    // when a section shrinks. After a few exploratory passes, allow only the
-    // conservative relaxed-to-unrelaxed transition so address assignment
-    // cannot oscillate indefinitely.
+    // After four passes, only undo relaxations so linker-script expressions
+    // cannot make section sizes oscillate.
     if (pass < 4 || call.relaxed)
       call.relaxed = candidate;
   }
@@ -640,8 +689,8 @@ void RISCC::finalizeRelax(int passes) const {
 
         uint32_t keep = 0;
         if (rewrite) {
-          write32le(p, rel.type == R_RISCC_RELAX_TAIL ? 0x00000034
-                                                       : 0x00003834);
+          write32le(p,
+                    rel.type == R_RISCC_RELAX_TAIL ? 0x00000034 : 0x00003834);
           keep = 4;
           p += keep;
         }
@@ -682,8 +731,7 @@ void RISCC::finalizeRelax(int passes) const {
     call.sym = relax.target;
     call.addend = finalTargetAddends[index];
 
-    Relocation &literal =
-        relax.literalSec->relocs()[relax.literalRelocIndex];
+    Relocation &literal = relax.literalSec->relocs()[relax.literalRelocIndex];
     literal.expr = R_RELAX_HINT;
     literal.type = R_RISCC_NONE;
     literal.addend = 0;
@@ -694,8 +742,7 @@ bool RISCC::checkCodeAddress(uint8_t *loc, const Relocation &rel,
                              uint64_t val) const {
   if (val > 0xffff) {
     Err(ctx) << getErrorLoc(ctx, loc) << "relocation " << rel.type
-             << " cannot encode out-of-range byte address 0x"
-             << utohexstr(val);
+             << " cannot encode out-of-range byte address 0x" << utohexstr(val);
     return false;
   }
   checkAlignment(ctx, loc, val, 2, rel);
@@ -715,17 +762,20 @@ void RISCC::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     write16le(loc, val);
     break;
   case R_RISCC_ABS32:
+  case R_RISCC_TPOFF32:
   case R_RISCC_CALL_TARGET:
-    checkUInt(ctx, loc, val, 32, rel);
+    checkIntUInt(ctx, loc, val, 32, rel);
     if (rel.type == R_RISCC_CALL_TARGET)
       checkAlignment(ctx, loc, val, 2, rel);
     write32le(loc, val);
     break;
   case R_RISCC_LO8:
+  case R_RISCC_TPOFF_LO8:
     checkUInt(ctx, loc, val, 16, rel);
     *loc = val & 0xff;
     break;
   case R_RISCC_HI8:
+  case R_RISCC_TPOFF_HI8:
     checkUInt(ctx, loc, val, 16, rel);
     *loc = (val >> 8) & 0xff;
     break;
@@ -753,6 +803,8 @@ void RISCC::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     break;
   }
   case R_RISCC_PCREL8_WORD: {
+    if ((ctx.arg.eflags & EF_RISCC_RC32) && (read16le(loc) & 0xc700) == 0x8100)
+      checkAlignment(ctx, loc, rel.sym->getVA(ctx, rel.addend), 4, rel);
     checkAlignment(ctx, loc, val, 2, rel);
     int64_t wordOffset = (static_cast<int64_t>(val) - 2) / 2;
     checkInt(ctx, loc, wordOffset, 8, rel);
@@ -760,18 +812,6 @@ void RISCC::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     *loc = static_cast<uint8_t>((encoded << 1) | (encoded >> 7));
     break;
   }
-  case R_RISCC_TPOFF_LO8:
-    checkUInt(ctx, loc, val, 16, rel);
-    *loc = val & 0xff;
-    break;
-  case R_RISCC_TPOFF_HI8:
-    checkUInt(ctx, loc, val, 16, rel);
-    *loc = (val >> 8) & 0xff;
-    break;
-  case R_RISCC_TPOFF32:
-    checkUInt(ctx, loc, val, 32, rel);
-    write32le(loc, val);
-    break;
   case R_RISCC_RELAX_CALL:
   case R_RISCC_RELAX_TAIL:
     break;

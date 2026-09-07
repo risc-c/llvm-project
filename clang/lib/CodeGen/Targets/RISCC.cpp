@@ -26,12 +26,9 @@ class RISCCABIInfo : public DefaultABIInfo {
     if (Size == 0 || isEmptyRecord(getContext(), Ty, true))
       return ABIArgInfo::getIgnore();
 
-    // Present aggregates to LLVM as a single little-endian integer whose
-    // width is an integral number of ABI slots.  Legalization then splits it
-    // into low-word-first i16 parts carrying one OrigArgIndex, so the backend
-    // can keep the entire argument in registers or put the entire argument on
-    // the stack.  Padding the final partial word also makes byte-field
-    // records such as {u8, u8} consume one slot rather than two.
+    // One integer keeps all legalized parts under the same OrigArgIndex, so
+    // argument lowering can assign the whole aggregate to registers or the
+    // stack. Round up to a native slot to include trailing padding.
     llvm::Type *CoerceTy = llvm::IntegerType::get(
         getVMContext(), llvm::alignTo(Size, getSlotBits()));
     return ABIArgInfo::getDirect(CoerceTy);
@@ -43,8 +40,7 @@ class RISCCABIInfo : public DefaultABIInfo {
 
     const unsigned Size = getContext().getTypeSize(Ty);
     if (Size > ReturnSlots * getSlotBits())
-      return getNaturalAlignIndirect(Ty,
-                                     getDataLayout().getAllocaAddrSpace());
+      return getNaturalAlignIndirect(Ty, getDataLayout().getAllocaAddrSpace());
 
     // Small aggregates are returned as low-slot-first native slots in r1..r3.
     // Explicit coercion avoids flattening {u8, u8} into two byte values.
@@ -58,17 +54,19 @@ class RISCCABIInfo : public DefaultABIInfo {
 
   ABIArgInfo classifyArgumentType(QualType Ty) const {
     Ty = useFirstFieldIfTransparentUnion(Ty);
-    const unsigned Size = getContext().getTypeSize(Ty);
 
-    // The ABI promotes byte-sized integer arguments to one 16-bit slot.
-    if (Ty->isIntegralOrEnumerationType() && Size <= 8)
+    // Narrow integer arguments are extended to one native slot.
+    if (isPromotableIntegerTypeForABI(Ty))
       return ABIArgInfo::getExtend(Ty);
 
     // C aggregates are passed by value, either wholly in r1..r3 or wholly on
     // the stack, with a partial final word padded to one full slot.
-    // Indirect arguments are reserved for a future C++ ABI.
-    if (isAggregateTypeForABI(Ty))
+    if (isAggregateTypeForABI(Ty)) {
+      if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
+        return getNaturalAlignIndirect(Ty, getDataLayout().getAllocaAddrSpace(),
+                                       RAA == CGCXXABI::RAA_DirectInMemory);
       return coerceAggregateToSlots(Ty);
+    }
     return ABIArgInfo::getDirect();
   }
 

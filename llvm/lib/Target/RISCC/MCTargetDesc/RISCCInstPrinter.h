@@ -18,8 +18,8 @@ public:
                    const MCRegisterInfo &MRI)
       : MCInstPrinter(MAI, MII, MRI) {}
 
-  void printInst(const MCInst *, uint64_t, StringRef,
-                 const MCSubtargetInfo &, raw_ostream &) override;
+  void printInst(const MCInst *, uint64_t, StringRef, const MCSubtargetInfo &,
+                 raw_ostream &) override;
   void printRegName(raw_ostream &, MCRegister) override;
   void printOperand(const MCInst *, unsigned, const MCSubtargetInfo &,
                     raw_ostream &);
@@ -32,6 +32,6 @@ public:
                         raw_ostream &);
   static const char *getRegisterName(MCRegister Reg);
 };
-}
+} // namespace llvm
 
 #endif

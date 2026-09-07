@@ -15,9 +15,13 @@ namespace llvm {
 class Triple;
 class RISCCMCAsmInfo : public MCAsmInfoELF {
   void anchor() override;
+
 public:
   RISCCMCAsmInfo(const Triple &, const MCTargetOptions &);
+  void setRC32(bool IsRC32) {
+    CodePointerSize = CalleeSaveStackSlotSize = IsRC32 ? 4 : 2;
+  }
 };
-}
+} // namespace llvm
 
 #endif
