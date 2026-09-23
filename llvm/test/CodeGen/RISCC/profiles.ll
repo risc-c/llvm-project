@@ -119,12 +119,12 @@ define i16 @shift_right_ten_size(i16 %value) minsize {
 
 define i16 @shift_right_fifteen_fast(i16 %value) {
 ; SMALL-LABEL:    shift_right_fifteen_fast:
-; SMALL-NOT:      __riscc_lshrhi
-; SMALL-COUNT-15: srli {{.*}}, 1
+; SMALL:          ldi16 [[LIMIT:r[0-7]]], 32767
+; SMALL-NEXT:     sltu r1, [[LIMIT]], r1
 ; SMALL:          {{ret s7|jalr r0, r6}}
 ; WIDE-LABEL:     shift_right_fifteen_fast:
-; WIDE:           srli [[HALF:r[0-7]]], {{r[0-7]}}, 8
-; WIDE-NEXT:      srli {{r[0-7]}}, [[HALF]], 7
+; WIDE:           ldi16 [[LIMIT:r[0-7]]], 32767
+; WIDE-NEXT:      sltu r1, [[LIMIT]], r1
   %result = lshr i16 %value, 15
   ret i16 %result
 }

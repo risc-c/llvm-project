@@ -1,0 +1,76 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s
+
+# RC32 addresses through byte 252 directly, including medium stack frames.
+# An argument beyond that range still needs an emergency spill slot.
+# CHECK-LABEL: name: nearby_argument
+# CHECK: stackSize: 0
+# CHECK: $r1 = LD32 $r7, 200
+# CHECK-LABEL: name: last_argument
+# CHECK: stackSize: 0
+# CHECK: $r1 = LD32 $r7, 252
+# CHECK-LABEL: name: distant_argument
+# CHECK: stackSize: 4
+# CHECK: $r0 = LDPC
+# CHECK: $r1 = LD32 $r0, 0
+# CHECK-LABEL: name: medium_frame
+# CHECK: stackSize: 200
+# CHECK: ST32 $r1, $r7, 196
+# CHECK-NEXT: $r1 = LD32 $r7, 196
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @nearby_argument() { ret i32 0 }
+  define i32 @last_argument() { ret i32 0 }
+  define i32 @distant_argument() { ret i32 0 }
+  define i32 @medium_frame() { ret i32 0 }
+...
+---
+name: nearby_argument
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, offset: 200, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LD32 %fixed-stack.0, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit killed $r1
+...
+---
+name: last_argument
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, offset: 252, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LD32 %fixed-stack.0, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit killed $r1
+...
+---
+name: distant_argument
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, offset: 256, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LD32 %fixed-stack.0, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit killed $r1
+...
+---
+name: medium_frame
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, size: 200, alignment: 4 }
+body: |
+  bb.0:
+    liveins: $s7, $r1
+    ST32 $r1, %stack.0, 196 :: (store (s32) into %stack.0 + 196)
+    $r1 = LD32 %stack.0, 196 :: (load (s32) from %stack.0 + 196)
+    RETS implicit $s7, implicit killed $r1
+...

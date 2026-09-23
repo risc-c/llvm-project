@@ -1,0 +1,104 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=postmisched -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s --check-prefix=RC16
+
+# A pointer update can fill a load-use delay without changing volatile order.
+# CHECK-LABEL: name: update32
+# CHECK: $r2 = LD32 $r1, 28
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, 32
+# CHECK-NEXT: $r2 = ADDI32 killed $r2, 1
+# CHECK-NEXT: ST32 killed $r2, $r1, -4
+# RC16-LABEL: name: update16
+# RC16: $r2 = LD $r1, 14
+# RC16-NEXT: $r1 = ADDI killed $r1, 16
+# RC16-NEXT: $r2 = ADDI killed $r2, 1
+# RC16-NEXT: ST killed $r2, $r1, -2
+
+# Do not rebase the pointer when it is also the stored value, when the new
+# displacement cannot be encoded, or when another use observes its old value.
+# CHECK-LABEL: name: store_pointer
+# CHECK: ST32 $r1, $r1, 0
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, 4
+# CHECK-LABEL: name: offset_limit
+# CHECK: ST32 killed $r2, $r1, -256
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, 4
+# CHECK-LABEL: name: observe_pointer
+# CHECK: STB $r2, $r1
+# CHECK: ST32 killed $r2, $r1, -4
+
+
+#--- rc32.mir
+--- |
+  define void @update32() #0 { ret void }
+  define void @store_pointer() #0 { ret void }
+  define void @offset_limit() #0 { ret void }
+  define void @observe_pointer() #0 { ret void }
+  attributes #0 = { "target-features"="+rc32" }
+...
+---
+name: update32
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LD32 $r1, 28 :: (volatile load (s32))
+    $r2 = ADDI32 killed $r2, 1
+    ST32 killed $r2, $r1, 28 :: (volatile store (s32))
+    $r1 = ADDI32 $r1, 32
+    RETS implicit $s7, implicit $r1
+...
+---
+name: store_pointer
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LD32 $r1, 0 :: (volatile load (s32))
+    ST32 $r1, $r1, 0 :: (volatile store (s32))
+    $r1 = ADDI32 $r1, 4
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: offset_limit
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LD32 $r1, -256 :: (volatile load (s32))
+    $r2 = ADDI32 killed $r2, 1
+    ST32 killed $r2, $r1, -256 :: (volatile store (s32))
+    $r1 = ADDI32 $r1, 4
+    RETS implicit $s7, implicit $r1
+...
+---
+name: observe_pointer
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LD32 $r1, 0 :: (volatile load (s32))
+    STB $r2, $r1 :: (volatile store (s8))
+    ST32 killed $r2, $r1, 0 :: (volatile store (s32))
+    $r1 = ADDI32 $r1, 4
+    RETS implicit $s7, implicit $r1
+...
+
+#--- rc16.mir
+---
+name: update16
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LD $r1, 14 :: (volatile load (s16))
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, $r1, 14 :: (volatile store (s16))
+    $r1 = ADDI $r1, 16
+    RETS implicit $s7, implicit $r1
+...

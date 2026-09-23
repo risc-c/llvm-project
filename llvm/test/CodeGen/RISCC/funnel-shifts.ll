@@ -46,8 +46,8 @@ define i16 @funnel_left_seventeen(i16 %high, i16 %low) {
 
 define i16 @funnel_left_two(i16 %high, i16 %low) {
 ; MAIN-LABEL: funnel_left_two:
-; MAIN-NOT:   fsl1
-; MAIN-NOT:   fsr1
+; MAIN:       fsl1
+; MAIN:       fsl1
 ; NANO-LABEL: funnel_left_two:
 ; NANO-NOT:   fsl1
 ; NANO-NOT:   fsr1
@@ -57,8 +57,8 @@ define i16 @funnel_left_two(i16 %high, i16 %low) {
 
 define i16 @funnel_right_two(i16 %high, i16 %low) {
 ; MAIN-LABEL: funnel_right_two:
-; MAIN-NOT:   fsl1
-; MAIN-NOT:   fsr1
+; MAIN:       fsr1
+; MAIN:       fsr1
 ; NANO-LABEL: funnel_right_two:
 ; NANO-NOT:   fsl1
 ; NANO-NOT:   fsr1

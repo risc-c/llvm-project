@@ -25,7 +25,8 @@ define i16 @allocate_r0(i16 %a, i16 %b, i16 %c, i16 %d) {
 define i16 @compare_branch(i16 %a, i16 %b, i16 %x) {
 ; CHECK-LABEL: compare_branch:
 ; CHECK:       sub	r0, r1, r2
-; CHECK-NEXT:  bnez
+; CHECK-NOT:   {{^[[:space:]]+[a-z]+[[:space:]]+r0,}}
+; CHECK:       bnez
   %same = icmp eq i16 %a, %b
   br i1 %same, label %equal, label %different
 

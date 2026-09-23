@@ -9,6 +9,7 @@
 
 #include "RISCCConstantIslandPass.h"
 #include "RISCC.h"
+#include "RISCCConstantPoolValue.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCSubtarget.h"
 #include "llvm/ADT/DenseMap.h"
@@ -317,7 +318,9 @@ class RISCCConstantIslands {
       }
 
       auto Last = MBB.getLastNonDebugInstr();
-      if (Last == MBB.end() || !Last->isBarrier())
+      // A noreturn call can end a block without a barrier instruction.
+      // With no CFG successor, execution cannot fall through into the pool.
+      if (!MBB.succ_empty() && (Last == MBB.end() || !Last->isBarrier()))
         continue;
 
       unsigned RightPool = LiteralPools.size();
@@ -577,6 +580,27 @@ public:
   bool run() {
     if (!MF->getSubtarget<RISCCSubtarget>().isRC32())
       return false;
+    // Direct-call symbols remain visible to IPRA until this final pass.
+    for (MachineBasicBlock &MBB : *MF)
+      for (MachineInstr &MI : MBB) {
+        if (MI.getOpcode() != RISCC::CALL32_LITERAL &&
+            MI.getOpcode() != RISCC::TAIL32_LITERAL)
+          continue;
+        MachineOperand &Target = MI.getOperand(0);
+        RISCCConstantPoolSymbol *Value;
+        if (Target.isGlobal()) {
+          assert(Target.getOffset() == 0 && "offset on direct call target");
+          Value = RISCCConstantPoolSymbol::Create(
+              MF->getFunction().getContext(), Target.getGlobal(), false, true);
+        } else {
+          assert(Target.isSymbol() && "unexpected direct call target");
+          Value = RISCCConstantPoolSymbol::CreateCallTarget(
+              MF->getFunction().getContext(), Target.getSymbolName());
+        }
+        unsigned Index =
+            MF->getConstantPool()->getConstantPoolIndex(Value, Align(4));
+        Target.ChangeToCPI(Index, 0);
+      }
     planLiteralPools();
     if (!AllUses.empty())
       MF->ensureAlignment(Align(4));

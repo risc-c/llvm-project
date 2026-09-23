@@ -1,0 +1,156 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=RC16
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s
+
+# An unsigned byte load supplies an unsigned-width fact, so masking it to a
+# byte is redundant.  The same mask must remain after signed loads and after
+# an addition that can carry into bit eight.
+# RC16-LABEL: name: unsigned_byte
+# RC16:       %1:gpr = COPY %0
+# RC16-NOT:   ANDI %0, 255
+# RC16-LABEL: name: signed_byte_mask
+# RC16:       %1:gpr = ANDI %0, 255
+# RC16-LABEL: name: byte_sum_mask
+# RC16:       %3:gpr = ANDI %2, 255
+
+# Mask 127 fits a signed byte, mask 255 does not. Bitwise operations on
+# signed bytes preserve the width, but adding two signed bytes may overflow it.
+# CHECK-LABEL: name: widths
+# CHECK: %2:gpr32 = COPY %1
+# CHECK: %4:gpr32 = SEXT8_RC32 %3
+# CHECK: %7:gpr32 = COPY %6
+# CHECK: %9:gpr32 = SEXT8_RC32 %8
+# CHECK: %11:gpr32 = COPY %10
+
+# A load displaced from a literal does not necessarily read that literal.
+# CHECK-LABEL: name: literal_offset
+# CHECK: %1:gpr32 = COPY %0
+# CHECK: %3:gpr32 = SEXT8_RC32 %2
+
+# CHECK-LABEL: name: unsigned_byte32
+# CHECK:       %1:gpr32 = COPY %0
+# CHECK-NOT:   ANDI32 %0, 255
+# CHECK-LABEL: name: signed_byte_mask32
+# CHECK:       %1:gpr32 = ANDI32 %0, 255
+# CHECK-LABEL: name: byte_sum_mask32
+# CHECK:       %3:gpr32 = ANDI32 %2, 255
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @widths(i32 %x, i32 %y) { ret i32 %x }
+  define i32 @literal_offset() { ret i32 0 }
+  define i16 @unsigned_byte() { ret i16 0 }
+  define i16 @signed_byte_mask() { ret i16 0 }
+  define i16 @byte_sum_mask() { ret i16 0 }
+  define i32 @unsigned_byte32() { ret i32 0 }
+  define i32 @signed_byte_mask32() { ret i32 0 }
+  define i32 @byte_sum_mask32() { ret i32 0 }
+...
+---
+name: widths
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2
+    %0:gpr32 = COPY $r1
+    %1:gpr32 = ANDI32 %0, 127
+    %2:gpr32 = SEXT8_RC32 %1
+    %3:gpr32 = ANDI32 %0, 255
+    %4:gpr32 = SEXT8_RC32 %3
+    %5:gpr32 = LDI32 31
+    %6:gpr32 = XOR32 %4, %5
+    %7:gpr32 = SEXT8_RC32 %6
+    %8:gpr32 = ADD32 %4, %7
+    %9:gpr32 = SEXT8_RC32 %8
+    %10:gpr32 = SRAI32 %8, 1
+    %11:gpr32 = SEXT8_RC32 %10
+    $r1 = COPY %11
+    RETS implicit $s7, implicit $r1
+...
+---
+name: literal_offset
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: i32 127
+    alignment: 4
+body: |
+  bb.0:
+    %0:gpr32 = LDPC %const.0
+    %1:gpr32 = SEXT8_RC32 %0
+    %2:gpr32 = LDPC %const.0 + 4
+    %3:gpr32 = SEXT8_RC32 %2
+    $r1 = ADD32 %1, %3
+    RETS implicit $s7, implicit $r1
+...
+
+---
+name: unsigned_byte
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    %0:gpr = LDB $r1 :: (load (s8))
+    %1:gpr = ANDI %0, 255
+    $r1 = COPY %1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: signed_byte_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    %0:gpr = LDBS $r1 :: (load (s8))
+    %1:gpr = ANDI %0, 255
+    $r1 = COPY %1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: byte_sum_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr = LDB $r1 :: (load (s8))
+    %1:gpr = LDB $r2 :: (load (s8))
+    %2:gpr = ADD %0, %1
+    %3:gpr = ANDI %2, 255
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+---
+name: unsigned_byte32
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    %0:gpr32 = LDB32 $r1 :: (load (s8))
+    %1:gpr32 = ANDI32 %0, 255
+    $r1 = COPY %1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: signed_byte_mask32
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    %0:gpr32 = LDBS32 $r1 :: (load (s8))
+    %1:gpr32 = ANDI32 %0, 255
+    $r1 = COPY %1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: byte_sum_mask32
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr32 = LDB32 $r1 :: (load (s8))
+    %1:gpr32 = LDB32 $r2 :: (load (s8))
+    %2:gpr32 = ADD32 %0, %1
+    %3:gpr32 = ANDI32 %2, 255
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...

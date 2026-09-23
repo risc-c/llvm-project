@@ -12,10 +12,10 @@ target triple = "riscc-none-elf"
 define i32 @read_tls() {
 ; CHECK-LABEL: read_tls:
 ; CHECK:       ldpc [[BASE:r[0-7]]],
-; CHECK-NEXT:  ld [[BASE]], {{\[}}[[BASE]] + 0]
 ; CHECK-NOT:   mfs {{.*}}s2
-; CHECK:       ldpc
-; CHECK:       ldpc
+; CHECK-DAG:   ldpc
+; CHECK-DAG:   ldpc
+; CHECK-DAG:   ld [[BASE]], {{\[}}[[BASE]] + 0]
 ; CHECK:       add
 ; CHECK-DAG:   .long __riscc_current_context
 ; CHECK-DAG:   .long tpoff(tls_initialized)

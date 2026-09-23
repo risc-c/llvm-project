@@ -1,0 +1,97 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/:gpr /:gpr32 /g' -e 's/= ADDI /= ADDI32 /g' -e 's/= ADD /= ADD32 /g' -e 's/= LD /= LD32 /g' -e 's/    CALL /    CALL32 /g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# A base that is already preserved across a call needs no second preserved
+# register for its adjusted value. Leave the memory access where it was.
+# CHECK-LABEL: name: late_add
+# CHECK: CALL
+# CHECK-NEXT: %3:{{gpr(32)?}} = LD{{(32)?}} %0, 0
+# CHECK-NEXT: %2:{{gpr(32)?}} = ADDI{{(32)?}} %0, 12
+# CHECK-NEXT: $r1 = ADD{{(32)?}} %2, %3
+
+# Do not trade the adjusted value's lifetime for a longer-lived base.
+# CHECK-LABEL: name: base_dies
+# CHECK: %2:{{gpr(32)?}} = ADDI{{(32)?}} %0, 12
+# CHECK-NEXT: CALL
+
+# A use before the call prevents delaying the definition past that call.
+# CHECK-LABEL: name: early_use
+# CHECK: %2:{{gpr(32)?}} = ADDI{{(32)?}} %0, 12
+# CHECK-NEXT: $r1 = COPY %2
+# CHECK-NEXT: CALL
+
+# Moving a dependent add changes the order of its producer's uses. Find the
+# first use in the current instruction order, not in a stale position table.
+# CHECK-LABEL: name: moved_users
+# CHECK: CALL
+# CHECK-NEXT: %4:{{gpr(32)?}} = LD{{(32)?}} %0, 0
+# CHECK-NEXT: %2:{{gpr(32)?}} = ADDI{{(32)?}} %0, 4
+# CHECK-NEXT: %5:{{gpr(32)?}} = LD{{(32)?}} %2, 0
+# CHECK-NEXT: %3:{{gpr(32)?}} = ADDI{{(32)?}} %2, 8
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @late_add() { ret void }
+  define void @base_dies() { ret void }
+  define void @early_use() { ret void }
+  define void @moved_users() { ret void }
+...
+---
+name: late_add
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = ADDI %0, 12
+    CALL %1, csr_riscc, implicit-def $s7, implicit-def $r0
+    %3:gpr = LD %0, 0 :: (load (s16))
+    $r1 = ADD %2, %3
+    RETS implicit $s7, implicit $r1
+...
+---
+name: base_dies
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = ADDI %0, 12
+    CALL %1, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = COPY %2
+    RETS implicit $s7, implicit $r1
+...
+---
+name: early_use
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = ADDI %0, 12
+    $r1 = COPY %2
+    CALL %1, csr_riscc, implicit-def $s7, implicit-def $r0, implicit $r1
+    $r1 = ADD %2, %0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: moved_users
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = ADDI %0, 4
+    %3:gpr = ADDI %2, 8
+    CALL %1, csr_riscc, implicit-def $s7, implicit-def $r0
+    %5:gpr = LD %0, 0 :: (load (s16))
+    %4:gpr = LD %2, 0 :: (load (s16))
+    %6:gpr = ADD %3, %4
+    $r1 = ADD %6, %5
+    RETS implicit $s7, implicit $r1
+...

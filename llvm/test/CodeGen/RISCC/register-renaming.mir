@@ -1,0 +1,114 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %s -o - | FileCheck %s
+
+# Literal rematerialization must not force every load/store pair to wait on
+# the same temporary. Keep the original number of instructions and fill the
+# load-use gaps by using otherwise free registers.
+# CHECK-LABEL: name: literals
+# CHECK:      [[A:\$r[0-6]]] = LDPC %const.0
+# CHECK-NEXT: [[B:\$r[0-6]]] = LDPC %const.1
+# CHECK-NEXT: [[C:\$r[0-6]]] = LDPC %const.2
+# CHECK-NEXT: ST32 killed [[A]], $r7, 0
+# CHECK-NEXT: ST32 killed [[B]], $r7, 4
+# CHECK-NEXT: ST32 killed [[C]], $r7, 8
+# CHECK-NEXT: RETS
+
+# Apply the same optimization to ordinary memory copies. The source pointer
+# and live-out value must survive renaming.
+# CHECK-LABEL: name: copy_words
+# CHECK:      [[X:\$r[0-6]]] = LD32 $r4, 0
+# CHECK-NEXT: [[Y:\$r[0-6]]] = LD32 $r4, 4
+# CHECK-NEXT: [[Z:\$r[0-6]]] = LD32 killed $r4, 8
+# CHECK-NEXT: ST32 killed [[X]], $r5, 0
+# CHECK-NEXT: ST32 killed [[Y]], $r5, 4
+# CHECK-NEXT: ST32 killed [[Z]], killed $r5, 8
+# CHECK-NEXT: RETS implicit $s7, implicit killed $r1
+
+# The branch reads architectural r0, and return values belong in r1.
+# CHECK-LABEL: name: fixed_registers
+# CHECK:      $r0 = LDPC %const.0
+# CHECK:      BNEZ %bb.2, implicit killed $r0
+# CHECK:      bb.1:
+# CHECK:      $r1 = LDPC %const.0
+# CHECK-NEXT: RETS implicit $s7, implicit killed $r1
+# CHECK:      bb.2:
+# CHECK:      $r1 = LDPC %const.1
+# CHECK-NEXT: RETS implicit $s7, implicit killed $r1
+
+--- |
+  target triple = "riscc-none-elf"
+  @source = global [3 x i32] zeroinitializer
+  @dest = global [3 x i32] zeroinitializer
+  define void @literals() { ret void }
+  define i32 @copy_words() { ret i32 0 }
+  define i32 @fixed_registers() { ret i32 0 }
+...
+---
+name: literals
+tracksRegLiveness: true
+stack:
+  - { id: 0, size: 12, alignment: 4 }
+constants:
+  - id: 0
+    value: 'i32 1234567'
+    alignment: 4
+  - id: 1
+    value: 'i32 7654321'
+    alignment: 4
+  - id: 2
+    value: 'i32 1357924'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r0 = LDPC %const.0 :: (load (s32) from constant-pool)
+    ST32 killed $r0, $r7, 0 :: (store (s32) into %stack.0 + 0)
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    ST32 killed $r0, $r7, 4 :: (store (s32) into %stack.0 + 4)
+    $r0 = LDPC %const.2 :: (load (s32) from constant-pool)
+    ST32 killed $r0, $r7, 8 :: (store (s32) into %stack.0 + 8)
+    RETS implicit $s7
+...
+---
+name: copy_words
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $r5, $s7
+    $r0 = LD32 $r4, 0 :: (load (s32) from @source + 0)
+    ST32 killed $r0, $r5, 0 :: (store (s32) into @dest + 0)
+    $r0 = LD32 $r4, 4 :: (load (s32) from @source + 4)
+    ST32 killed $r0, $r5, 4 :: (store (s32) into @dest + 4)
+    $r0 = LD32 killed $r4, 8 :: (load (s32) from @source + 8)
+    ST32 killed $r0, killed $r5, 8 :: (store (s32) into @dest + 8)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: fixed_registers
+tracksRegLiveness: true
+stack:
+  - { id: 0, size: 12, alignment: 4 }
+constants:
+  - id: 0
+    value: 'i32 1234567'
+    alignment: 4
+  - id: 1
+    value: 'i32 7654321'
+    alignment: 4
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    ST32 killed $r0, $r7, 0 :: (store (s32) into %stack.0 + 0)
+    $r0 = LDPC %const.0 :: (load (s32) from constant-pool)
+    BNEZ %bb.2, implicit killed $r0
+  bb.1:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $s7
+    $r1 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...

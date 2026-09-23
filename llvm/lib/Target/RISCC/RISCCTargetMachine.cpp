@@ -11,6 +11,8 @@
 #include "RISCC.h"
 #include "RISCCConstantIslandPass.h"
 #include "RISCCMachineFunctionInfo.h"
+#include "RISCCMachineOptimize.h"
+#include "RISCCPrepare.h"
 #include "RISCCSRegAllocator.h"
 #include "TargetInfo/RISCCTargetInfo.h"
 #include "llvm/CodeGen/Passes.h"
@@ -21,6 +23,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
+#include "llvm/Transforms/Scalar.h"
 
 using namespace llvm;
 
@@ -31,6 +34,8 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCCTarget() {
   initializeRISCCConstantIslandLegacyPass(PR);
   initializeRISCCDAGToDAGISelLegacyPass(PR);
   initializeRISCCSRegAllocatorLegacyPass(PR);
+  initializeRISCCMachineOptimizeLegacyPass(PR);
+  initializeRISCCPrepareLegacyPass(PR);
 }
 
 static std::string computeRISCCDataLayout(const Triple &TT, StringRef FS) {
@@ -105,7 +110,9 @@ namespace {
 class RISCCPassConfigImpl final : public TargetPassConfig {
 public:
   RISCCPassConfigImpl(RISCCTargetMachine &TM, PassManagerBase &PM)
-      : TargetPassConfig(TM, PM) {}
+      : TargetPassConfig(TM, PM) {
+    substitutePass(&PostRASchedulerID, &PostMachineSchedulerID);
+  }
   RISCCTargetMachine &getRISCCTargetMachine() const {
     return getTM<RISCCTargetMachine>();
   }
@@ -113,14 +120,31 @@ public:
     addPass(createAtomicExpandLegacyPass());
     TargetPassConfig::addIRPasses();
   }
+  bool addPreISel() override {
+    if (getOptLevel() != CodeGenOptLevel::None) {
+      addPass(createGlobalMergePass(TM, 127, false, true));
+      addPass(createRISCCPrepareLegacyPass());
+      // Reuse related addresses after preparation exposes loop-carried bases.
+      addPass(createStraightLineStrengthReducePass());
+    }
+    return false;
+  }
   bool addInstSelector() override {
     addPass(createRISCCISelDag(getRISCCTargetMachine(), getOptLevel()));
     return false;
   }
+  void addPreRegAlloc() override {
+    if (getOptLevel() != CodeGenOptLevel::None)
+      addPass(createRISCCMachineOptimizeLegacyPass());
+  }
   void addPostRewrite() override {
     addPass(createRISCCSRegAllocatorLegacyPass());
   }
-  void addPreEmitPass() override { addPass(&BranchRelaxationPassID); }
+  void addPreEmitPass() override {
+    if (getOptLevel() >= CodeGenOptLevel::Default)
+      addPass(createMachineCopyPropagationPass(true));
+    addPass(&BranchRelaxationPassID);
+  }
   void addPreEmitPass2() override { addPass(createRISCCConstantIslandPass()); }
 };
 } // namespace

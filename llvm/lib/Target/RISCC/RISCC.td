@@ -30,12 +30,13 @@ def FeatureNano : SubtargetFeature<"nano", "IsNano", "true",
 def FeatureRC32 : SubtargetFeature<"rc32", "IsRC32", "true",
   "Select the 32-bit RISC-C base ISA">;
 
+include "RISCCSchedule.td"
 include "RISCCInstrInfo.td"
 
-def : ProcessorModel<"min", NoSchedModel, []>;
+def : ProcessorModel<"min", RISCCSchedModel, []>;
 def : ProcessorModel<"nano", NoSchedModel, [FeatureNano]>;
-def : ProcessorModel<"sys", NoSchedModel, [FeatureSys, FeatureLongJall]>;
-def : ProcessorModel<"full", NoSchedModel,
+def : ProcessorModel<"sys", RISCCSchedModel, [FeatureSys, FeatureLongJall]>;
+def : ProcessorModel<"full", RISCCSchedModel,
                      [FeatureSys, FeatureLongJall, FeatureWideShift, FeatureMul]>;
 
 def RISCCInstrInfo : InstrInfo;
@@ -50,6 +51,7 @@ def RISCCAsmWriter : AsmWriter {
 }
 
 def RISCC : Target {
+  let AllowRegisterRenaming = 1;
   let InstructionSet = RISCCInstrInfo;
   let AssemblyParsers = [RISCCAsmParser];
   let AssemblyWriters = [RISCCAsmWriter];

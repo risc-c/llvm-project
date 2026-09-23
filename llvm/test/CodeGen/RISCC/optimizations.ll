@@ -57,9 +57,9 @@ define i16 @unsigned_at_least(i16 %a, i16 %b) {
 define i16 @equal_registers(i16 %a, i16 %b) {
 ; COMMON-LABEL: equal_registers:
 ; COMMON:       xor
-; COMMON-NEXT:  ldi {{.*}}, 0
+; COMMON-NEXT:  ldi {{.*}}, 1
 ; COMMON-NEXT:  sltu
-; COMMON-NEXT:  xori {{.*}}, 1
+; COMMON-NEXT:  {{ret|jalr}}
 ; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
   %cmp = icmp eq i16 %a, %b
   %result = zext i1 %cmp to i16
@@ -81,9 +81,9 @@ define i16 @not_equal_registers(i16 %a, i16 %b) {
 define i16 @equal_zero(i16 %value) {
 ; COMMON-LABEL: equal_zero:
 ; COMMON-NOT:   xor
-; COMMON:       ldi {{.*}}, 0
-; COMMON-NEXT:  sltu
-; COMMON-NEXT:  xori {{.*}}, 1
+; COMMON:       ldi [[ONE:r[0-7]]], 1
+; COMMON-NEXT:  sltu r1, r1, [[ONE]]
+; COMMON-NEXT:  {{ret|jalr}}
 ; COMMON-NOT:   {{b(eq|ne|lt|ge)z|jmp}}
   %cmp = icmp eq i16 %value, 0
   %result = zext i1 %cmp to i16

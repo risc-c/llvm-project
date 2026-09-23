@@ -34,6 +34,8 @@ public:
   void copyPhysReg(MachineBasicBlock &, MachineBasicBlock::iterator,
                    const DebugLoc &, Register, Register, bool, bool = false,
                    bool = false) const override;
+  std::optional<DestSourcePair>
+  isCopyInstrImpl(const MachineInstr &) const override;
   void storeRegToStackSlot(MachineBasicBlock &, MachineBasicBlock::iterator,
                            Register, bool, int, const TargetRegisterClass *,
                            Register, MachineInstr::MIFlag) const override;
@@ -41,7 +43,19 @@ public:
                             Register, int, const TargetRegisterClass *,
                             Register, unsigned,
                             MachineInstr::MIFlag) const override;
+  Register isLoadFromStackSlot(const MachineInstr &, int &) const override;
+  Register isStoreToStackSlot(const MachineInstr &, int &) const override;
+  Register isLoadFromStackSlot(const MachineInstr &, int &,
+                               TypeSize &) const override;
+  Register isStoreToStackSlot(const MachineInstr &, int &,
+                              TypeSize &) const override;
   bool expandPostRAPseudo(MachineInstr &) const override;
+  bool getMemOperandsWithOffsetWidth(const MachineInstr &,
+                                     SmallVectorImpl<const MachineOperand *> &,
+                                     int64_t &, bool &, LocationSize &,
+                                     const TargetRegisterInfo *) const override;
+  bool areMemAccessesTriviallyDisjoint(const MachineInstr &,
+                                       const MachineInstr &) const override;
   unsigned getInstSizeInBytes(const MachineInstr &) const override;
   bool reverseBranchCondition(SmallVectorImpl<MachineOperand> &) const override;
   bool analyzeBranch(MachineBasicBlock &, MachineBasicBlock *&,

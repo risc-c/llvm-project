@@ -3,6 +3,7 @@
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -verify-machineinstrs < %s | FileCheck %s --check-prefix=MIN
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=nano -verify-machineinstrs < %s | FileCheck %s --check-prefix=NANO
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -filetype=obj < %s | llvm-readobj -r - | FileCheck %s --check-prefix=RELOC
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -stop-after=finalize-isel < %s | FileCheck %s --check-prefix=STACK
 
 target datalayout = "e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-f32:16-f64:16-a:8:16-n8:16-S16"
 target triple = "riscc-none-elf"
@@ -32,6 +33,10 @@ define i16 @indirect_call(ptr %fp, i16 %x) {
 }
 
 define i16 @stack_call() {
+; STACK-LABEL: name: stack_call
+; STACK: ST {{.*}} :: (store (s16) into stack + 4)
+; STACK: ST {{.*}} :: (store (s16) into stack + 2)
+; STACK: ST {{.*}} :: (store (s16) into stack)
 ; ASM-LABEL: stack_call:
 ; The maximum outgoing area is reserved once in the prologue.  S7 is saved
 ; above the three stack arguments, and SP is not adjusted around the call.
@@ -52,16 +57,16 @@ define i16 @stack_call() {
 ; register for loading the argument and materializing direct-call targets.
 define i16 @four_slot_call(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; ASM-LABEL: four_slot_call:
-; ASM:       st r0, [r{{[0-7]}} + 0]
+; ASM:       st {{r[0-7]}}, [r{{[0-7]}} + 0]
 ; ASM:       jall s7, four_args
 ; ASM:       ret s7
 ; MIN-LABEL: four_slot_call:
-; MIN:       st r0, [r{{[0-7]}} + 0]
+; MIN:       st {{r[0-7]}}, [r{{[0-7]}} + 0]
 ; MIN:       ldi16 r0, four_args
 ; MIN-NEXT:  jalr s7, r0
 ; MIN:       ret s7
 ; NANO-LABEL: four_slot_call:
-; NANO:       st r0, [r{{[0-7]}} + 0]
+; NANO:       st {{r[0-7]}}, [r{{[0-7]}} + 0]
 ; NANO:       ldi16 r0, four_args
 ; NANO-NEXT:  jalr r6, r0
 ; NANO:       jalr r0, r0

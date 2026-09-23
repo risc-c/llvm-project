@@ -23,8 +23,8 @@ __thread int tls;
 
 // ASM-LABEL: tls_load:
 // ASM:       ldpc r0, [[CONTEXT:.Ltmp[0-9]+]]
-// ASM-NEXT:  ld r0, [r0 + 0]
 // ASM-NEXT:  ldpc r1, [[TLS:.Ltmp[0-9]+]]
+// ASM-NEXT:  ld r0, [r0 + 0]
 // ASM-NEXT:  ldx r1, [r0 + r1]
 // ASM:       ret s7
 // ASM:       [[CONTEXT]]:
@@ -36,9 +36,9 @@ int tls_load(void) { return tls; }
 #include <stdarg.h>
 
 // ASM-LABEL: first_vararg:
-// ASM:       addi r7, -8
-// ASM:       ld r1, [r7 + 8]
-// ASM:       addi r7, 8
+// ASM:       addi r7, -4
+// ASM:       ld r1, [r7 + 4]
+// ASM:       addi r7, 4
 int first_vararg(int count, ...) {
   va_list args;
   va_start(args, count);
@@ -48,7 +48,7 @@ int first_vararg(int count, ...) {
 // ASM-LABEL: shift_left:
 // ASM:       ldpc r0, [[SHIFT:.Ltmp[0-9]+]]
 // ASM:       [[SHIFT]]:
-// ASM-NEXT:  .long call_target(__ashlsi3)
+// ASM-NEXT:  .long call_target(__riscc_shlsi_fast)
 int shift_left(int value, int count) { return value << count; }
 
 // The caller must extend 16-bit arguments to a complete RC32 register.

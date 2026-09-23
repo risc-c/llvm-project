@@ -1,0 +1,125 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=SCHED
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=dead-mi-elimination -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=DEAD
+
+# Schedule independent stores in load order to avoid a load-use bubble.
+# SCHED-LABEL: name: copy_pair
+# SCHED: $r1 = LD32
+# SCHED-NEXT: $r2 = LD32
+# SCHED-NEXT: ST32 killed $r1, $r4, 0
+# SCHED-NEXT: ST32 killed $r2, killed $r4, 4
+
+# Volatile and overlapping accesses must retain their original order.
+# SCHED-LABEL: name: volatile_pair
+# SCHED: $r1 = LD32
+# SCHED-NEXT: $r2 = LD32
+# SCHED-NEXT: ST32 killed $r2, $r4, 4
+# SCHED-NEXT: ST32 killed $r1, killed $r4, 0
+# SCHED-LABEL: name: overlapping_stores
+# SCHED: $r1 = LD32
+# SCHED-NEXT: ST32 killed $r1, $r4, 0
+# SCHED-NEXT: STH killed $r2, killed $r4
+
+# S-register transfers may fill a load's latency. They must still preserve
+# dependencies on both sides of the transfer.
+# SCHED-LABEL: name: sreg_transfers
+# SCHED: $r1 = LD32
+# SCHED-NEXT: $r2 = MFS $s2
+# SCHED-NEXT: $s2 = MTS killed $r5
+# SCHED-NEXT: ST32 killed $r1, $r4, 0
+# SCHED-NEXT: ST32 killed $r2, killed $r4, 4
+# SCHED-NEXT: RETS implicit $s7, implicit $s2
+
+# Pure instructions can disappear when unused; volatile reads and interrupt
+# state changes remain observable.
+# DEAD-LABEL: name: unused_data_ops
+# DEAD: liveins:
+# DEAD-NOT: MOV32
+# DEAD-NOT: LDI32
+# DEAD-NOT: SLTU32
+# DEAD-NOT: LDB32
+# DEAD-NOT: LDH
+# DEAD: $r1 = LD32 $r3, 0 :: (volatile load (s32))
+# DEAD-NEXT: CLI
+# DEAD-NEXT: STI
+# DEAD-NEXT: RETS implicit $s7
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @copy_pair() #0 { ret void }
+  define void @volatile_pair() #0 { ret void }
+  define void @overlapping_stores() #0 { ret void }
+  define void @sreg_transfers() #0 { ret void }
+  define void @unused_data_ops() #0 { ret void }
+  attributes #0 = { "target-features"="+rc32" }
+...
+---
+name: copy_pair
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r3, $r4, $s7
+    $r1 = LD32 $r3, 0 :: (load (s32))
+    $r2 = LD32 $r3, 4 :: (load (s32))
+    ST32 killed $r2, $r4, 4 :: (store (s32))
+    ST32 killed $r1, $r4, 0 :: (store (s32))
+    RETS implicit $s7
+...
+---
+name: volatile_pair
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r3, $r4, $s7
+    $r1 = LD32 $r3, 0 :: (volatile load (s32))
+    $r2 = LD32 $r3, 4 :: (volatile load (s32))
+    ST32 killed $r2, $r4, 4 :: (volatile store (s32))
+    ST32 killed $r1, $r4, 0 :: (volatile store (s32))
+    RETS implicit $s7
+...
+---
+name: overlapping_stores
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r3, $r4, $s7
+    $r1 = LD32 $r3, 0 :: (load (s32))
+    ST32 killed $r1, $r4, 0 :: (store (s32))
+    STH killed $r2, killed $r4 :: (store (s16))
+    RETS implicit $s7
+...
+---
+name: unused_data_ops
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r3, $s7
+    $r1 = MOV32 $r2
+    $r1 = LDI32 99
+    $r1 = SLTU32 $r2, $r3
+    $r1 = LD32 $r3, 0 :: (load (s32))
+    $r1 = LDB32 $r3 :: (load (s8))
+    $r1 = LDH $r3 :: (load (s16))
+    $r1 = LD32 $r3, 0 :: (volatile load (s32))
+    CLI
+    STI
+    RETS implicit $s7
+...
+---
+name: sreg_transfers
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r3, $r4, $r5, $s2, $s7
+    $r1 = LD32 $r3, 0 :: (load (s32))
+    ST32 killed $r1, $r4, 0 :: (store (s32))
+    $r2 = MFS $s2
+    ST32 killed $r2, killed $r4, 4 :: (store (s32))
+    $s2 = MTS killed $r5
+    RETS implicit $s7, implicit $s2
+...

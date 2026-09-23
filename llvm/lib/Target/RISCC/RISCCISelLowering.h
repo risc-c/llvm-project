@@ -30,6 +30,7 @@ enum NodeType {
   SET_CC,
   SET_CC_IMM,
   SELECT_CC,
+  SELECT_CC_IMM,
   SHL,
   SRL,
   SRA,
@@ -47,7 +48,6 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerGlobalTLSAddress(SDValue, SelectionDAG &) const;
   SDValue lowerExternalSymbol(SDValue, SelectionDAG &) const;
   SDValue lowerBlockAddress(SDValue, SelectionDAG &) const;
-  SDValue lowerConstant(SDValue, SelectionDAG &) const;
   SDValue lowerBRCC(SDValue, SelectionDAG &) const;
   SDValue lowerSETCC(SDValue, SelectionDAG &) const;
   SDValue lowerSELECTCC(SDValue, SelectionDAG &) const;
@@ -86,6 +86,14 @@ public:
   EmitInstrWithCustomInserter(MachineInstr &,
                               MachineBasicBlock *) const override;
 
+  bool isLegalAddressingMode(const DataLayout &, const AddrMode &, Type *,
+                             unsigned, Instruction * = nullptr) const override;
+  bool mayBeEmittedAsTailCall(const CallInst *) const override;
+  bool isDesirableToCommuteWithShift(const SDNode *,
+                                     CombineLevel) const override;
+  bool isLegalAddImmediate(int64_t) const override;
+  bool isLegalICmpImmediate(int64_t) const override;
+  bool shouldConvertConstantLoadToIntImm(const APInt &, Type *) const override;
   MVT getScalarShiftAmountTy(const DataLayout &, EVT) const override;
   MVT::SimpleValueType getCmpLibcallReturnType() const override;
   ConstraintType getConstraintType(StringRef) const override;

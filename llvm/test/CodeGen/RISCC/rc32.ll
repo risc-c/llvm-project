@@ -40,11 +40,11 @@ define i32 @literal_call(i32 %x) {
 
 define i32 @memory(i32 %value) {
 ; CHECK-LABEL: memory:
-; CHECK:       ldpc r0, [[WORD:.Ltmp[0-9]+]]
-; CHECK:       ld {{r[0-7]}}, [r{{[0-7]}} + 0]
-; CHECK:       st r1, [r{{[0-7]}} + 0]
-; CHECK:       ldpc r0, [[HALF:.Ltmp[0-9]+]]
-; CHECK:       ldhs {{r[0-7]}}, [r{{[0-7]}}]
+; CHECK:       ldpc [[WORD_ADDR:r[0-7]]], [[WORD:.Ltmp[0-9]+]]
+; CHECK:       ldpc [[HALF_ADDR:r[0-7]]], [[HALF:.Ltmp[0-9]+]]
+; CHECK:       ld {{r[0-7]}}, {{\[}}[[WORD_ADDR]] + 0]
+; CHECK-DAG:   st r1, {{\[}}[[WORD_ADDR]] + 0]
+; CHECK-DAG:   ldhs {{r[0-7]}}, {{\[}}[[HALF_ADDR]]]
 ; CHECK:       ret s7
 ; CHECK:       [[WORD]]:
 ; CHECK-NEXT:  .long word
@@ -64,8 +64,8 @@ define i32 @memory(i32 %value) {
 define i32 @typed_memory(i8 %byte_value, i16 %half_value) {
 ; CHECK-LABEL: typed_memory:
 ; CHECK:       ldb {{r[0-7]}}, [r{{[0-7]}}]
-; CHECK:       stb {{r[0-7]}}, [r{{[0-7]}}]
 ; CHECK:       ldh {{r[0-7]}}, [r{{[0-7]}}]
+; CHECK:       stb {{r[0-7]}}, [r{{[0-7]}}]
 ; CHECK:       sth {{r[0-7]}}, [r{{[0-7]}}]
   %old_byte = load i8, ptr @byte, align 1
   %old_half = load i16, ptr @half_unsigned, align 2
@@ -97,7 +97,10 @@ define i32 @unsigned_min(i32 %x, i32 %y) {
 
 define i32 @four_arguments(i32 %a, i32 %b, i32 %c, i32 %d) {
 ; CHECK-LABEL: four_arguments:
-; CHECK:       ld {{r[0-7]}}, [r7 + 4]
+; CHECK-NOT:   addi r7,
+; CHECK:       ld {{r[0-7]}}, [r7 + 0]
+; CHECK-NOT:   addi r7,
+; CHECK:       ret s7
   %ab = add i32 %a, %b
   %cd = add i32 %c, %d
   %result = add i32 %ab, %cd
@@ -172,8 +175,9 @@ define i32 @native_mulhu(i32 %left, i32 %right) {
 define void @large_call_frame() {
 ; CHECK-LABEL: large_call_frame:
 ; CHECK:       addi r7, -128
-; CHECK-NEXT:  addi r7, -8
-; CHECK:       st r0, [r7 + 124]
+; CHECK-NEXT:  addi r7, -4
+; CHECK:       ldi [[ZERO:r[0-6]]], 0
+; CHECK:       st [[ZERO]], [r7 + 124]
 ; CHECK:       ldpc r0, {{.Ltmp[0-9]+}}
 ; CHECK-NEXT:  jalr s7, r0
   call void @wide_callee(i1024 0)
@@ -182,15 +186,16 @@ define void @large_call_frame() {
 
 define i32 @literal_before_jump(i32 %a, i32 %b) {
 ; CHECK-LABEL: literal_before_jump:
-; CHECK:       .zero 300
-; CHECK:       ldpc {{r[0-7]}}, [[WORD:.Ltmp[0-9]+]]
-; CHECK:       jalr s0, r0
+; CHECK:       ldpc [[WORD_ADDR:r[0-7]]], [[WORD:.Ltmp[0-9]+]]
+; CHECK:       jmp8 [[WORD_CONTINUE:.LBB[0-9_]+]]
 ; CHECK:       [[WORD]]:
 ; CHECK-NEXT:  .long word
+; CHECK:       [[WORD_CONTINUE]]:
 ; CHECK:       .zero 300
+; CHECK:       ld {{r[0-7]}}, {{\[}}[[WORD_ADDR]] + 0]
 entry:
   call void asm sideeffect ".space 300", ""()
-  %value = load i32, ptr @word, align 4
+  %value = load volatile i32, ptr @word, align 4
   %same = icmp eq i32 %a, %b
   br i1 %same, label %far, label %near, !prof !0
 

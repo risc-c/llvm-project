@@ -47,8 +47,8 @@ define i32 @call_then_tail(i32 %value) {
 ; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_CALL, [[CALLED]]
 ; LONG-NEXT:  jalr s7, r0
 ; LONG:       ld r0, [r7 + 0]
-; LONG-NEXT:  mts s7, r0
 ; LONG-NEXT:  addi r7, 4
+; LONG-NEXT:  mts s7, r0
 ; LONG-DAG:   ldpc r0, [[TAILED:.Ltmp[0-9]+]]
 ; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[TAILED]]
 ; LONG-NEXT:  jalr s0, r0
@@ -63,9 +63,10 @@ define i32 @call_then_tail(i32 %value) {
 
 define i32 @callee_saved_tail(i32 %value) {
 ; LONG-LABEL: callee_saved_tail:
-; LONG:       st r4, [r7 + 0]
-; LONG:       ld r4, [r7 + 0]
-; LONG-NEXT:  addi r7, 4
+; LONG-NOT:   addi r7,
+; LONG:       mts s2, r4
+; LONG:       mfs r4, s2
+; LONG-NOT:   addi r7,
 ; LONG-DAG:   ldpc r0, [[SAVED:.Ltmp[0-9]+]]
 ; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_TAIL, [[SAVED]]
 ; LONG-NEXT:  jalr s0, r0
@@ -76,6 +77,10 @@ define i32 @callee_saved_tail(i32 %value) {
   ret i32 %result
 }
 
+; The backend emits internal functions before externally visible ones.
+; LONG:       local_callee:
+; LONG:       ret s7
+; LONG-NOT:   ret s3
 define i32 @local_call(i32 %value) {
 ; LONG-LABEL: local_call:
 ; LONG-DAG:   ldpc r0, [[LOCAL:.Ltmp[0-9]+]]
@@ -88,9 +93,6 @@ define i32 @local_call(i32 %value) {
 }
 
 define internal i32 @local_callee(i32 %value) #0 {
-; LONG-LABEL: local_callee:
-; LONG:       ret s7
-; LONG-NOT:   ret s3
   %result = add i32 %value, 2
   ret i32 %result
 }

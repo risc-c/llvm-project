@@ -1,6 +1,6 @@
 ; REQUIRES: riscc-registered-target
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -O2 -verify-machineinstrs < %s | FileCheck %s
-; RUN: llc -mtriple=riscc-none-elf -mcpu=min -O2 -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,FULL
+; RUN: llc -mtriple=riscc-none-elf -mcpu=min -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,MIN
 
 target triple = "riscc-none-elf"
 
@@ -24,33 +24,32 @@ define void @leaf_clobber_r5_r6() {
 define void @leaf_clobber_s5_s6() {
 ; CHECK-LABEL: leaf_clobber_s5_s6:
 ; CHECK:       addi r7, -4
-; CHECK:       mfs r0, s5
-; CHECK:       st r0,
-; CHECK:       mfs r0, s6
-; CHECK:       st r0,
-; CHECK:       ld r0,
-; CHECK:       mts s6, r0
-; CHECK:       ld r0,
-; CHECK:       mts s5, r0
+; CHECK-DAG:   mfs [[SAVE5:r[0-6]]], s5
+; CHECK-DAG:   st [[SAVE5]], [r7 + 2]
+; CHECK-DAG:   mfs [[SAVE6:r[0-6]]], s6
+; CHECK-DAG:   st [[SAVE6]], [r7 + 0]
+; CHECK-DAG:   ld [[S6:r[0-6]]], [r7 + 0]
+; CHECK-DAG:   mts s6, [[S6]]
+; CHECK-DAG:   ld [[S5:r[0-6]]], [r7 + 2]
+; CHECK-DAG:   mts s5, [[S5]]
 ; CHECK:       addi r7, 4
 ; CHECK:       ret s7
   call void asm sideeffect "", "~{s5},~{s6}"()
   ret void
 }
 
-; The expanded caller-saved cache pool holds a short-lived allocator spill
-; while S3/S4 hold two callee-saved GPR entry values and S7 holds the link.
+; A leaf under register pressure saves all three callee-saved GPRs in the
+; caller-saved cache bank, leaving S7 for the link.
 define i16 @leaf_local_spill(i16 %a, i16 %b, i16 %c, i32 %value, i16 %suffix) {
 ; CHECK-LABEL: leaf_local_spill:
-; CHECK:       addi r7, -4
-; CHECK:       mts s3, r4
-; CHECK:       mts s4, r5
-; CHECK:       st r6,
-; CHECK:       mts s2,
-; CHECK:       mfs r1, s2
-; CHECK:       ld r6,
-; CHECK:       mfs r5, s4
-; CHECK:       mfs r4, s3
+; CHECK-NOT:   addi r7,
+; CHECK-DAG:   mts s2,
+; CHECK-DAG:   mts s3,
+; CHECK-DAG:   mts s4,
+; CHECK:       mfs r6, s4
+; CHECK:       mfs r5, s3
+; CHECK:       mfs r4, s2
+; CHECK-NOT:   addi r7,
 ; CHECK:       ret s7
   %a.ok = icmp eq i16 %a, 1
   %b.ok = icmp eq i16 %b, 2
@@ -71,7 +70,8 @@ define i16 @shift_call_clobber_r5_r6(i16 %value) minsize {
 ; CHECK-LABEL: shift_call_clobber_r5_r6:
 ; MIN:         ldi16 r0, __riscc_shlhi11
 ; MIN-NEXT:    jalr s7, r0
-; CHECK:       ret s7
+; FULL:        ret s7
+; MIN:         ret s2
   call void asm sideeffect "", "~{r5},~{r6}"()
   %result = shl i16 %value, 11
   ret i16 %result

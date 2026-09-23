@@ -22,6 +22,26 @@ define i16 @direct_tail(i16 %x) {
   ret i16 %result
 }
 
+; A sibling call happens after restoring our callee-saved registers. Its
+; clobber mask must not force these temporary saves onto the stack.
+define i16 @callee_saved_tail(i16 %x) {
+; CHECK-LABEL: callee_saved_tail:
+; FULL-NOT:    addi r7,
+; MIN-NOT:     addi r7,
+; FULL:        mts s2, r4
+; MIN:         mts s2, r4
+; NANO:        st r4,
+; FULL:        mfs r4, s2
+; MIN:         mfs r4, s2
+; NANO:        ld r4,
+; FULL:        jall s0, callee
+; MIN:         jalr s0, r0
+; NANO:        jalr r0, r0
+  call void asm sideeffect "", "~{r4}"()
+  %result = tail call i16 @callee(i16 %x)
+  ret i16 %result
+}
+
 ; The fourth argument is stack-passed, so this is a normal call rather than a
 ; sibling call. Direct targets consistently use the caller-saved r0 scratch.
 define i16 @direct_tail_four_args(i16 %a, i16 %b, i16 %c, i16 %d) {

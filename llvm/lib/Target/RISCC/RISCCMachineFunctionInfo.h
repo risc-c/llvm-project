@@ -17,6 +17,7 @@ class RISCCMachineFunctionInfo final : public MachineFunctionInfo {
   int BranchRelaxationSpillFI = -1;
   int VarArgsFrameIndex = 0;
   Register ReturnAddressReg;
+  MCRegister LRSaveReg;
   MCRegister R4SaveReg;
   MCRegister R5SaveReg;
   MCRegister R6SaveReg;
@@ -33,7 +34,10 @@ public:
   void setVarArgsFrameIndex(int FI) { VarArgsFrameIndex = FI; }
   Register getReturnAddressReg() const { return ReturnAddressReg; }
   void setReturnAddressReg(Register Reg) { ReturnAddressReg = Reg; }
+  MCRegister getLRSaveReg() const { return LRSaveReg; }
+  void setLRSaveReg(MCRegister Reg) { LRSaveReg = Reg; }
   void clearSRegPlan() {
+    LRSaveReg = MCRegister();
     R4SaveReg = MCRegister();
     R5SaveReg = MCRegister();
     R6SaveReg = MCRegister();

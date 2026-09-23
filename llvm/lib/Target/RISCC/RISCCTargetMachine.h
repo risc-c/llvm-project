@@ -29,6 +29,9 @@ public:
   ~RISCCTargetMachine() override;
 
   const RISCCSubtarget *getSubtargetImpl(const Function &) const override;
+  ScheduleDAGInstrs *
+  createPostMachineScheduler(MachineSchedContext *C) const override;
+  bool useIPRA() const override { return !Subtarget.isNano(); }
   TargetPassConfig *createPassConfig(PassManagerBase &) override;
   MachineFunctionInfo *
   createMachineFunctionInfo(BumpPtrAllocator &, const Function &,

@@ -1,0 +1,46 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32,+mdu -run-pass=dead-mi-elimination -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32,+mdu -run-pass=postrapseudos -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=POOL
+
+# Custom-selected arithmetic has no hidden state. Unused paired results,
+# extensions, and reads must not keep their input chains alive. Writes to
+# reserved S registers remain, together with the values they consume.
+# CHECK-LABEL: name: unused_results
+# CHECK: body:
+# CHECK: bb.0:
+# CHECK: liveins:
+# CHECK-NOT: LDI32
+# CHECK-NOT: MULHU32
+# CHECK-NOT: DIVU32
+# CHECK-NOT: SEXT
+# CHECK: $r2 = MFS $s2
+# CHECK-NEXT: $s3 = MTS $r2
+# CHECK-NEXT: RETS implicit $s7
+
+# Literal loads introduced by extension expansion are known constant-pool
+# accesses, so the scheduler need not treat them as arbitrary memory reads.
+# POOL: $r0 = LDPC %const.0 :: (load (s32) from constant-pool)
+# POOL: $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @unused_results() { ret void }
+...
+---
+name: unused_results
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $s2, $s7
+    $r1 = LDI32 11
+    $r2 = LDI32 3
+    early-clobber $r3, $r1 = MULHU32 $r1, $r2
+    early-clobber $r3, early-clobber $r1 = DIVU32 $r3, $r1, $r2
+    $r1 = SEXT8_RC32 $r1
+    $r1 = SEXT16_RC32 $r1, implicit-def $r0
+    $r2 = MFS $s2
+    $s3 = MTS $r2
+    $r4 = MFS $s2
+    RETS implicit $s7
+...

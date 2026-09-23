@@ -11,8 +11,9 @@ declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
 define i1 @overflow(i16 %a, i16 %b) {
 ; CHECK-LABEL: overflow:
 ; CHECK:       st r2, [r7 + 0]
-; CHECK-NEXT:  ldi r2, 0
-; CHECK-NEXT:  st r2, [r7 + 2]
+; CHECK:       ldi [[ZERO:r[0-5]]], 0
+; CHECK-NEXT:  st [[ZERO]], [r7 + 2]
+; CHECK:       ldi r2, 0
 ; CHECK:       ldi16 r0, __mulsi3
 ; CHECK-NEXT:  jalr r6, r0
   %result = call { i16, i1 } @llvm.umul.with.overflow.i16(i16 %a, i16 %b)

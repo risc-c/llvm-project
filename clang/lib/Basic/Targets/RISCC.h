@@ -26,23 +26,24 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
 
   void setDataModel(bool RC32) {
     IsRC32 = RC32;
+    const unsigned WordBits = RC32 ? 32 : 16;
     ShortWidth = ShortAlign = 16;
-    IntWidth = IntAlign = RC32 ? 32 : 16;
+    IntWidth = IntAlign = WordBits;
     LongWidth = 32;
-    LongAlign = RC32 ? 32 : 16;
+    LongAlign = WordBits;
     LongLongWidth = 64;
-    LongLongAlign = RC32 ? 32 : 16;
+    LongLongAlign = WordBits;
 
     HalfWidth = HalfAlign = 16;
     FloatWidth = 32;
-    FloatAlign = RC32 ? 32 : 16;
+    FloatAlign = WordBits;
     DoubleWidth = LongDoubleWidth = 64;
-    DoubleAlign = LongDoubleAlign = RC32 ? 32 : 16;
+    DoubleAlign = LongDoubleAlign = WordBits;
     LongDoubleFormat = &llvm::APFloat::IEEEdouble();
 
-    PointerWidth = PointerAlign = RC32 ? 32 : 16;
-    SuitableAlign = RC32 ? 32 : 16;
-    DefaultAlignForAttributeAligned = RC32 ? 32 : 16;
+    PointerWidth = PointerAlign = WordBits;
+    SuitableAlign = WordBits;
+    DefaultAlignForAttributeAligned = WordBits;
 
     SizeType = UnsignedInt;
     PtrDiffType = SignedInt;
@@ -64,7 +65,7 @@ public:
   RISCCTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
       : TargetInfo(Triple) {
     // Static local-exec TLS loads the current context from runtime state. The
-    // backend rejects every dynamic TLS model.
+    // backend rejects every dynamic TLS model. Nano disables TLS in setCPU.
     TLSSupported = true;
     VLASupported = false;
 

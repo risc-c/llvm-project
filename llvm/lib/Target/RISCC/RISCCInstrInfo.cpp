@@ -30,17 +30,136 @@ RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
                         RISCC::ADJCALLSTACKUP),
       RI(STI), STI(STI) {}
 
+static Register getStackAccess(const MachineInstr &MI, int &FrameIndex,
+                               TypeSize &Bytes) {
+  switch (MI.getOpcode()) {
+  case RISCC::LD:
+  case RISCC::ST:
+  case RISCC::LD_NANO:
+  case RISCC::ST_NANO:
+    Bytes = TypeSize::getFixed(2);
+    break;
+  case RISCC::LD32:
+  case RISCC::ST32:
+    Bytes = TypeSize::getFixed(4);
+    break;
+  default:
+    return Register();
+  }
+  if (!MI.getOperand(1).isFI() || !MI.getOperand(2).isImm() ||
+      MI.getOperand(2).getImm() != 0 || MI.hasOrderedMemoryRef())
+    return Register();
+  FrameIndex = MI.getOperand(1).getIndex();
+  return MI.getOperand(0).getReg();
+}
+
+Register RISCCInstrInfo::isLoadFromStackSlot(const MachineInstr &MI, int &FI,
+                                             TypeSize &Bytes) const {
+  return MI.mayLoad() ? getStackAccess(MI, FI, Bytes) : Register();
+}
+
+Register RISCCInstrInfo::isStoreToStackSlot(const MachineInstr &MI, int &FI,
+                                            TypeSize &Bytes) const {
+  return MI.mayStore() ? getStackAccess(MI, FI, Bytes) : Register();
+}
+
+Register RISCCInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
+                                             int &FI) const {
+  TypeSize Bytes = TypeSize::getZero();
+  return isLoadFromStackSlot(MI, FI, Bytes);
+}
+
+Register RISCCInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
+                                            int &FI) const {
+  TypeSize Bytes = TypeSize::getZero();
+  return isStoreToStackSlot(MI, FI, Bytes);
+}
+
+bool RISCCInstrInfo::getMemOperandsWithOffsetWidth(
+    const MachineInstr &MI, SmallVectorImpl<const MachineOperand *> &BaseOps,
+    int64_t &Offset, bool &OffsetIsScalable, LocationSize &Width,
+    const TargetRegisterInfo *) const {
+  unsigned Bytes;
+  bool HasOffset = false;
+  switch (MI.getOpcode()) {
+  default:
+    return false;
+  case RISCC::LD:
+  case RISCC::ST:
+    Bytes = 2;
+    HasOffset = true;
+    break;
+  case RISCC::LD32:
+  case RISCC::ST32:
+    Bytes = 4;
+    HasOffset = true;
+    break;
+  case RISCC::LDB:
+  case RISCC::LDBS:
+  case RISCC::STB:
+  case RISCC::LDB32:
+  case RISCC::LDBS32:
+  case RISCC::STB32:
+    Bytes = 1;
+    break;
+  case RISCC::LDH:
+  case RISCC::LDHS:
+  case RISCC::STH:
+    Bytes = 2;
+    break;
+  }
+  if (HasOffset && !MI.getOperand(2).isImm())
+    return false;
+  BaseOps.push_back(&MI.getOperand(1));
+  Offset = HasOffset ? MI.getOperand(2).getImm() : 0;
+  OffsetIsScalable = false;
+  Width = LocationSize::precise(Bytes);
+  return true;
+}
+
+bool RISCCInstrInfo::areMemAccessesTriviallyDisjoint(
+    const MachineInstr &A, const MachineInstr &B) const {
+  if (A.hasUnmodeledSideEffects() || B.hasUnmodeledSideEffects() ||
+      A.hasOrderedMemoryRef() || B.hasOrderedMemoryRef())
+    return false;
+  SmallVector<const MachineOperand *, 1> BaseA, BaseB;
+  int64_t OffsetA, OffsetB;
+  bool Scalable;
+  LocationSize WidthA = LocationSize::precise(0);
+  LocationSize WidthB = LocationSize::precise(0);
+  if (!getMemOperandsWithOffsetWidth(A, BaseA, OffsetA, Scalable, WidthA,
+                                     &RI) ||
+      !getMemOperandsWithOffsetWidth(B, BaseB, OffsetB, Scalable, WidthB,
+                                     &RI) ||
+      !BaseA.front()->isIdenticalTo(*BaseB.front()))
+    return false;
+  // Different fields of the same object can be scheduled independently.
+  return OffsetA <= OffsetB ? OffsetB - OffsetA >= int64_t(WidthA.getValue())
+                            : OffsetA - OffsetB >= int64_t(WidthB.getValue());
+}
+
 void RISCCInstrInfo::materializeImmediate(MachineBasicBlock &MBB,
                                           MachineBasicBlock::iterator I,
                                           const DebugLoc &DL,
                                           Register Destination, int64_t Value,
                                           MachineInstr::MIFlag Flag) const {
   if (STI.isRC32()) {
-    if (!isUInt<8>(Value))
-      report_fatal_error("RC32 immediate requires a literal-pool load");
-    BuildMI(MBB, I, DL, get(RISCC::LDI32), Destination)
-        .addImm(Value)
-        .setMIFlag(Flag);
+    if (isUInt<8>(Value))
+      BuildMI(MBB, I, DL, get(RISCC::LDI32), Destination)
+          .addImm(Value)
+          .setMIFlag(Flag);
+    else {
+      MachineFunction &MF = *MBB.getParent();
+      auto *C = ConstantInt::get(
+          Type::getInt32Ty(MF.getFunction().getContext()), Value);
+      unsigned CPI = MF.getConstantPool()->getConstantPoolIndex(C, Align(4));
+      BuildMI(MBB, I, DL, get(RISCC::LDPC), Destination)
+          .addConstantPoolIndex(CPI)
+          .addMemOperand(
+              MF.getMachineMemOperand(MachinePointerInfo::getConstantPool(MF),
+                                      MachineMemOperand::MOLoad, 4, Align(4)))
+          .setMIFlag(Flag);
+    }
     return;
   }
   uint64_t Encoded = static_cast<uint16_t>(Value);
@@ -73,20 +192,11 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst).addReg(Dst).addImm(0x80);
       BuildMI(MBB, MI, DL, get(RISCC::ADDI32), Dst).addReg(Dst).addImm(-128);
     } else {
-      MachineFunction *MF = MBB.getParent();
-      MachineConstantPool *Pool = MF->getConstantPool();
-      Type *I32 = Type::getInt32Ty(MF->getFunction().getContext());
-      auto LoadR0 = [&](uint32_t Value) {
-        const Constant *C = ConstantInt::get(I32, Value);
-        unsigned CPI = Pool->getConstantPoolIndex(C, Align(4));
-        BuildMI(MBB, MI, DL, get(RISCC::LDPC), RISCC::R0)
-            .addConstantPoolIndex(CPI);
-      };
-      LoadR0(0xffff);
+      materializeImmediate(MBB, MI, DL, RISCC::R0, 0xffff);
       BuildMI(MBB, MI, DL, get(RISCC::AND32), Dst)
           .addReg(Src)
           .addReg(RISCC::R0);
-      LoadR0(0x8000);
+      materializeImmediate(MBB, MI, DL, RISCC::R0, 0x8000);
       BuildMI(MBB, MI, DL, get(RISCC::XOR32), Dst)
           .addReg(Dst)
           .addReg(RISCC::R0);
@@ -97,7 +207,7 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     MI.eraseFromParent();
     return true;
   }
-  if (MI.getOpcode() != RISCC::SEXT8_NANO)
+  if (MI.getOpcode() != RISCC::SEXT8_RC16)
     return false;
 
   MachineBasicBlock &MBB = *MI.getParent();
@@ -146,6 +256,13 @@ void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     return;
   }
   llvm_unreachable("unsupported RISC-C physical-register copy");
+}
+
+std::optional<DestSourcePair>
+RISCCInstrInfo::isCopyInstrImpl(const MachineInstr &MI) const {
+  if (MI.isMoveReg())
+    return DestSourcePair{MI.getOperand(0), MI.getOperand(1)};
+  return std::nullopt;
 }
 
 void RISCCInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
@@ -252,32 +369,37 @@ bool RISCCInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
                                    MachineBasicBlock *&TBB,
                                    MachineBasicBlock *&FBB,
                                    SmallVectorImpl<MachineOperand> &Cond,
-                                   bool) const {
-  auto I = MBB.getLastNonDebugInstr();
-  if (I == MBB.end())
-    return false;
-  if (I->getOpcode() == RISCC::JMP8 || I->getOpcode() == RISCC::JMP16) {
-    if (!I->getOperand(0).isMBB())
+                                   bool AllowModify) const {
+  TBB = FBB = nullptr;
+  Cond.clear();
+  for (auto I = MBB.getFirstTerminator(); I != MBB.end(); ++I) {
+    if (I->isDebugInstr())
+      continue;
+    bool Unconditional =
+        I->getOpcode() == RISCC::JMP8 || I->getOpcode() == RISCC::JMP16;
+    if ((!Unconditional && !isConditionalBranchOpcode(I->getOpcode())) ||
+        !I->getOperand(0).isMBB())
+      return true;
+
+    if (Unconditional) {
+      // Nothing after an unconditional transfer is reachable.
+      if (AllowModify)
+        MBB.erase(std::next(I), MBB.end());
+      else if (llvm::any_of(
+                   make_range(std::next(I), MBB.end()),
+                   [](const MachineInstr &MI) { return !MI.isDebugInstr(); }))
+        return true;
+      (Cond.empty() ? TBB : FBB) = I->getOperand(0).getMBB();
+      return false;
+    }
+    // The generic branch interface represents at most one condition. Never
+    // silently drop an earlier branch from a multi-way terminator sequence.
+    if (!Cond.empty())
       return true;
     TBB = I->getOperand(0).getMBB();
-    if (I == MBB.begin())
-      return false;
-    --I;
-    while (I->isDebugInstr() && I != MBB.begin())
-      --I;
-    if (isConditionalBranchOpcode(I->getOpcode()) && I->getOperand(0).isMBB()) {
-      FBB = TBB;
-      TBB = I->getOperand(0).getMBB();
-      Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
-    }
-    return false;
-  }
-  if (isConditionalBranchOpcode(I->getOpcode()) && I->getOperand(0).isMBB()) {
-    TBB = I->getOperand(0).getMBB();
     Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
-    return false;
   }
-  return I->isTerminator();
+  return false;
 }
 
 unsigned RISCCInstrInfo::removeBranch(MachineBasicBlock &MBB,

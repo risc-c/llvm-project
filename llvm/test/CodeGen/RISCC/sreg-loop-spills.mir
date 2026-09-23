@@ -1,44 +1,30 @@
 # REQUIRES: riscc-registered-target
 # RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=riscc-sreg-allocator,prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s
 
-# Five loop-local spills fit in S2..S6 without displacing the S7 return
-# address. Save the callee-saved S5/S6 entries once outside the loop, then
-# restore them before returning.
+# Disjoint spills share S2 and leave the link and callee-saved S registers alone.
 # CHECK-LABEL: name: loop_spills_use_link
-# CHECK-NOT:   frame-setup MFS $s7
-# CHECK:       $r0 = MFS killed $s5
-# CHECK:       $r0 = MFS killed $s6
+# CHECK-NOT:   frame-setup
 # CHECK:       bb.1.loop:
-# CHECK-NOT:   {{(^|[[:space:]])ST[[:space:]]}}
-# CHECK:       $s2 = MTS
-# CHECK:       $s3 = MTS
-# CHECK:       $s4 = MTS
-# CHECK:       $s5 = MTS
-# CHECK:       $s6 = MTS
+# CHECK-COUNT-5: $s2 = MTS
 # CHECK:       bb.2.exit:
-# CHECK:       $s6 = MTS $r0
-# CHECK:       $s5 = MTS $r0
+# CHECK-NEXT:  liveins: $r1
 # CHECK:       RETS implicit $s7, implicit $r1
 
-# All five entry-frequency spills now fit while retaining the S7 link. The
-# prologue and epilogue preserve the callee-saved S5/S6 cache entries.
 # CHECK-LABEL: name: cold_spills_keep_link
-# CHECK-NOT:   frame-setup MFS $s7
-# CHECK:       $s2 = MTS
-# CHECK:       $s3 = MTS
-# CHECK:       $s4 = MTS
-# CHECK:       $s5 = MTS
-# CHECK:       $s6 = MTS
+# CHECK-NOT:   frame-setup
+# CHECK-COUNT-5: $s2 = MTS
 # CHECK:       RETS implicit $s7, implicit $r1
 
 # A compiler-private helper preserves S2..S6, so a spill may remain cached
 # across that call.
 # CHECK-LABEL: name: spill_across_preserving_call
-# CHECK:       $s2 = MTS killed $r1
+# CHECK:       $r0 = frame-setup MFS $s7
+# CHECK-NEXT:  $s2 = frame-setup MTS killed $r0
+# CHECK:       $s3 = MTS killed $r1
 # CHECK:       CALL $r2, csr_riscc_sregpreservingcall
-# CHECK:       $r1 = MFS $s2
+# CHECK:       $r1 = MFS $s3
 # CHECK-NOT:   ST $r1
-# CHECK:       RETS implicit $s7
+# CHECK:       RET $s2
 
 # An ordinary call preserves S5/S6, so the allocator can keep this spill in
 # S5 across the call and prologue/epilogue saves the cache register.

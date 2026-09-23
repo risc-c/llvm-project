@@ -21,6 +21,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Target/TargetMachine.h"
 #include <climits>
@@ -53,6 +54,14 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setPrefFunctionAlignment(Align(2));
   setMaxAtomicSizeInBitsSupported(0);
   setMinimumJumpTableEntries(UINT_MAX);
+
+  // A short inline copy avoids a call and a byte loop. Keep the smaller
+  // size-optimization budgets, and Nano's defaults, unchanged.
+  if (!STI.isNano()) {
+    MaxGluedStoresPerMemcpy = 2;
+    MaxStoresPerMemcpy = 16;
+    MaxStoresPerMemset = 16;
+  }
 
   for (unsigned Op : {ISD::ADD, ISD::SUB, ISD::AND, ISD::OR, ISD::XOR})
     setOperationAction(Op, XLenVT, Legal);
@@ -105,8 +114,21 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
                    STI.isNano() ? Expand : Legal);
   setTruncStoreAction(XLenVT, MVT::i8, Legal);
 
+  // Use the compact native funnel instructions for rotates and wide shifts.
+  for (unsigned Op : {ISD::FSHL, ISD::FSHR})
+    setOperationAction(Op, XLenVT, STI.isNano() ? Expand : Custom);
+
+  // Keep 32-bit div/rem pairs together for the __{u}divmodsi4 helpers.
+  setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
+  setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
+  setTargetDAGCombine(ISD::MUL);
+  setTargetDAGCombine(ISD::AND);
+  setTargetDAGCombine(ISD::OR);
+  setTargetDAGCombine(ISD::SELECT);
+  setTargetDAGCombine(ISD::SUB);
+
   if (STI.isRC32()) {
-    setOperationAction(ISD::Constant, MVT::i32, Custom);
+    setOperationAction(ISD::Constant, MVT::i32, Legal);
     setOperationAction(ISD::FrameIndex, MVT::i32, Legal);
     for (unsigned Op : {ISD::EXTLOAD, ISD::ZEXTLOAD, ISD::SEXTLOAD})
       setLoadExtAction(Op, MVT::i32, MVT::i16, Legal);
@@ -114,23 +136,12 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
     return;
   }
 
-  // Type legalization can form native funnels for wide shifts on RC16.
-  for (unsigned Op : {ISD::FSHL, ISD::FSHR})
-    setOperationAction(Op, MVT::i16, STI.isNano() ? Expand : Custom);
-
-  // Keep wide div/rem pairs together for the __{u}divmodsi4 helpers.
-  setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
-  setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
   // A shared __mulsi3 is smaller than expanding each call site into native
   // partial products.
   setOperationAction(ISD::MUL, MVT::i32, Custom);
   for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA, ISD::SDIV, ISD::UDIV,
                       ISD::SREM, ISD::UREM})
     setOperationAction(Op, MVT::i32, LibCall);
-  setTargetDAGCombine(ISD::MUL);
-  setTargetDAGCombine(ISD::OR);
-  setTargetDAGCombine(ISD::SELECT);
-  setTargetDAGCombine(ISD::SUB);
 }
 
 MVT RISCCTargetLowering::getScalarShiftAmountTy(const DataLayout &, EVT) const {
@@ -146,23 +157,35 @@ MVT::SimpleValueType RISCCTargetLowering::getCmpLibcallReturnType() const {
 //===----------------------------------------------------------------------===//
 
 static SDValue expandSmallConstantMultiply(SDValue Value, int64_t Multiplier,
-                                           SelectionDAG &DAG, const SDLoc &DL) {
+                                           SelectionDAG &DAG, const SDLoc &DL,
+                                           unsigned Limit) {
+  EVT VT = Value.getValueType();
   bool Negate = Multiplier < 0;
   uint64_t Magnitude = Negate ? -Multiplier : Multiplier;
   unsigned Cost = Log2_64(Magnitude) + popcount(Magnitude) - 1 + Negate;
-  if (Cost > 4)
+  // Values just below a power of two need one subtraction, not a chain
+  // of additions. For a negative multiplier, reverse that subtraction.
+  if (isPowerOf2_64(Magnitude + 1) &&
+      Log2_64(Magnitude + 1) + 1 <= std::min(Cost, Limit)) {
+    SDValue Shifted =
+        DAG.getNode(ISD::SHL, DL, VT, Value,
+                    DAG.getConstant(Log2_64(Magnitude + 1), DL, VT));
+    return DAG.getNode(ISD::SUB, DL, VT, Negate ? Value : Shifted,
+                       Negate ? Shifted : Value);
+  }
+  if (Cost > Limit)
     return {};
 
   SDValue Product = Value;
   uint64_t Bit = (uint64_t(1) << Log2_64(Magnitude)) >> 1;
   for (; Bit; Bit >>= 1) {
-    Product = DAG.getNode(ISD::ADD, DL, MVT::i16, Product, Product);
+    Product = DAG.getNode(ISD::ADD, DL, VT, Product, Product);
     if (Magnitude & Bit)
-      Product = DAG.getNode(ISD::ADD, DL, MVT::i16, Product, Value);
+      Product = DAG.getNode(ISD::ADD, DL, VT, Product, Value);
   }
   if (Negate)
-    Product = DAG.getNode(ISD::SUB, DL, MVT::i16,
-                          DAG.getConstant(0, DL, MVT::i16), Product);
+    Product =
+        DAG.getNode(ISD::SUB, DL, VT, DAG.getConstant(0, DL, VT), Product);
   return Product;
 }
 
@@ -193,32 +216,126 @@ static bool matchShiftChain(SDValue Value, unsigned GenericOpcode,
   return true;
 }
 
+// Move a byte/halfword mask through a shift so DAGCombine can narrow the load.
+// This also removes the mask's literal load on RC32.
+static SDValue combineNarrowableShiftedLoad(SDNode *N, SelectionDAG &DAG) {
+  SDValue Shift = N->getOperand(0);
+  auto *Mask = dyn_cast<ConstantSDNode>(N->getOperand(1));
+  if (!Mask || Shift.getOpcode() != ISD::SHL || !Shift.hasOneUse())
+    return {};
+  auto *Load = dyn_cast<LoadSDNode>(Shift.getOperand(0));
+  auto *Amount = dyn_cast<ConstantSDNode>(Shift.getOperand(1));
+  if (!Load || !Load->isSimple() || !Shift.getOperand(0).hasOneUse() ||
+      !Amount || Amount->getZExtValue() >= N->getValueType(0).getSizeInBits())
+    return {};
+  APInt InnerMask = Mask->getAPIntValue().lshr(Amount->getZExtValue());
+  if (InnerMask != 0xff && InnerMask != 0xffff)
+    return {};
+
+  SDLoc DL(N);
+  EVT VT = N->getValueType(0);
+  SDValue Narrow = DAG.getNode(ISD::AND, DL, VT, Shift.getOperand(0),
+                               DAG.getConstant(InnerMask, DL, VT));
+  return DAG.getNode(ISD::SHL, DL, VT, Narrow, Shift.getOperand(1));
+}
+
+// C - (a == b) becomes (a != b) + (C - 1), so ADDI replaces loading C
+// and subtracting. For C == 1 the inverse comparison is the whole result.
+static SDValue combineSubOfEquality(SDNode *N, SelectionDAG &DAG) {
+  auto *C = dyn_cast<ConstantSDNode>(N->getOperand(0));
+  SDValue Compare = N->getOperand(1);
+  if (!C || !Compare.hasOneUse())
+    return {};
+  APInt Immediate = C->getAPIntValue() - 1;
+  if (!Immediate.isSignedIntN(8))
+    return {};
+  SDLoc DL(N);
+  EVT VT = N->getValueType(0);
+  SDValue Inverse;
+  if (Compare.getOpcode() == ISD::SETCC &&
+      cast<CondCodeSDNode>(Compare.getOperand(2))->get() == ISD::SETEQ) {
+    Inverse = DAG.getSetCC(DL, VT, Compare.getOperand(0), Compare.getOperand(1),
+                           ISD::SETNE);
+  } else if ((Compare.getOpcode() == RISCCISD::SET_CC ||
+              Compare.getOpcode() == RISCCISD::SET_CC_IMM) &&
+             Compare.getConstantOperandVal(2) == ISD::SETEQ) {
+    Inverse = DAG.getNode(Compare.getOpcode(), DL, VT, Compare.getOperand(0),
+                          Compare.getOperand(1),
+                          DAG.getTargetConstant(ISD::SETNE, DL, MVT::i16));
+  } else {
+    return {};
+  }
+  return DAG.getNode(ISD::ADD, DL, VT, Inverse,
+                     DAG.getConstant(Immediate, DL, VT));
+}
+
 SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
                                                DAGCombinerInfo &DCI) const {
   SelectionDAG &DAG = DCI.DAG;
   SDLoc DL(N);
+  const MVT VT = STI.getXLenVT();
+  const unsigned Bits = VT.getSizeInBits();
 
-  if (N->getOpcode() == ISD::OR && !STI.isNano() &&
-      N->getValueType(0) == MVT::i16) {
+  // Overflow legalization can produce SETCC, an i1 mask, then a comparison
+  // just to branch. Fold after legalization, when the predicate is available.
+  if (N->getOpcode() == RISCCISD::BR_CC ||
+      N->getOpcode() == RISCCISD::BR_CC_IMM) {
+    SDValue Predicate = N->getOperand(1), RHS = N->getOperand(2);
+    auto CC = ISD::CondCode(N->getConstantOperandVal(3));
+    if ((CC == ISD::SETEQ || CC == ISD::SETNE) &&
+        (isNullConstant(RHS) || isOneConstant(RHS)) &&
+        Predicate.hasOneUse()) {
+      if (Predicate.getOpcode() == ISD::AND &&
+          isOneConstant(Predicate.getOperand(1)) &&
+          Predicate.getOperand(0).hasOneUse())
+        Predicate = Predicate.getOperand(0);
+      if (Predicate.getOpcode() == RISCCISD::SET_CC ||
+          Predicate.getOpcode() == RISCCISD::SET_CC_IMM) {
+        bool Invert = (CC == ISD::SETEQ) != isOneConstant(RHS);
+        CC = ISD::CondCode(Predicate.getConstantOperandVal(2));
+        SDValue LHS = Predicate.getOperand(0);
+        RHS = Predicate.getOperand(1);
+        if (Invert)
+          CC = ISD::getSetCCInverse(CC, LHS.getValueType());
+        return lowerBRCC(
+            DAG.getNode(ISD::BR_CC, DL, MVT::Other, N->getOperand(0),
+                        DAG.getCondCode(CC), LHS, RHS, N->getOperand(4)),
+            DAG);
+      }
+    }
+  }
+
+  if (N->getOpcode() == ISD::AND && N->getValueType(0) == VT)
+    return combineNarrowableShiftedLoad(N, DAG);
+  if (N->getOpcode() == ISD::SUB && N->getValueType(0) == VT)
+    if (SDValue Result = combineSubOfEquality(N, DAG))
+      return Result;
+
+  if (N->getOpcode() == ISD::OR && !STI.isNano() && N->getValueType(0) == VT) {
     SDValue A = N->getOperand(0);
     SDValue B = N->getOperand(1);
     SDValue High;
     SDValue Low;
-    if ((matchShiftChain(A, ISD::SHL, RISCCISD::SHL, 1, High) &&
-         matchShiftChain(B, ISD::SRL, RISCCISD::SRL, 15, Low)) ||
-        (matchShiftChain(B, ISD::SHL, RISCCISD::SHL, 1, High) &&
-         matchShiftChain(A, ISD::SRL, RISCCISD::SRL, 15, Low)))
-      return DAG.getNode(RISCCISD::FSL1, DL, MVT::i16, High, Low);
+    for (unsigned Count = 1; Count <= 2; ++Count) {
+      if ((matchShiftChain(A, ISD::SHL, RISCCISD::SHL, Count, High) &&
+           matchShiftChain(B, ISD::SRL, RISCCISD::SRL, Bits - Count, Low)) ||
+          (matchShiftChain(B, ISD::SHL, RISCCISD::SHL, Count, High) &&
+           matchShiftChain(A, ISD::SRL, RISCCISD::SRL, Bits - Count, Low)))
+        return lowerFunnelShift(DAG.getNode(ISD::FSHL, DL, VT, High, Low,
+                                            DAG.getConstant(Count, DL, VT)),
+                                DAG);
 
-    if ((matchShiftChain(A, ISD::SRL, RISCCISD::SRL, 1, Low) &&
-         matchShiftChain(B, ISD::SHL, RISCCISD::SHL, 15, High)) ||
-        (matchShiftChain(B, ISD::SRL, RISCCISD::SRL, 1, Low) &&
-         matchShiftChain(A, ISD::SHL, RISCCISD::SHL, 15, High)))
-      return DAG.getNode(RISCCISD::FSR1, DL, MVT::i16, Low, High);
+      if ((matchShiftChain(A, ISD::SRL, RISCCISD::SRL, Count, Low) &&
+           matchShiftChain(B, ISD::SHL, RISCCISD::SHL, Bits - Count, High)) ||
+          (matchShiftChain(B, ISD::SRL, RISCCISD::SRL, Count, Low) &&
+           matchShiftChain(A, ISD::SHL, RISCCISD::SHL, Bits - Count, High)))
+        return lowerFunnelShift(DAG.getNode(ISD::FSHR, DL, VT, High, Low,
+                                            DAG.getConstant(Count, DL, VT)),
+                                DAG);
+    }
   }
 
-  if (N->getOpcode() == ISD::MUL && !STI.hasMul() &&
-      N->getValueType(0) == MVT::i16) {
+  if (N->getOpcode() == ISD::MUL && N->getValueType(0) == VT) {
     SDValue Value = N->getOperand(0);
     auto *Multiplier = dyn_cast<ConstantSDNode>(N->getOperand(1));
     if (!Multiplier) {
@@ -227,13 +344,21 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
     }
     if (Multiplier) {
       int64_t Amount = Multiplier->getSExtValue();
-      if (Amount > 1 || Amount < -1)
-        return expandSmallConstantMultiply(Value, Amount, DAG, DL);
+      if (Amount > 1 || Amount < -1) {
+        // Count cycles, including iterative shift bits. A three-cycle
+        // sequence can replace a multiply plus its constant load, but retain
+        // the smaller expansion budget for size-optimized hardware builds.
+        unsigned Limit =
+            STI.hasMul()
+                ? (DAG.getMachineFunction().getFunction().hasOptSize() ? 2 : 3)
+                : 4;
+        return expandSmallConstantMultiply(Value, Amount, DAG, DL, Limit);
+      }
     }
     return {};
   }
 
-  if (N->getOpcode() == ISD::SELECT && N->getValueType(0) == MVT::i16) {
+  if (N->getOpcode() == ISD::SELECT && N->getValueType(0) == VT) {
     SDValue Cond = N->getOperand(0);
     SDValue TrueValue = N->getOperand(1);
     SDValue FalseValue = N->getOperand(2);
@@ -242,19 +367,18 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
     if (TrueIsZero == FalseIsZero)
       return {};
 
-    SDValue Bool = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i16, Cond);
+    SDValue Bool = DAG.getNode(ISD::ZERO_EXTEND, DL, VT, Cond);
     SDValue Mask;
     SDValue Value;
     if (FalseIsZero) {
-      Mask = DAG.getNode(ISD::SUB, DL, MVT::i16,
-                         DAG.getConstant(0, DL, MVT::i16), Bool);
+      Mask = DAG.getNode(ISD::SUB, DL, VT, DAG.getConstant(0, DL, VT), Bool);
       Value = TrueValue;
     } else {
-      Mask = DAG.getNode(ISD::ADD, DL, MVT::i16, Bool,
-                         DAG.getSignedConstant(-1, DL, MVT::i16));
+      Mask = DAG.getNode(ISD::ADD, DL, VT, Bool,
+                         DAG.getSignedConstant(-1, DL, VT));
       Value = FalseValue;
     }
-    return DAG.getNode(ISD::AND, DL, MVT::i16, Value, Mask);
+    return DAG.getNode(ISD::AND, DL, VT, Value, Mask);
   }
 
   // Recover div/rem pairs from x - (x / y) * y so both results share a divide.
@@ -302,8 +426,6 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerBlockAddress(Op, DAG);
   case ISD::ADDRSPACECAST:
     return Op.getOperand(0);
-  case ISD::Constant:
-    return lowerConstant(Op, DAG);
   case ISD::BR_CC:
     return lowerBRCC(Op, DAG);
   case ISD::SETCC:
@@ -381,43 +503,58 @@ void RISCCTargetLowering::ReplaceNodeResults(SDNode *N,
 
 SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
                                               SelectionDAG &DAG) const {
+  MVT VT = STI.getXLenVT();
+  const unsigned Bits = VT.getSizeInBits();
   bool IsLeft = Op.getOpcode() == ISD::FSHL;
   SDValue High = Op.getOperand(0);
   SDValue Low = Op.getOperand(1);
   SDValue Amount = Op.getOperand(2);
   SDLoc DL(Op);
-  if (Amount.getValueType() != MVT::i16)
-    Amount = DAG.getZExtOrTrunc(Amount, DL, MVT::i16);
+  if (Amount.getValueType() != VT)
+    Amount = DAG.getZExtOrTrunc(Amount, DL, VT);
 
   auto Shift = [&](unsigned Opcode, SDValue Value, SDValue Count) {
-    return lowerShift(DAG.getNode(Opcode, DL, MVT::i16, Value, Count), DAG);
+    return lowerShift(DAG.getNode(Opcode, DL, VT, Value, Count), DAG);
   };
 
   if (const auto *C = dyn_cast<ConstantSDNode>(Amount)) {
-    unsigned Count = C->getZExtValue() & 15;
+    unsigned Count = C->getZExtValue() & (Bits - 1);
     if (Count == 0)
       return IsLeft ? High : Low;
     if (Count == 1)
-      return DAG.getNode(IsLeft ? RISCCISD::FSL1 : RISCCISD::FSR1, DL, MVT::i16,
+      return DAG.getNode(IsLeft ? RISCCISD::FSL1 : RISCCISD::FSR1, DL, VT,
                          IsLeft ? High : Low, IsLeft ? Low : High);
-    if (Count == 15)
-      return DAG.getNode(IsLeft ? RISCCISD::FSR1 : RISCCISD::FSL1, DL, MVT::i16,
+    if (Count == Bits - 1)
+      return DAG.getNode(IsLeft ? RISCCISD::FSR1 : RISCCISD::FSL1, DL, VT,
                          IsLeft ? Low : High, IsLeft ? High : Low);
 
-    SDValue CountValue = DAG.getConstant(Count, DL, MVT::i16);
-    SDValue Inverse = DAG.getConstant(16 - Count, DL, MVT::i16);
+    // Two funnel steps avoid shifting the incoming word by XLEN - 2.
+    // This is smaller as well as faster than the separate-shift expansion.
+    if (Count == 2 || Count == Bits - 2) {
+      bool Left = IsLeft == (Count == 2);
+      SDValue Result = Left ? High : Low;
+      SDValue Incoming = Left ? Low : High;
+      unsigned Funnel = Left ? RISCCISD::FSL1 : RISCCISD::FSR1;
+      Result = DAG.getNode(Funnel, DL, VT, Result, Incoming);
+      Incoming = Shift(Left ? ISD::SHL : ISD::SRL, Incoming,
+                       DAG.getConstant(1, DL, VT));
+      return DAG.getNode(Funnel, DL, VT, Result, Incoming);
+    }
+
+    SDValue CountValue = DAG.getConstant(Count, DL, VT);
+    SDValue Inverse = DAG.getConstant(Bits - Count, DL, VT);
     SDValue ShiftedHigh = Shift(ISD::SHL, High, IsLeft ? CountValue : Inverse);
     SDValue ShiftedLow = Shift(ISD::SRL, Low, IsLeft ? Inverse : CountValue);
-    return DAG.getNode(ISD::OR, DL, MVT::i16, ShiftedHigh, ShiftedLow);
+    return DAG.getNode(ISD::OR, DL, VT, ShiftedHigh, ShiftedLow);
   }
 
-  // Masking makes both variable counts modulo 16.  The two-step side of
-  // each expansion avoids ever expressing a shift by 16.
-  SDValue Mask = DAG.getConstant(15, DL, MVT::i16);
-  Amount = DAG.getNode(ISD::AND, DL, MVT::i16, Amount, Mask);
-  SDValue Inverse = DAG.getNode(ISD::AND, DL, MVT::i16,
-                                DAG.getNOT(DL, Amount, MVT::i16), Mask);
-  SDValue One = DAG.getConstant(1, DL, MVT::i16);
+  // Mask both variable counts to the word width. The two-step side of
+  // each expansion avoids ever shifting by the full word width.
+  SDValue Mask = DAG.getConstant(Bits - 1, DL, VT);
+  Amount = DAG.getNode(ISD::AND, DL, VT, Amount, Mask);
+  SDValue Inverse =
+      DAG.getNode(ISD::AND, DL, VT, DAG.getNOT(DL, Amount, VT), Mask);
+  SDValue One = DAG.getConstant(1, DL, VT);
   SDValue ShiftedHigh;
   SDValue ShiftedLow;
   if (IsLeft) {
@@ -427,7 +564,7 @@ SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
     ShiftedHigh = Shift(ISD::SHL, Shift(ISD::SHL, High, One), Inverse);
     ShiftedLow = Shift(ISD::SRL, Low, Amount);
   }
-  return DAG.getNode(ISD::OR, DL, MVT::i16, ShiftedHigh, ShiftedLow);
+  return DAG.getNode(ISD::OR, DL, VT, ShiftedHigh, ShiftedLow);
 }
 
 SDValue RISCCTargetLowering::lowerVASTART(SDValue Op, SelectionDAG &DAG) const {
@@ -538,6 +675,12 @@ SDValue RISCCTargetLowering::lowerUDivRem(SDValue Op, SelectionDAG &DAG) const {
   return DAG.getMergeValues({Div.getValue(1), Div.getValue(0)}, DL);
 }
 
+static bool useFastShiftHelper(const SelectionDAG &DAG) {
+  const MachineFunction &MF = DAG.getMachineFunction();
+  return MF.getTarget().getOptLevel() != CodeGenOptLevel::None &&
+         !MF.getFunction().hasOptNone() && !MF.getFunction().hasOptSize();
+}
+
 SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
   MVT VT = STI.getXLenVT();
   unsigned TOpc = Op.getOpcode() == ISD::SHL   ? RISCCISD::SHL
@@ -548,6 +691,24 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
     unsigned Amount = C->getZExtValue() & (VT.getSizeInBits() - 1);
     SDValue V = Op.getOperand(0);
     const Function &Fn = DAG.getMachineFunction().getFunction();
+
+    // Extracting the highest possible set bit is a range test. Leave OR
+    // operands intact so the funnel-shift combine can still see both halves.
+    if (Op.getOpcode() == ISD::SRL && Amount > 2 &&
+        !llvm::any_of(Op->users(), [](SDNode *U) {
+          return U->getOpcode() == ISD::OR;
+        }) &&
+        DAG.computeKnownBits(V).getMaxValue().lshr(Amount).ule(1)) {
+      unsigned ShiftBytes = 2 * (STI.hasWideShift() ? (Amount + 7) / 8 : Amount);
+      unsigned CompareBytes = STI.isRC32() ? 8 : (Amount <= 8 ? 4 : 6);
+      if (!Fn.hasOptSize() || CompareBytes <= ShiftBytes) {
+        SDValue Mask = DAG.getConstant(APInt::getLowBitsSet(VT.getSizeInBits(),
+                                                          Amount), DL, VT);
+        // A target compare cannot be canonicalized back into an SRL.
+        return DAG.getNode(RISCCISD::SET_CC, DL, VT, Mask, V,
+                           DAG.getTargetConstant(ISD::SETULT, DL, MVT::i16));
+      }
+    }
 
     // Without wide shifts, the shared helper saves space from eleven bits
     // onward, including the cost of saving and restoring the return address.
@@ -565,7 +726,12 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
     return V;
   }
   const Function &Fn = DAG.getMachineFunction().getFunction();
-  if (STI.isRC32() || (!STI.hasWideShift() && Fn.hasMinSize()))
+  // A short inline loop avoids helper-call overhead for a bounded count.
+  if (!STI.isRC32() &&
+      DAG.computeKnownBits(Op.getOperand(1)).getMaxValue().ule(3))
+    return DAG.getNode(TOpc, DL, VT, Op.getOperand(0), Op.getOperand(1));
+  if (STI.isRC32() || useFastShiftHelper(DAG) ||
+      (!STI.hasWideShift() && Fn.hasMinSize()))
     return lowerShiftLibCall(Op, DAG);
   return DAG.getNode(TOpc, DL, VT, Op.getOperand(0), Op.getOperand(1));
 }
@@ -587,7 +753,11 @@ SDValue RISCCTargetLowering::lowerShiftLibCall(SDValue Op,
     Name += Twine(Amount).str();
   } else {
     Args.emplace_back(Op.getOperand(1), Ty);
-    if (STI.isRC32()) {
+    if (useFastShiftHelper(DAG)) {
+      // Share the fixed-count sequence through a computed jump. Size
+      // builds retain the compact loop without pulling in all its rungs.
+      Name += "_fast";
+    } else if (STI.isRC32()) {
       Name = Opcode == ISD::SHL   ? "__ashlsi3"
              : Opcode == ISD::SRL ? "__lshrsi3"
                                   : "__ashrsi3";
@@ -669,22 +839,32 @@ SDValue RISCCTargetLowering::lowerDivRem(SDValue Op, SelectionDAG &DAG) const {
 SDValue RISCCTargetLowering::lowerGlobalAddress(SDValue Op,
                                                 SelectionDAG &DAG) const {
   auto *N = cast<GlobalAddressSDNode>(Op);
+  SDLoc DL(Op);
+  const MVT VT = STI.getXLenVT();
+  // Share one global base for nearby native word accesses. Keep the offset
+  // visible so instruction selection can fold it into LD/ST.
+  int64_t Offset = N->getOffset();
+  bool UseDisplacement = STI.isLegalWordOffset(Offset);
+  int64_t BaseOffset = UseDisplacement ? 0 : Offset;
+  SDValue Base;
   if (STI.isRC32()) {
-    LLVMContext &Context = *DAG.getContext();
-    Type *WordTy = Type::getInt32Ty(Context);
+    Type *WordTy = Type::getInt32Ty(*DAG.getContext());
     Constant *Address = ConstantExpr::getPtrToInt(
         const_cast<GlobalValue *>(N->getGlobal()), WordTy);
-    if (N->getOffset())
+    if (BaseOffset)
       Address = ConstantExpr::getAdd(
-          Address, ConstantInt::getSigned(WordTy, N->getOffset()));
-    SDLoc DL(Op);
+          Address, ConstantInt::getSigned(WordTy, BaseOffset));
     SDValue Pool = DAG.getConstantPool(Address, MVT::i32, Align(4));
-    return loadRC32Literal(Pool, DL, DAG);
+    Base = loadRC32Literal(Pool, DL, DAG);
+  } else {
+    SDValue Target = DAG.getTargetGlobalAddress(N->getGlobal(), DL, VT,
+                                                BaseOffset, RISCCII::MO_None);
+    Base = DAG.getNode(RISCCISD::Wrapper, DL, VT, Target);
   }
-  SDValue T =
-      DAG.getTargetGlobalAddress(N->getGlobal(), SDLoc(Op), Op.getValueType(),
-                                 N->getOffset(), RISCCII::MO_None);
-  return DAG.getNode(RISCCISD::Wrapper, SDLoc(Op), Op.getValueType(), T);
+  return UseDisplacement && Offset
+             ? DAG.getNode(ISD::ADD, DL, VT, Base,
+                           DAG.getConstant(Offset, DL, VT))
+             : Base;
 }
 
 SDValue RISCCTargetLowering::lowerGlobalTLSAddress(SDValue Op,
@@ -762,16 +942,88 @@ SDValue RISCCTargetLowering::lowerBlockAddress(SDValue Op,
   return DAG.getNode(RISCCISD::Wrapper, SDLoc(Op), Op.getValueType(), T);
 }
 
-SDValue RISCCTargetLowering::lowerConstant(SDValue Op,
-                                           SelectionDAG &DAG) const {
-  auto *N = cast<ConstantSDNode>(Op);
-  if (isUInt<8>(N->getZExtValue()))
-    return Op;
-  Type *Ty = Type::getInt32Ty(*DAG.getContext());
-  Constant *Value = ConstantInt::get(Ty, N->getAPIntValue());
-  SDLoc DL(Op);
-  SDValue Pool = DAG.getConstantPool(Value, MVT::i32, Align(4));
-  return loadRC32Literal(Pool, DL, DAG);
+bool RISCCTargetLowering::isLegalAddressingMode(const DataLayout &DL,
+                                                const AddrMode &AM, Type *Ty,
+                                                unsigned,
+                                                Instruction *I) const {
+  if (AM.BaseGV || AM.ScalableOffset || AM.Scale < 0 || AM.Scale > 1)
+    return false;
+  const bool NativeWord =
+      Ty->isSized() && !Ty->isVectorTy() &&
+      DL.getTypeSizeInBits(Ty) == STI.getXLenVT().getSizeInBits();
+  // Only native word loads have a register-indexed form (LDX).
+  if (AM.HasBaseReg && AM.Scale)
+    return NativeWord && isa_and_nonnull<LoadInst>(I) && AM.BaseOffs == 0;
+  if (!AM.HasBaseReg && !AM.Scale)
+    return false;
+  // Byte/halfword operations take a plain register address.
+  if (!NativeWord)
+    return AM.BaseOffs == 0;
+  return STI.isLegalWordOffset(AM.BaseOffs);
+}
+
+bool RISCCTargetLowering::isDesirableToCommuteWithShift(
+    const SDNode *N, CombineLevel Level) const {
+  if (TargetLowering::isDesirableToCommuteWithShift(N, Level))
+    return true;
+  // Reuse an existing scaled index even when the unscaled sum is also live.
+  // For example, a[i] and a[i + 1] can share the shift of i.
+  SDValue Sum = N->getOperand(0);
+  if (N->getOpcode() != ISD::SHL || Sum.getOpcode() != ISD::ADD ||
+      !isa<ConstantSDNode>(N->getOperand(1)) ||
+      !isa<ConstantSDNode>(Sum.getOperand(1)))
+    return false;
+  SDValue Index = Sum.getOperand(0);
+  for (const SDNode *User : Index->users())
+    if (User->getOpcode() == ISD::SHL && User->getOperand(0) == Index &&
+        User->getOperand(1) == N->getOperand(1))
+      return true;
+  return false;
+}
+
+bool RISCCTargetLowering::isLegalAddImmediate(int64_t Imm) const {
+  return isInt<8>(Imm);
+}
+
+bool RISCCTargetLowering::isLegalICmpImmediate(int64_t Imm) const {
+  return Imm == 0 || (!STI.isNano() && isInt<8>(Imm));
+}
+
+bool RISCCTargetLowering::shouldConvertConstantLoadToIntImm(const APInt &,
+                                                            Type *Ty) const {
+  // Native constants need at most LDI16 or LDPC. Loading through the source
+  // address costs another instruction, or byte assembly for unaligned strings.
+  return Ty->isIntegerTy() &&
+         Ty->getIntegerBitWidth() <= STI.getXLenVT().getSizeInBits();
+}
+
+static bool canCompareImmediate(ISD::CondCode CC, int64_t Value, bool IsNano) {
+  if (CC == ISD::SETEQ || CC == ISD::SETNE)
+    return Value == 0 || (!IsNano && isInt<8>(Value));
+  return (Value == 0 && (CC == ISD::SETLT || CC == ISD::SETGE)) ||
+         (Value == -1 && (CC == ISD::SETGT || CC == ISD::SETLE));
+}
+
+// (x & (2^n - 1)) == x tests whether x fits in n unsigned bits. Comparing
+// the range directly avoids masking a temporary and then comparing it to x.
+static void simplifyMaskedComparison(SDValue &LHS, SDValue &RHS,
+                                     ISD::CondCode &CC) {
+  if (CC != ISD::SETEQ && CC != ISD::SETNE)
+    return;
+  for (unsigned Side = 0; Side != 2; ++Side) {
+    SDValue Masked = Side ? RHS : LHS;
+    SDValue Value = Side ? LHS : RHS;
+    if (Masked.getOpcode() != ISD::AND || !Masked.hasOneUse() ||
+        Masked.getOperand(0) != Value)
+      continue;
+    auto *Mask = dyn_cast<ConstantSDNode>(Masked.getOperand(1));
+    if (!Mask || !Mask->getAPIntValue().isMask())
+      continue;
+    LHS = Value;
+    RHS = Masked.getOperand(1);
+    CC = CC == ISD::SETEQ ? ISD::SETULE : ISD::SETUGT;
+    return;
+  }
 }
 
 SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
@@ -779,23 +1031,17 @@ SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
   SDValue LHS = Op.getOperand(2);
   SDValue RHS = Op.getOperand(3);
   ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(1))->get();
+  simplifyMaskedComparison(LHS, RHS, CC);
   if (isa<ConstantSDNode>(LHS) && !isa<ConstantSDNode>(RHS)) {
     std::swap(LHS, RHS);
     CC = ISD::getSetCCSwappedOperands(CC);
   }
   if (auto *C = dyn_cast<ConstantSDNode>(RHS)) {
     int64_t Immediate = C->getSExtValue();
-    bool IsEquality = CC == ISD::SETEQ || CC == ISD::SETNE;
-    bool IsSignTest =
-        (Immediate == 0 && (CC == ISD::SETLT || CC == ISD::SETGE)) ||
-        (Immediate == -1 && (CC == ISD::SETGT || CC == ISD::SETLE));
-    if (!STI.isRC32() &&
-        (IsSignTest ||
-         (IsEquality &&
-          (Immediate == 0 || (!STI.isNano() && isInt<8>(Immediate)))))) {
+    if (canCompareImmediate(CC, Immediate, STI.isNano())) {
       return DAG.getNode(
           RISCCISD::BR_CC_IMM, DL, MVT::Other, Op.getOperand(0), LHS,
-          DAG.getConstant(
+          DAG.getTargetConstant(
               APInt(STI.getXLenVT().getSizeInBits(), Immediate, true), DL,
               STI.getXLenVT()),
           DAG.getTargetConstant(CC, DL, MVT::i16), Op.getOperand(4));
@@ -811,15 +1057,17 @@ SDValue RISCCTargetLowering::lowerSETCC(SDValue Op, SelectionDAG &DAG) const {
   SDValue LHS = Op.getOperand(0);
   SDValue RHS = Op.getOperand(1);
   ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(2))->get();
+  simplifyMaskedComparison(LHS, RHS, CC);
   bool IsEquality = CC == ISD::SETEQ || CC == ISD::SETNE;
   if (IsEquality && isa<ConstantSDNode>(LHS) && !isa<ConstantSDNode>(RHS))
     std::swap(LHS, RHS);
-  if (IsEquality && !STI.isRC32()) {
+  if (IsEquality) {
     if (auto *C = dyn_cast<ConstantSDNode>(RHS);
         C && isUInt<8>(C->getZExtValue())) {
-      return DAG.getNode(RISCCISD::SET_CC_IMM, DL, STI.getXLenVT(), LHS,
-                         DAG.getConstant(C->getZExtValue(), DL, MVT::i16),
-                         DAG.getTargetConstant(CC, DL, MVT::i16));
+      return DAG.getNode(
+          RISCCISD::SET_CC_IMM, DL, STI.getXLenVT(), LHS,
+          DAG.getTargetConstant(C->getZExtValue(), DL, STI.getXLenVT()),
+          DAG.getTargetConstant(CC, DL, MVT::i16));
     }
   }
   return DAG.getNode(RISCCISD::SET_CC, DL, STI.getXLenVT(), LHS, RHS,
@@ -829,11 +1077,21 @@ SDValue RISCCTargetLowering::lowerSETCC(SDValue Op, SelectionDAG &DAG) const {
 SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
                                            SelectionDAG &DAG) const {
   SDLoc DL(Op);
-  return DAG.getNode(
-      RISCCISD::SELECT_CC, DL, Op.getValueType(), Op.getOperand(0),
-      Op.getOperand(1), Op.getOperand(2), Op.getOperand(3),
-      DAG.getTargetConstant(cast<CondCodeSDNode>(Op.getOperand(4))->get(), DL,
-                            MVT::i16));
+  SDValue LHS = Op.getOperand(0), RHS = Op.getOperand(1);
+  ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(4))->get();
+  simplifyMaskedComparison(LHS, RHS, CC);
+  if (isa<ConstantSDNode>(LHS) && !isa<ConstantSDNode>(RHS)) {
+    std::swap(LHS, RHS);
+    CC = ISD::getSetCCSwappedOperands(CC);
+  }
+  unsigned Opcode = RISCCISD::SELECT_CC;
+  if (auto *C = dyn_cast<ConstantSDNode>(RHS);
+      C && canCompareImmediate(CC, C->getSExtValue(), STI.isNano())) {
+    Opcode = RISCCISD::SELECT_CC_IMM;
+    RHS = DAG.getTargetConstant(C->getAPIntValue(), DL, STI.getXLenVT());
+  }
+  return DAG.getNode(Opcode, DL, Op.getValueType(), LHS, RHS, Op.getOperand(2),
+                     Op.getOperand(3), DAG.getTargetConstant(CC, DL, MVT::i16));
 }
 
 //===----------------------------------------------------------------------===//
@@ -888,14 +1146,16 @@ static void analyzeArguments(CCState &State, SmallVectorImpl<CCValAssign> &Locs,
   }
 }
 
-static bool isExpandedMulLibcall(const TargetLowering::CallLoweringInfo &CLI) {
+static bool isExpandedMulLibcall(const TargetLowering::CallLoweringInfo &CLI,
+                                 MVT SlotVT) {
   const auto *Callee = dyn_cast<ExternalSymbolSDNode>(CLI.Callee);
-  if (!Callee || StringRef(Callee->getSymbol()) != "__mulsi3" ||
+  StringRef Name = SlotVT == MVT::i32 ? "__muldi3" : "__mulsi3";
+  if (!Callee || StringRef(Callee->getSymbol()) != Name ||
       CLI.Outs.size() != 4)
     return false;
 
   for (const auto [I, Arg] : enumerate(CLI.Outs))
-    if (Arg.VT != MVT::i16 || Arg.OrigArgIndex != I || Arg.PartOffset != 0)
+    if (Arg.VT != SlotVT || Arg.OrigArgIndex != I || Arg.PartOffset != 0)
       return false;
   return true;
 }
@@ -955,6 +1215,11 @@ SDValue RISCCTargetLowering::LowerFormalArguments(
   return Chain;
 }
 
+bool RISCCTargetLowering::mayBeEmittedAsTailCall(const CallInst *Call) const {
+  return Call->isTailCall() && Call->getCalledFunction() &&
+         !Call->getFunction()->hasFnAttribute("interrupt");
+}
+
 static bool
 isEligibleForSiblingCall(const TargetLowering::CallLoweringInfo &CLI,
                          const MachineFunction &MF, unsigned StackBytes) {
@@ -971,21 +1236,6 @@ isEligibleForSiblingCall(const TargetLowering::CallLoweringInfo &CLI,
     return false;
 
   return true;
-}
-
-static SDValue getRC32DirectCallLiteral(SDValue Callee, SelectionDAG &DAG) {
-  if (auto *Address = dyn_cast<GlobalAddressSDNode>(Callee)) {
-    assert(Address->getOffset() == 0 &&
-           "direct call target unexpectedly has an offset");
-    auto *Value = RISCCConstantPoolSymbol::Create(
-        *DAG.getContext(), Address->getGlobal(), /*IsTPOFF=*/false,
-        /*IsCallTarget=*/true);
-    return DAG.getTargetConstantPool(Value, MVT::i32, Align(4));
-  }
-  auto *External = cast<ExternalSymbolSDNode>(Callee);
-  auto *Value = RISCCConstantPoolSymbol::CreateCallTarget(
-      *DAG.getContext(), External->getSymbol());
-  return DAG.getTargetConstantPool(Value, MVT::i32, Align(4));
 }
 
 static MCRegister getDirectCalleeLink(SDValue Callee) {
@@ -1029,10 +1279,10 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   SmallVector<CCValAssign, 16> Locs;
   CCState State(CLI.CallConv, CLI.IsVarArg, MF, Locs, *DAG.getContext());
   SmallVector<ISD::OutputArg, 16> Args(CLI.Outs.begin(), CLI.Outs.end());
-  // Type legalization expands an i32 multiply libcall into four i16 values
+  // Type legalization expands a double-width multiply into four native values
   // without retaining its two source-argument groups. Recreate the groups so
-  // __mulsi3 uses the normal no-split C ABI.
-  if (isExpandedMulLibcall(CLI)) {
+  // __mulsi3 (RC16) and __muldi3 (RC32) use the normal no-split C ABI.
+  if (isExpandedMulLibcall(CLI, STI.getXLenVT())) {
     Args[1].OrigArgIndex = 0;
     Args[2].OrigArgIndex = Args[3].OrigArgIndex = 1;
   }
@@ -1071,7 +1321,9 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
       SDValue Addr = DAG.getNode(
           ISD::ADD, DL, STI.getXLenVT(), SP,
           DAG.getConstant(VA.getLocMemOffset(), DL, STI.getXLenVT()));
-      Stores.push_back(DAG.getStore(Chain, DL, V, Addr, MachinePointerInfo()));
+      Stores.push_back(
+          DAG.getStore(Chain, DL, V, Addr,
+                       MachinePointerInfo::getStack(MF, VA.getLocMemOffset())));
     }
   }
   if (!Stores.empty())
@@ -1104,15 +1356,12 @@ SDValue RISCCTargetLowering::LowerCall(CallLoweringInfo &CLI,
   }
 
   SDValue Callee = CLI.Callee;
-  if (STI.isRC32()) {
-    if (isa<GlobalAddressSDNode>(Callee) || isa<ExternalSymbolSDNode>(Callee))
-      Callee = getRC32DirectCallLiteral(Callee, DAG);
-  } else if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
-    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), DL, MVT::i16,
+  if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
+    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), DL, STI.getXLenVT(),
                                         G->getOffset(), RISCCII::MO_None);
   else if (auto *E = dyn_cast<ExternalSymbolSDNode>(Callee))
-    Callee =
-        DAG.getTargetExternalSymbol(E->getSymbol(), MVT::i16, RISCCII::MO_None);
+    Callee = DAG.getTargetExternalSymbol(E->getSymbol(), STI.getXLenVT(),
+                                         RISCCII::MO_None);
 
   SmallVector<SDValue, 10> Ops{Chain, Callee};
   for (auto [Reg, V] : RegArgs)
@@ -1264,55 +1513,34 @@ static void emitComparisonBranch(MachineBasicBlock &MBB,
   if (swapsComparisonOperands(CC))
     std::swap(LHS, RHS);
   unsigned Cmp, Br;
-  switch (CC) {
-  case ISD::SETEQ:
+  if (CC == ISD::SETEQ || CC == ISD::SETNE) {
     Cmp = IsRC32 ? RISCC::SUB32 : RISCC::SUB;
-    Br = RISCC::BEQZ;
-    break;
-  case ISD::SETNE:
-    Cmp = IsRC32 ? RISCC::SUB32 : RISCC::SUB;
-    Br = RISCC::BNEZ;
-    break;
-  case ISD::SETLT:
-  case ISD::SETGT:
-    Cmp = IsRC32 ? RISCC::SLT32 : IsNano ? RISCC::SLTU : RISCC::SLT;
-    Br = RISCC::BNEZ;
-    break;
-  case ISD::SETGE:
-  case ISD::SETLE:
-    Cmp = IsRC32 ? RISCC::SLT32 : IsNano ? RISCC::SLTU : RISCC::SLT;
-    Br = RISCC::BEQZ;
-    break;
-  case ISD::SETULT:
-  case ISD::SETUGT:
-    Cmp = IsRC32 ? RISCC::SLTU32 : RISCC::SLTU;
-    Br = RISCC::BNEZ;
-    break;
-  case ISD::SETUGE:
-  case ISD::SETULE:
-    Cmp = IsRC32 ? RISCC::SLTU32 : RISCC::SLTU;
-    Br = RISCC::BEQZ;
-    break;
-  default:
-    llvm_unreachable("unsupported integer condition");
+    Br = CC == ISD::SETEQ ? RISCC::BEQZ : RISCC::BNEZ;
+  } else {
+    bool IsSigned = isSignedRelationalComparison(CC);
+    assert((IsSigned || CC == ISD::SETULT || CC == ISD::SETUGT ||
+            CC == ISD::SETULE || CC == ISD::SETUGE) &&
+           "unsupported integer condition");
+    if (IsNano && IsSigned)
+      biasSignedComparisonOperands(MBB, I, DL, TII, LHS, RHS);
+    Cmp = IsRC32 ? (IsSigned ? RISCC::SLT32 : RISCC::SLTU32)
+                 : (IsSigned && !IsNano ? RISCC::SLT : RISCC::SLTU);
+    Br = invertsLessThanResult(CC) ? RISCC::BEQZ : RISCC::BNEZ;
   }
-  if (IsNano && isSignedRelationalComparison(CC))
-    biasSignedComparisonOperands(MBB, I, DL, TII, LHS, RHS);
   BuildMI(MBB, I, DL, TII.get(Cmp), RISCC::R0).addReg(LHS).addReg(RHS);
   BuildMI(MBB, I, DL, TII.get(Br)).addMBB(Target);
 }
 
-static void emitImmediateComparisonBranch(MachineInstr &MI,
-                                          MachineBasicBlock &MBB,
-                                          const RISCCInstrInfo &TII) {
-  Register LHS = MI.getOperand(0).getReg();
-  int64_t RHS = MI.getOperand(1).getImm();
-  ISD::CondCode CC = ISD::CondCode(MI.getOperand(2).getImm());
+static void
+emitImmediateComparisonBranch(MachineInstr &MI, MachineBasicBlock &MBB,
+                              const RISCCInstrInfo &TII, Register LHS,
+                              int64_t RHS, ISD::CondCode CC,
+                              MachineBasicBlock *Target, bool IsRC32) {
   unsigned Branch;
   bool IsSignTest =
       RHS == 0 || (RHS == -1 && (CC == ISD::SETGT || CC == ISD::SETLE));
   if (IsSignTest) {
-    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::MOV), RISCC::R0)
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), RISCC::R0)
         .addReg(LHS);
     switch (CC) {
     case ISD::SETEQ:
@@ -1335,30 +1563,27 @@ static void emitImmediateComparisonBranch(MachineInstr &MI,
   } else {
     assert((CC == ISD::SETEQ || CC == ISD::SETNE) &&
            "unsupported immediate comparison");
-    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::CMPI))
+    BuildMI(MBB, MI, MI.getDebugLoc(),
+            TII.get(IsRC32 ? RISCC::CMPI32 : RISCC::CMPI))
         .addReg(LHS)
         .addImm(RHS);
     Branch = CC == ISD::SETEQ ? RISCC::BEQZ : RISCC::BNEZ;
   }
-  BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Branch))
-      .addMBB(MI.getOperand(3).getMBB());
+  BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Branch)).addMBB(Target);
 }
 
-static void emitNonZeroResult(MachineBasicBlock &MBB,
+static void emitZeroTestResult(MachineBasicBlock &MBB,
                               MachineBasicBlock::iterator I, const DebugLoc &DL,
                               const RISCCInstrInfo &TII, Register Destination,
-                              Register Value, bool Invert, bool IsRC32) {
-  Register Zero = createVirtualGPR(MBB);
-  Register NonZero = Invert ? createVirtualGPR(MBB) : Destination;
-  TII.materializeImmediate(MBB, I, DL, Zero, 0);
-  BuildMI(MBB, I, DL, TII.get(IsRC32 ? RISCC::SLTU32 : RISCC::SLTU), NonZero)
-      .addReg(Zero)
-      .addReg(Value);
-  if (Invert)
-    BuildMI(MBB, I, DL, TII.get(IsRC32 ? RISCC::XORI32 : RISCC::XORI),
-            Destination)
-        .addReg(NonZero)
-        .addImm(1);
+                              Register Value, bool IsZero, bool IsRC32) {
+  // x == 0 is unsigned x < 1; x != 0 is unsigned 0 < x. Both need
+  // one comparison, without a separate inversion of the boolean result.
+  Register Bound = createVirtualGPR(MBB);
+  TII.materializeImmediate(MBB, I, DL, Bound, IsZero ? 1 : 0);
+  BuildMI(MBB, I, DL, TII.get(IsRC32 ? RISCC::SLTU32 : RISCC::SLTU),
+          Destination)
+      .addReg(IsZero ? Value : Bound)
+      .addReg(IsZero ? Bound : Value);
 }
 
 static void emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
@@ -1374,7 +1599,7 @@ static void emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
             TII.get(IsRC32 ? RISCC::XOR32 : RISCC::XOR), Difference)
         .addReg(LHS)
         .addReg(RHS);
-    emitNonZeroResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
+    emitZeroTestResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
                       CC == ISD::SETEQ, IsRC32);
     MI.eraseFromParent();
     return;
@@ -1409,7 +1634,8 @@ static void emitComparisonResult(MachineInstr &MI, MachineBasicBlock &MBB,
 
 static void emitImmediateEqualityResult(MachineInstr &MI,
                                         MachineBasicBlock &MBB,
-                                        const RISCCInstrInfo &TII) {
+                                        const RISCCInstrInfo &TII,
+                                        bool IsRC32) {
   Register Destination = MI.getOperand(0).getReg();
   Register LHS = MI.getOperand(1).getReg();
   uint64_t RHS = MI.getOperand(2).getImm();
@@ -1420,12 +1646,13 @@ static void emitImmediateEqualityResult(MachineInstr &MI,
   Register Difference = LHS;
   if (RHS != 0) {
     Difference = createVirtualGPR(MBB);
-    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(RISCC::XORI), Difference)
+    BuildMI(MBB, MI, MI.getDebugLoc(),
+            TII.get(IsRC32 ? RISCC::XORI32 : RISCC::XORI), Difference)
         .addReg(LHS)
         .addImm(RHS);
   }
-  emitNonZeroResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
-                    CC == ISD::SETEQ, false);
+  emitZeroTestResult(MBB, MI, MI.getDebugLoc(), TII, Destination, Difference,
+                    CC == ISD::SETEQ, IsRC32);
   MI.eraseFromParent();
 }
 
@@ -1458,7 +1685,7 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
   Register Source = MI.getOperand(1).getReg();
   Register Amount = MI.getOperand(2).getReg();
 
-  BuildMI(*MBB, MI, DL, TII.get(RISCC::MOV), RISCC::R0).addReg(Amount);
+  BuildMI(*MBB, MI, DL, TII.get(TargetOpcode::COPY), RISCC::R0).addReg(Amount);
   BuildMI(*MBB, MI, DL, TII.get(RISCC::BEQZ)).addMBB(Remainder);
 
   BuildMI(*Loop, Loop->end(), DL, TII.get(TargetOpcode::PHI), ShiftPhi)
@@ -1486,7 +1713,7 @@ static MachineBasicBlock *emitVariableShift(MachineInstr &MI,
   BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::ADDI), AmountNext)
       .addReg(AmountPhi)
       .addImm(-1);
-  BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::MOV), RISCC::R0)
+  BuildMI(*Loop, Loop->end(), DL, TII.get(TargetOpcode::COPY), RISCC::R0)
       .addReg(AmountNext);
   BuildMI(*Loop, Loop->end(), DL, TII.get(RISCC::BNEZ)).addMBB(Loop);
   BuildMI(*Remainder, Remainder->begin(), DL, TII.get(TargetOpcode::PHI),
@@ -1518,12 +1745,15 @@ static MachineBasicBlock *emitSelect(MachineInstr &MI, MachineBasicBlock *MBB,
 
   Register Destination = MI.getOperand(0).getReg();
   Register LHS = MI.getOperand(1).getReg();
-  Register RHS = MI.getOperand(2).getReg();
   Register TrueValue = MI.getOperand(3).getReg();
   Register FalseValue = MI.getOperand(4).getReg();
-  emitComparisonBranch(*MBB, MI, DL, TII, LHS, RHS,
-                       ISD::CondCode(MI.getOperand(5).getImm()), True, IsNano,
-                       IsRC32);
+  ISD::CondCode CC = ISD::CondCode(MI.getOperand(5).getImm());
+  if (MI.getOperand(2).isImm())
+    emitImmediateComparisonBranch(MI, *MBB, TII, LHS, MI.getOperand(2).getImm(),
+                                  CC, True, IsRC32);
+  else
+    emitComparisonBranch(*MBB, MI, DL, TII, LHS, MI.getOperand(2).getReg(), CC,
+                         True, IsNano, IsRC32);
   BuildMI(*MBB, MI, DL, TII.get(RISCC::JMP8)).addMBB(Sink);
   BuildMI(*Sink, Sink->begin(), DL, TII.get(TargetOpcode::PHI), Destination)
       .addReg(FalseValue)
@@ -1552,7 +1782,11 @@ RISCCTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
     MI.eraseFromParent();
     return MBB;
   case RISCC::PseudoBRCCImm:
-    emitImmediateComparisonBranch(MI, *MBB, TII);
+  case RISCC::PseudoBRCCImm32:
+    emitImmediateComparisonBranch(MI, *MBB, TII, MI.getOperand(0).getReg(),
+                                  MI.getOperand(1).getImm(),
+                                  ISD::CondCode(MI.getOperand(2).getImm()),
+                                  MI.getOperand(3).getMBB(), STI.isRC32());
     MI.eraseFromParent();
     return MBB;
   case RISCC::PseudoSETCC:
@@ -1560,8 +1794,11 @@ RISCCTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
     emitComparisonResult(MI, *MBB, TII, STI.isNano(), STI.isRC32());
     return MBB;
   case RISCC::PseudoSETCCImm:
-    emitImmediateEqualityResult(MI, *MBB, TII);
+  case RISCC::PseudoSETCCImm32:
+    emitImmediateEqualityResult(MI, *MBB, TII, STI.isRC32());
     return MBB;
+  case RISCC::PseudoSELECTCCImm:
+  case RISCC::PseudoSELECTCCImm32:
   case RISCC::PseudoSELECTCC:
   case RISCC::PseudoSELECTCC32:
     return emitSelect(MI, MBB, TII, STI.isNano(), STI.isRC32());

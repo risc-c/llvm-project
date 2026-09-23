@@ -5,19 +5,20 @@
 ; RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -stop-after=finalize-isel %s -o - | FileCheck %s --check-prefix=MIR
 
 ; Preserve the constant-pool memory operand during selection so MachineLICM
-; can move both literal loads to the preheader, subject to register pressure.
+; can move the literal load out of the loop, subject to register pressure.
 ; MIR: LDPC %const.0 :: (load (s32) from constant-pool)
-; MIR: LDPC %const.1 :: (load (s32) from constant-pool)
 
 define i32 @loop_xor(ptr %p, i32 %n) {
 ; CHECK-LABEL: loop_xor:
 ; CHECK:       ldpc [[XOR:r[0-7]]],
-; CHECK:       ldpc [[STEP:r[0-7]]],
+; CHECK-NOT:   ldpc
 ; CHECK:       [[LOOP:.LBB[0-9_]+]]:
 ; CHECK-NOT:   ldpc
-; CHECK:       xor {{r[0-7]}}, {{r[0-7]}}, [[XOR]]
-; CHECK-NOT:   ldpc
-; CHECK:       add {{r[0-7]}}, {{r[0-7]}}, [[STEP]]
+; CHECK:       ld {{r[0-7]}}, [{{r[0-7]}} + 0]
+; CHECK-DAG:   addi {{r[0-7]}}, -1
+; CHECK-DAG:   addi {{r[0-7]}}, 4
+; CHECK-DAG:   xor [[MIXED:r[0-7]]], {{r[0-7]}}, [[XOR]]
+; CHECK-DAG:   add {{r[0-7]}}, {{r[0-7]}}, [[MIXED]]
 ; CHECK-NOT:   ldpc
 ; CHECK:       bnez [[LOOP]]
 entry:

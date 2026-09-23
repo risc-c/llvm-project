@@ -10,7 +10,8 @@
 // participate in ordinary register allocation because ALU instructions cannot
 // use them directly. After register and stack-slot coloring, this pass ranks
 // the remaining spill slots and the function's entry values, then assigns the
-// cache registers preserved by every call greedily.
+// cache registers greedily. Spills with disjoint lifetimes can share a
+// register; only calls crossed by a live spill need to preserve its register.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,7 +19,9 @@
 #include "RISCCInstrInfo.h"
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -128,7 +131,8 @@ static bool isPreservedByAllCalls(const MachineFunction &MF, MCRegister Reg,
                                   const TargetRegisterInfo &TRI) {
   for (const MachineBasicBlock &MBB : MF) {
     for (const MachineInstr &MI : MBB) {
-      if (!MI.isCall())
+      // Tail calls run after the epilogue has restored our saved values.
+      if (!MI.isCall() || MI.isReturn())
         continue;
 
       bool HasRegMask =
@@ -141,13 +145,93 @@ static bool isPreservedByAllCalls(const MachineFunction &MF, MCRegister Reg,
   return true;
 }
 
+// Stack-slot coloring has already merged compatible slots. Recompute their
+// liveness here so call clobbers and S-register reuse use the same information.
+struct SpillLiveness {
+  SmallVector<BitVector> LiveIn;
+  SmallVector<BitVector> Conflicts;
+  SmallVector<BitVector> Clobbers;
+
+  SpillLiveness(const MachineFunction &MF, ArrayRef<Candidate> Candidates,
+                const TargetRegisterInfo &TRI) {
+    unsigned Slots = MF.getFrameInfo().getObjectIndexEnd();
+    BitVector IsSpill(Slots);
+    for (const Candidate &C : Candidates)
+      if (C.Kind == CandidateKind::Spill)
+        IsSpill.set(C.FrameIndex);
+    if (IsSpill.none())
+      return;
+    LiveIn.assign(MF.getNumBlockIDs(), BitVector(Slots));
+    SmallVector<BitVector> LiveOut(LiveIn.size(), BitVector(Slots));
+    Conflicts.assign(Slots, BitVector(Slots));
+    Clobbers.assign(Slots, BitVector(TRI.getNumRegs()));
+
+    auto Slot = [&](const MachineInstr &MI) -> int {
+      if (MI.isDebugInstr() || MI.getNumOperands() < 3 ||
+          !MI.getOperand(1).isFI())
+        return -1;
+      int FI = MI.getOperand(1).getIndex();
+      return FI >= 0 && IsSpill.test(FI) ? FI : -1;
+    };
+
+    bool Changed;
+    do {
+      Changed = false;
+      for (const MachineBasicBlock &MBB : llvm::reverse(MF)) {
+        BitVector Live(Slots);
+        for (const MachineBasicBlock *Succ : MBB.successors())
+          Live |= LiveIn[Succ->getNumber()];
+        LiveOut[MBB.getNumber()] = Live;
+        for (const MachineInstr &MI : llvm::reverse(MBB))
+          if (int FI = Slot(MI); FI >= 0) {
+            if (MI.mayStore())
+              Live.reset(FI);
+            else
+              Live.set(FI);
+          }
+        if (Live != LiveIn[MBB.getNumber()]) {
+          LiveIn[MBB.getNumber()] = std::move(Live);
+          Changed = true;
+        }
+      }
+    } while (Changed);
+
+    for (const MachineBasicBlock &MBB : MF) {
+      BitVector Live = LiveOut[MBB.getNumber()];
+      for (const MachineInstr &MI : llvm::reverse(MBB)) {
+        if (MI.isCall()) {
+          bool HasMask = llvm::any_of(
+              MI.operands(), [](const auto &MO) { return MO.isRegMask(); });
+          for (MCRegister Reg : {RISCC::S2, RISCC::S3, RISCC::S4, RISCC::S5,
+                                 RISCC::S6, RISCC::S7})
+            if (!HasMask || MI.modifiesRegister(Reg, &TRI))
+              for (unsigned FI : Live.set_bits())
+                Clobbers[FI].set(Reg);
+        }
+        if (int FI = Slot(MI); FI >= 0) {
+          if (MI.mayStore()) {
+            // Even a dead store must not overwrite another live spill.
+            Conflicts[FI] |= Live;
+            for (unsigned Other : Live.set_bits())
+              Conflicts[Other].set(FI);
+            Live.reset(FI);
+          } else
+            Live.set(FI);
+        }
+      }
+      for (unsigned FI : Live.set_bits())
+        Conflicts[FI] |= Live;
+    }
+  }
+};
+
 static bool allocateSRegisters(MachineFunction &MF,
                                const MachineBlockFrequencyInfo &MBFI) {
   const RISCCSubtarget &STI = MF.getSubtarget<RISCCSubtarget>();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   auto *Info = MF.getInfo<RISCCMachineFunctionInfo>();
   Info->clearSRegPlan();
-  if (STI.isNano() || MFI.hasTailCall())
+  if (STI.isNano())
     return false;
 
   MachineRegisterInfo &MRI = MF.getRegInfo();
@@ -169,14 +253,17 @@ static bool allocateSRegisters(MachineFunction &MF,
       Candidates.push_back({SaturatingMultiply(EntryFrequency, uint64_t(2)),
                             CandidateKind::CalleeSave, -1, Reg});
 
-  bool HasLink = Link && MRI.isPhysRegUsed(Link);
+  // Calls define the link even when a function never returns. Only an actual
+  // read (a return or forwarding tail call) needs the entry address preserved.
+  bool HasLink = Link && !MRI.use_nodbg_empty(Link);
   bool IsLinkClobbered =
       HasLink && llvm::any_of(MF, [&](const MachineBasicBlock &MBB) {
         return llvm::any_of(MBB, [&](const MachineInstr &MI) {
-          return MI.modifiesRegister(Link, &TRI);
+          return !(MI.isCall() && MI.isReturn()) &&
+                 MI.modifiesRegister(Link, &TRI);
         });
       });
-  if (HasLink && !IsLinkClobbered)
+  if (HasLink)
     Candidates.push_back({SaturatingMultiply(EntryFrequency, uint64_t(4)),
                           CandidateKind::ReturnAddress, -1, Link});
 
@@ -186,11 +273,14 @@ static bool allocateSRegisters(MachineFunction &MF,
     return A.Kind < B.Kind;
   });
 
+  SpillLiveness Spills(MF, Candidates, TRI);
   SmallVector<MCRegister, 6> Free;
   for (MCRegister Reg :
        {RISCC::S2, RISCC::S3, RISCC::S4, RISCC::S5, RISCC::S6, RISCC::S7})
-    if (isPreservedByAllCalls(MF, Reg, TRI) &&
-        (!MRI.isPhysRegUsed(Reg) || (Reg == Link && !IsLinkClobbered)))
+    // Explicit operands still reserve a register, including link moves before
+    // tail calls. Register-mask clobbers are checked for each candidate below.
+    if (!MRI.isPhysRegUsed(Reg, /*SkipRegMaskTest=*/true) ||
+        (Reg == Link && !IsLinkClobbered))
       Free.push_back(Reg);
 
   // Flexible candidates avoid the precolored link register until its value is
@@ -203,28 +293,41 @@ static bool allocateSRegisters(MachineFunction &MF,
   bool KeptLink = !HasLink;
   bool Changed = false;
   SmallVector<std::pair<int, MCRegister>, 6> SpillAssignments;
+  auto UsedBySpill = [&](MCRegister Reg) {
+    return llvm::any_of(SpillAssignments,
+                        [Reg](const auto &A) { return A.second == Reg; });
+  };
   for (const Candidate &C : Candidates) {
-    if (C.Kind == CandidateKind::ReturnAddress) {
-      if (takeRegister(Free, Link))
+    if (C.Kind == CandidateKind::ReturnAddress && !IsLinkClobbered) {
+      if (!UsedBySpill(Link) && takeRegister(Free, Link))
         KeptLink = true;
       continue;
     }
     if (C.Kind == CandidateKind::Spill) {
-      if (Free.empty())
-        continue;
-      MCRegister SReg = Free.front();
-      Free.erase(Free.begin());
-      SpillAssignments.emplace_back(C.FrameIndex, SReg);
+      auto It = llvm::find_if(Free, [&](MCRegister Reg) {
+        return !Spills.Clobbers[C.FrameIndex].test(Reg) &&
+               llvm::none_of(SpillAssignments, [&](const auto &A) {
+                 return A.second == Reg &&
+                        Spills.Conflicts[C.FrameIndex].test(A.first);
+               });
+      });
+      if (It != Free.end())
+        SpillAssignments.emplace_back(C.FrameIndex, *It);
       continue;
     }
 
-    auto SRegIt = llvm::find_if(Free, [](MCRegister Reg) {
-      return Reg == RISCC::S2 || Reg == RISCC::S3 || Reg == RISCC::S4 ||
-             Reg == RISCC::S7;
+    auto SRegIt = llvm::find_if(Free, [&](MCRegister Reg) {
+      return (Reg == RISCC::S2 || Reg == RISCC::S3 || Reg == RISCC::S4 ||
+              Reg == RISCC::S7) &&
+             !UsedBySpill(Reg) && isPreservedByAllCalls(MF, Reg, TRI);
     });
     if (SRegIt == Free.end())
       continue;
-    Info->setCalleeSavedSReg(C.Reg, *SRegIt);
+    if (C.Kind == CandidateKind::ReturnAddress) {
+      Info->setLRSaveReg(*SRegIt);
+      KeptLink = true;
+    } else
+      Info->setCalleeSavedSReg(C.Reg, *SRegIt);
     Free.erase(SRegIt);
     Changed = true;
   }
@@ -234,8 +337,12 @@ static bool allocateSRegisters(MachineFunction &MF,
                                              STI.getStackAlignment(), false));
     Changed = true;
   }
-  for (auto [FI, SReg] : SpillAssignments)
+  for (auto [FI, SReg] : SpillAssignments) {
     moveSpillToSReg(MF, FI, SReg, *STI.getInstrInfo());
+    for (MachineBasicBlock &MBB : MF)
+      if (Spills.LiveIn[MBB.getNumber()].test(FI) && !MBB.isLiveIn(SReg))
+        MBB.addLiveIn(SReg);
+  }
   return Changed || !SpillAssignments.empty();
 }
 

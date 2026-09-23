@@ -13,6 +13,7 @@ class RISCCInst<dag outs, dag ins, string asm, list<dag> pattern = []>
   let InOperandList = ins;
   let AsmString = asm;
   let Pattern = pattern;
+  let SchedRW = [WriteRISCCALU];
 }
 
 class RISCCInst16<dag outs, dag ins, string asm, list<dag> pattern = []>

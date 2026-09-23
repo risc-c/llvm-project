@@ -1,0 +1,62 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=machine-cp -mcp-use-is-copy-instr -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=machine-cp -mcp-use-is-copy-instr -verify-machineinstrs %s -o - | FileCheck %s
+
+# Recognize target MOVs after physical-register allocation.
+# CHECK-LABEL: name: copies
+# CHECK-NOT: MOV
+# CHECK: renamable $r1 = ADD renamable $r1, $r1
+# CHECK-NEXT: RETS
+# CHECK-LABEL: name: copies32
+# CHECK-NOT: MOV
+# CHECK: renamable $r1 = ADD32 renamable $r1, $r1
+# CHECK-NEXT: RETS
+
+# A later definition of the source must not change the copied value.
+# CHECK-LABEL: name: clobbered_source
+# CHECK: renamable $r0 = MOV32 renamable $r1
+# CHECK-NEXT: renamable $r1 = LDI32 7
+# CHECK-NEXT: renamable $r1 = ADD32 renamable $r1, renamable $r0
+
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @copies() { ret i16 0 }
+  define i32 @copies32() { ret i32 0 }
+  define i32 @clobbered_source() { ret i32 0 }
+...
+---
+name: copies
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    renamable $r0 = MOV renamable $r1
+    renamable $r2 = MOV renamable $r0
+    renamable $r1 = ADD renamable $r1, renamable $r2
+    RETS implicit $s7, implicit $r1
+...
+---
+name: copies32
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    renamable $r0 = MOV32 renamable $r1
+    renamable $r2 = MOV32 renamable $r0
+    renamable $r1 = ADD32 renamable $r1, renamable $r2
+    RETS implicit $s7, implicit $r1
+...
+---
+name: clobbered_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    renamable $r0 = MOV32 renamable $r1
+    renamable $r1 = LDI32 7
+    renamable $r1 = ADD32 renamable $r1, renamable $r0
+    RETS implicit $s7, implicit $r1
+...

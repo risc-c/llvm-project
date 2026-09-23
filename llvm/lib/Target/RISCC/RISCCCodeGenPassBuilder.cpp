@@ -9,15 +9,19 @@
 #include "RISCC.h"
 #include "RISCCAsmPrinter.h"
 #include "RISCCConstantIslandPass.h"
+#include "RISCCPrepare.h"
+#include "RISCCMachineOptimize.h"
 #include "RISCCSRegAllocator.h"
 #include "RISCCTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
 #include "llvm/CodeGen/BranchRelaxation.h"
+#include "llvm/CodeGen/GlobalMerge.h"
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/Passes/CodeGenPassBuilder.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Target/CGPassBuilderOption.h"
+#include "llvm/Transforms/Scalar/StraightLineStrengthReduce.h"
 
 using namespace llvm;
 
@@ -34,14 +38,34 @@ public:
     addFunctionPass(AtomicExpandPass(TM), PMW);
     Base::addIRPasses(PMW);
   }
+  void addGlobalMergePass(PassManagerWrapper &PMW) const {
+    if (getOptLevel() != CodeGenOptLevel::None) {
+      GlobalMergeOptions Options;
+      Options.MaxOffset = 127;
+      addModulePass(GlobalMergePass(&TM, Options), PMW);
+    }
+  }
+  void addPreISel(PassManagerWrapper &PMW) const {
+    if (getOptLevel() != CodeGenOptLevel::None) {
+      addFunctionPass(RISCCPreparePass(), PMW);
+      // Reuse related addresses after preparation exposes loop-carried bases.
+      addFunctionPass(StraightLineStrengthReducePass(), PMW);
+    }
+  }
   Error addInstSelector(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(RISCCISelDAGToDAGPass(TM, getOptLevel()), PMW);
     return Error::success();
+  }
+  void addPreRegAlloc(PassManagerWrapper &PMW) const {
+    if (getOptLevel() != CodeGenOptLevel::None)
+      addMachineFunctionPass(RISCCMachineOptimizePass(), PMW);
   }
   void addPostRewrite(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(RISCCSRegAllocatorPass(), PMW);
   }
   void addPreEmitPass(PassManagerWrapper &PMW) const {
+    if (getOptLevel() >= CodeGenOptLevel::Default)
+      addMachineFunctionPass(MachineCopyPropagationPass(true), PMW);
     addMachineFunctionPass(BranchRelaxationPass(), PMW);
   }
   void addPreEmitPass2(PassManagerWrapper &PMW) const {
@@ -69,6 +93,8 @@ Error RISCCTargetMachine::buildCodeGenPipeline(
     raw_pwrite_stream *DwoOut, CodeGenFileType FT,
     const CGPassBuilderOption &Opt, MCContext &Ctx,
     PassInstrumentationCallbacks *PIC) {
-  return RISCCCodeGenPassBuilder(*this, Opt, PIC)
+  CGPassBuilderOption Options = Opt;
+  Options.MISchedPostRA = true;
+  return RISCCCodeGenPassBuilder(*this, Options, PIC)
       .buildPipeline(MPM, MAM, Out, DwoOut, FT, Ctx);
 }

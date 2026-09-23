@@ -13,6 +13,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Compiler.h"
 
@@ -35,6 +36,7 @@ public:
   bool SelectInlineAsmMemoryOperand(const SDValue &, InlineAsm::ConstraintCode,
                                     std::vector<SDValue> &) override;
   std::pair<SDValue, SDValue> selectWordAddress(SDValue, const SDLoc &);
+  bool selectMaskedMerge(SDNode *);
 
 #include "RISCCGenDAGISel.inc"
 };
@@ -57,11 +59,34 @@ RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
   int64_t Displacement = 0;
   if (Ptr.getOpcode() == ISD::ADD) {
     if (auto *C = dyn_cast<ConstantSDNode>(Ptr.getOperand(1));
-        C && (Subtarget->isRC32()
-                  ? isInt<9>(C->getSExtValue()) && !(C->getSExtValue() & 3)
-                  : isInt<8>(C->getSExtValue()) && !(C->getSExtValue() & 1))) {
+        C && Subtarget->isLegalWordOffset(C->getSExtValue())) {
       Base = Ptr.getOperand(0);
       Displacement = C->getSExtValue();
+    } else {
+      // Also fold base + (index + displacement). Shared index calculations
+      // often keep the displacement inside the second add.
+      for (unsigned Side = 0; Side != 2; ++Side) {
+        SDValue Sum = Ptr.getOperand(Side);
+        if (Sum.getOpcode() != ISD::ADD)
+          continue;
+        auto *C = dyn_cast<ConstantSDNode>(Sum.getOperand(1));
+        if (!C || !Subtarget->isLegalWordOffset(C->getSExtValue()))
+          continue;
+        SDValue A = Ptr.getOperand(1 - Side), B = Sum.getOperand(0);
+        SDNode *Existing = CurDAG->getNodeIfExists(
+            ISD::ADD, CurDAG->getVTList(XLenVT), {A, B});
+        if (!Existing && !Sum.hasOneUse())
+          continue;
+        // New nodes introduced during selection must already be selected.
+        Base = Existing ? SDValue(Existing, 0)
+                        : SDValue(CurDAG->getMachineNode(Subtarget->isRC32()
+                                                             ? RISCC::ADD32
+                                                             : RISCC::ADD,
+                                                         DL, XLenVT, A, B),
+                                  0);
+        Displacement = C->getSExtValue();
+        break;
+      }
     }
   }
   if (auto *FI = dyn_cast<FrameIndexSDNode>(Base))
@@ -80,6 +105,45 @@ bool RISCCDAGToDAGISel::SelectInlineAsmMemoryOperand(
   return false;
 }
 
+bool RISCCDAGToDAGISel::selectMaskedMerge(SDNode *N) {
+  MVT VT = Subtarget->getXLenVT();
+  if (N->getValueType(0) != VT)
+    return false;
+  SDValue A = N->getOperand(0), B = N->getOperand(1);
+  if (A.getOpcode() != ISD::AND || B.getOpcode() != ISD::AND ||
+      !A.hasOneUse() || !B.hasOneUse())
+    return false;
+  auto *AMask = dyn_cast<ConstantSDNode>(A.getOperand(1));
+  auto *BMask = dyn_cast<ConstantSDNode>(B.getOperand(1));
+  if (!AMask || !BMask || AMask->getAPIntValue() != ~BMask->getAPIntValue())
+    return false;
+
+  // (a & mask) | (b & ~mask) = b ^ ((a ^ b) & mask).
+  // Keep only the cheaper mask: ANDI needs no constant register, and RC16
+  // materializes a high byte with one LUI instead of an LUI/ORI pair.
+  auto MaskCost = [&](uint64_t Mask) {
+    if (isUInt<8>(Mask))
+      return 0;
+    return Subtarget->isRC32() || !(Mask & 255) ? 1 : 2;
+  };
+  if (MaskCost(BMask->getZExtValue()) < MaskCost(AMask->getZExtValue()))
+    std::swap(A, B);
+  SDValue Mask = A.getOperand(1);
+  uint64_t MaskValue = cast<ConstantSDNode>(Mask)->getZExtValue();
+  SDLoc DL(N);
+  unsigned Xor = Subtarget->isRC32() ? RISCC::XOR32 : RISCC::XOR;
+  SDValue Diff(
+      CurDAG->getMachineNode(Xor, DL, VT, A.getOperand(0), B.getOperand(0)), 0);
+  unsigned And = Subtarget->isRC32() ? RISCC::AND32 : RISCC::AND;
+  if (isUInt<8>(MaskValue)) {
+    And = Subtarget->isRC32() ? RISCC::ANDI32 : RISCC::ANDI;
+    Mask = CurDAG->getTargetConstant(MaskValue, DL, VT);
+  }
+  SDValue Selected(CurDAG->getMachineNode(And, DL, VT, Diff, Mask), 0);
+  CurDAG->SelectNodeTo(N, Xor, VT, B.getOperand(0), Selected);
+  return true;
+}
+
 void RISCCDAGToDAGISel::Select(SDNode *N) {
   if (N->isMachineOpcode()) {
     N->setNodeId(-1);
@@ -87,6 +151,10 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
   }
   SDLoc DL(N);
   switch (N->getOpcode()) {
+  case ISD::OR:
+    if (selectMaskedMerge(N))
+      return;
+    break;
   case RISCCISD::DIVU:
     CurDAG->SelectNodeTo(
         N, Subtarget->isRC32() ? RISCC::DIVU32 : RISCC::DIVU, N->getVTList(),
@@ -118,6 +186,22 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
           CurDAG->getTargetConstant(Value, DL, Subtarget->getXLenVT()));
       return;
     }
+    if (Subtarget->isRC32()) {
+      // Keep constants visible until selection so immediates and address
+      // displacements fold normally. Only materialized values need a pool.
+      Constant *C =
+          ConstantInt::get(Type::getInt32Ty(*CurDAG->getContext()), Value);
+      SDValue Pool = CurDAG->getTargetConstantPool(C, MVT::i32, Align(4));
+      auto *Load = CurDAG->getMachineNode(RISCC::LDPC, DL, MVT::i32, MVT::Other,
+                                          Pool, CurDAG->getEntryNode());
+      MachineFunction &MF = CurDAG->getMachineFunction();
+      auto *MMO =
+          MF.getMachineMemOperand(MachinePointerInfo::getConstantPool(MF),
+                                  MachineMemOperand::MOLoad, 4, Align(4));
+      CurDAG->setNodeMemRefs(Load, {MMO});
+      ReplaceNode(N, Load);
+      return;
+    }
     if (!Subtarget->isRC32() && (Value & 0xff) == 0) {
       CurDAG->SelectNodeTo(N, RISCC::LUI, MVT::i16,
                            CurDAG->getTargetConstant(Value >> 8, DL, MVT::i16));
@@ -139,6 +223,12 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
   case ISD::LOAD: {
     auto *LD = cast<LoadSDNode>(N);
     SDValue Chain = LD->getChain(), Ptr = LD->getBasePtr();
+    MachineMemOperand *MMO = LD->getMemOperand();
+    auto SelectLoad = [&](unsigned Opcode, ArrayRef<SDValue> Ops) {
+      auto *Load = CurDAG->SelectNodeTo(N, Opcode, Subtarget->getXLenVT(),
+                                        MVT::Other, Ops);
+      CurDAG->setNodeMemRefs(cast<MachineSDNode>(Load), {MMO});
+    };
     if (Subtarget->isRC32() && LD->getMemoryVT() == MVT::i32 &&
         isa<ConstantPoolSDNode>(Ptr)) {
       const auto *CP = cast<ConstantPoolSDNode>(Ptr);
@@ -151,25 +241,21 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
       else
         TargetCP = CurDAG->getTargetConstantPool(
             CP->getConstVal(), MVT::i32, CP->getAlign(), CP->getOffset());
-      MachineMemOperand *MMO = LD->getMemOperand();
-      auto *Load = cast<MachineSDNode>(CurDAG->SelectNodeTo(
-          N, RISCC::LDPC, MVT::i32, MVT::Other, {TargetCP, Chain}));
-      CurDAG->setNodeMemRefs(Load, {MMO});
+      SelectLoad(RISCC::LDPC, {TargetCP, Chain});
       return;
     }
     if (LD->getMemoryVT() == Subtarget->getXLenVT()) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
-      if (Base == Ptr && Ptr.getOpcode() == ISD::ADD)
-        CurDAG->SelectNodeTo(N, Subtarget->isRC32() ? RISCC::LDX32 : RISCC::LDX,
-                             Subtarget->getXLenVT(), MVT::Other,
-                             {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
+      // Keep a shared address in a register when stores or other accesses
+      // also need it; LDX would otherwise keep both inputs live as well.
+      if (Base == Ptr && Ptr.getOpcode() == ISD::ADD && Ptr.hasOneUse())
+        SelectLoad(Subtarget->isRC32() ? RISCC::LDX32 : RISCC::LDX,
+                   {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
       else
-        CurDAG->SelectNodeTo(N,
-                             Subtarget->isRC32()   ? RISCC::LD32
-                             : Subtarget->isNano() ? RISCC::LD_NANO
-                                                   : RISCC::LD,
-                             Subtarget->getXLenVT(), MVT::Other,
-                             {Base, Disp, Chain});
+        SelectLoad(Subtarget->isRC32()   ? RISCC::LD32
+                   : Subtarget->isNano() ? RISCC::LD_NANO
+                                         : RISCC::LD,
+                   {Base, Disp, Chain});
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {
@@ -179,14 +265,13 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
         Opc = IsSigned ? RISCC::LDBS32 : RISCC::LDB32;
       else
         Opc = IsSigned ? RISCC::LDBS : RISCC::LDB;
-      CurDAG->SelectNodeTo(N, Opc, Subtarget->getXLenVT(), MVT::Other,
-                           {Ptr, Chain});
+      SelectLoad(Opc, {Ptr, Chain});
       return;
     }
     if (Subtarget->isRC32() && LD->getMemoryVT() == MVT::i16) {
-      CurDAG->SelectNodeTo(
-          N, LD->getExtensionType() == ISD::SEXTLOAD ? RISCC::LDHS : RISCC::LDH,
-          MVT::i32, MVT::Other, {Ptr, Chain});
+      SelectLoad(LD->getExtensionType() == ISD::SEXTLOAD ? RISCC::LDHS
+                                                         : RISCC::LDH,
+                 {Ptr, Chain});
       return;
     }
     break;
@@ -195,22 +280,26 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     auto *ST = cast<StoreSDNode>(N);
     SDValue Chain = ST->getChain(), Val = ST->getValue(),
             Ptr = ST->getBasePtr();
+    MachineMemOperand *MMO = ST->getMemOperand();
+    auto SelectStore = [&](unsigned Opcode, ArrayRef<SDValue> Ops) {
+      auto *Store = CurDAG->SelectNodeTo(N, Opcode, MVT::Other, Ops);
+      CurDAG->setNodeMemRefs(cast<MachineSDNode>(Store), {MMO});
+    };
     if (ST->getMemoryVT() == Subtarget->getXLenVT()) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
-      CurDAG->SelectNodeTo(N,
-                           Subtarget->isRC32()   ? RISCC::ST32
-                           : Subtarget->isNano() ? RISCC::ST_NANO
-                                                 : RISCC::ST,
-                           MVT::Other, {Val, Base, Disp, Chain});
+      SelectStore(Subtarget->isRC32()   ? RISCC::ST32
+                  : Subtarget->isNano() ? RISCC::ST_NANO
+                                        : RISCC::ST,
+                  {Val, Base, Disp, Chain});
       return;
     }
     if (ST->getMemoryVT() == MVT::i8) {
-      CurDAG->SelectNodeTo(N, Subtarget->isRC32() ? RISCC::STB32 : RISCC::STB,
-                           MVT::Other, {Val, Ptr, Chain});
+      SelectStore(Subtarget->isRC32() ? RISCC::STB32 : RISCC::STB,
+                  {Val, Ptr, Chain});
       return;
     }
     if (Subtarget->isRC32() && ST->getMemoryVT() == MVT::i16) {
-      CurDAG->SelectNodeTo(N, RISCC::STH, MVT::Other, {Val, Ptr, Chain});
+      SelectStore(RISCC::STH, {Val, Ptr, Chain});
       return;
     }
     break;

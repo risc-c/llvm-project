@@ -24,6 +24,23 @@ using namespace llvm;
 RISCCRegisterInfo::RISCCRegisterInfo(const RISCCSubtarget &STI)
     : RISCCGenRegisterInfo(STI.isNano() ? RISCC::R6 : RISCC::S7), STI(STI) {}
 
+const TargetRegisterClass *
+RISCCRegisterInfo::getCrossCopyRegClass(const TargetRegisterClass *RC) const {
+  // S registers transfer through a GPR; there is no direct S-to-S move.
+  if (RC == &RISCC::SREGRegClass)
+    return &RISCC::GPRRegClass;
+  if (RC == &RISCC::SREG32RegClass)
+    return &RISCC::GPR32RegClass;
+  return RC;
+}
+
+ArrayRef<MCPhysReg>
+RISCCRegisterInfo::getIntraCallClobberedRegs(const MachineFunction *) const {
+  // Long branches and literal-pool repairs can use these after IPRA runs.
+  static const MCPhysReg Scratch[] = {RISCC::R0, RISCC::S0};
+  return Scratch;
+}
+
 static void reserveInstructionRegisters(const MachineInstr &MI,
                                         RegScavenger &RS) {
   // The scavenger state is positioned immediately after MI.  A killed source
@@ -95,6 +112,28 @@ RISCCRegisterInfo::getPointerRegClass(unsigned) const {
   return STI.getGPRClass();
 }
 
+static void materializeRC32FrameAddress(MachineBasicBlock &MBB,
+                                        MachineBasicBlock::iterator I,
+                                        const DebugLoc &DL,
+                                        const RISCCInstrInfo &TII, Register Dst,
+                                        int64_t Offset) {
+  // A copy and at most two immediate adds are smaller than a new literal.
+  // Larger offsets take one literal load and one add, regardless of frame size.
+  if (Offset < -256 || Offset > 254) {
+    TII.materializeImmediate(MBB, I, DL, Dst, Offset);
+    BuildMI(MBB, I, DL, TII.get(RISCC::ADD32), Dst)
+        .addReg(RISCC::R7)
+        .addReg(Dst, RegState::Kill);
+    return;
+  }
+  BuildMI(MBB, I, DL, TII.get(RISCC::MOV32), Dst).addReg(RISCC::R7);
+  while (Offset) {
+    int64_t Step = std::clamp<int64_t>(Offset, -128, 127);
+    BuildMI(MBB, I, DL, TII.get(RISCC::ADDI32), Dst).addReg(Dst).addImm(Step);
+    Offset -= Step;
+  }
+}
+
 bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                             int SPAdj, unsigned FIOperandNum,
                                             RegScavenger *RS) const {
@@ -111,24 +150,19 @@ bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     Register Dst = MI.getOperand(0).getReg();
     const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
     DebugLoc DL = MI.getDebugLoc();
-    BuildMI(*MI.getParent(), II, DL,
-            TII.get(IsRC32 ? RISCC::MOV32 : RISCC::MOV), Dst)
+    if (IsRC32) {
+      materializeRC32FrameAddress(*MI.getParent(), II, DL, TII, Dst, Offset);
+      MI.eraseFromParent();
+      return false;
+    }
+    BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::MOV), Dst)
         .addReg(RISCC::R7);
     if (Offset) {
       if (isInt<8>(Offset))
-        BuildMI(*MI.getParent(), II, DL,
-                TII.get(IsRC32 ? RISCC::ADDI32 : RISCC::ADDI), Dst)
+        BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI), Dst)
             .addReg(Dst)
             .addImm(Offset);
-      else if (IsRC32) {
-        for (int64_t Remaining = Offset; Remaining;) {
-          int64_t Step = std::clamp<int64_t>(Remaining, -128, 127);
-          BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI32), Dst)
-              .addReg(Dst)
-              .addImm(Step);
-          Remaining -= Step;
-        }
-      } else {
+      else {
         Register Scratch = scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
         TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
         BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Dst)
@@ -140,8 +174,7 @@ bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     return false;
   }
 
-  if ((IsRC32 && isInt<9>(Offset) && !(Offset & 3)) ||
-      (!IsRC32 && isInt<8>(Offset))) {
+  if (STI.isLegalWordOffset(Offset)) {
     MI.getOperand(FIOperandNum).ChangeToRegister(RISCC::R7, false);
     MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
     return false;
@@ -151,15 +184,7 @@ bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
   if (IsRC32) {
-    BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::MOV32), Scratch)
-        .addReg(RISCC::R7);
-    for (int64_t Remaining = Offset; Remaining;) {
-      int64_t Step = std::clamp<int64_t>(Remaining, -128, 127);
-      BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI32), Scratch)
-          .addReg(Scratch)
-          .addImm(Step);
-      Remaining -= Step;
-    }
+    materializeRC32FrameAddress(*MI.getParent(), II, DL, TII, Scratch, Offset);
   } else {
     TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
     BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Scratch)

@@ -1,0 +1,112 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=RC32
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=postmisched -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s --check-prefix=RC16
+
+# Reassociation fills the second load's latency without reordering volatile
+# memory accesses or introducing a temporary. It must not overwrite a live
+# first operand or a value which is also the second operand.
+# RC32-LABEL: name: subtract
+# RC32: $r2 = LD32 $r1, 0
+# RC32-NEXT: $r0 = LD32 killed $r3, 0
+# RC32-NEXT: $r2 = ADDI32 killed $r2, 9
+# RC32-NEXT: $r0 = SUB32 killed $r2, killed $r0
+# RC32-LABEL: name: live_operand
+# RC32: $r0 = SUB32 $r2, killed $r0
+# RC32-NEXT: $r0 = ADDI32 killed $r0, 9
+# RC32-LABEL: name: same_operand
+# RC32: $r0 = SUB32 killed $r0, $r0
+# RC32-NEXT: $r0 = ADDI32 killed $r0, 9
+# RC16-LABEL: name: subtract
+# RC16: $r2 = LD $r1, 0
+# RC16-NEXT: $r0 = LD killed $r3, 0
+# RC16-NEXT: $r2 = ADDI killed $r2, 9
+# RC16-NEXT: $r0 = SUB killed $r2, killed $r0
+# RC16-LABEL: name: live_operand
+# RC16: $r0 = SUB $r2, killed $r0
+# RC16-NEXT: $r0 = ADDI killed $r0, 9
+# RC16-LABEL: name: same_operand
+# RC16: $r0 = SUB killed $r0, $r0
+# RC16-NEXT: $r0 = ADDI killed $r0, 9
+
+#--- rc32.mir
+---
+name: subtract
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    $r2 = LD32 $r1, 0 :: (volatile load (s32))
+    $r0 = LD32 $r3, 0 :: (volatile load (s32))
+    $r0 = SUB32 killed $r2, killed $r0
+    $r0 = ADDI32 killed $r0, 9
+    ST32 killed $r0, killed $r1, 0 :: (volatile store (s32))
+    RETS  implicit $s7
+...
+---
+name: live_operand
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    $r2 = LD32 $r1, 0 :: (volatile load (s32))
+    $r0 = LD32 $r3, 0 :: (volatile load (s32))
+    $r0 = SUB32 $r2, killed $r0
+    $r0 = ADDI32 killed $r0, 9
+    ST32 killed $r0, killed $r1, 0 :: (volatile store (s32))
+    RETS implicit $r2, implicit $s7
+...
+---
+name: same_operand
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    $r2 = LD32 $r1, 0 :: (volatile load (s32))
+    $r0 = LD32 $r3, 0 :: (volatile load (s32))
+    $r0 = SUB32 $r0, killed $r0
+    $r0 = ADDI32 killed $r0, 9
+    ST32 killed $r0, killed $r1, 0 :: (volatile store (s32))
+    RETS  implicit $s7
+...
+
+#--- rc16.mir
+---
+name: subtract
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    $r2 = LD $r1, 0 :: (volatile load (s16))
+    $r0 = LD $r3, 0 :: (volatile load (s16))
+    $r0 = SUB killed $r2, killed $r0
+    $r0 = ADDI killed $r0, 9
+    ST killed $r0, killed $r1, 0 :: (volatile store (s16))
+    RETS  implicit $s7
+...
+---
+name: live_operand
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    $r2 = LD $r1, 0 :: (volatile load (s16))
+    $r0 = LD $r3, 0 :: (volatile load (s16))
+    $r0 = SUB $r2, killed $r0
+    $r0 = ADDI killed $r0, 9
+    ST killed $r0, killed $r1, 0 :: (volatile store (s16))
+    RETS implicit $r2, implicit $s7
+...
+---
+name: same_operand
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    $r2 = LD $r1, 0 :: (volatile load (s16))
+    $r0 = LD $r3, 0 :: (volatile load (s16))
+    $r0 = SUB $r0, killed $r0
+    $r0 = ADDI killed $r0, 9
+    ST killed $r0, killed $r1, 0 :: (volatile store (s16))
+    RETS  implicit $s7
+...

@@ -11,14 +11,14 @@
 ; skipped during execution, and its load must refer to the local word.
 define i32 @long_block() {
 ; CHECK-LABEL: long_block:
-; CHECK:       .zero 300
 ; CHECK:       ldpc [[ADDR:r[0-7]]], [[LITERAL:.Ltmp[0-9]+]]
-; CHECK-NEXT:  ld r1, {{\[}}[[ADDR]] + 0]
 ; CHECK-NEXT:  jmp8 [[CONTINUE:.LBB[0-9_]+]]
 ; CHECK:       .p2align 2
 ; CHECK:       [[LITERAL]]:
 ; CHECK-NEXT:  .long value
 ; CHECK-NEXT:  [[CONTINUE]]:
+; CHECK:       .zero 300
+; CHECK:       ld r1, {{\[}}[[ADDR]] + 0]
 ; CHECK:       .zero 300
   call void asm sideeffect ".space 300", ""()
   %v = load volatile i32, ptr @value
@@ -52,10 +52,15 @@ define void @long_call_block() {
 
 define void @long_tail_block() {
 ; CHECK-LABEL: long_tail_block:
-; CHECK:       .zero 300
+; CHECK:       ldpc [[VALUE_ADDR:r[0-7]]], [[VALUE_LITERAL:.Ltmp[0-9]+]]
+; CHECK-NEXT:  jmp8 [[VALUE_CONTINUE:.LBB[0-9_]+]]
+; CHECK:       .p2align 2
+; CHECK:       [[VALUE_LITERAL]]:
 ; CHECK:       .long value
+; CHECK-NEXT:  [[VALUE_CONTINUE]]:
 ; CHECK:       .zero 300
-; CHECK-NOT:   jmp8
+; CHECK:       ld {{r[0-7]}}, {{\[}}[[VALUE_ADDR]] + 0]
+; CHECK:       .zero 300
 ; CHECK:       ldpc r0, [[LITERAL:.Ltmp[0-9]+]]
 ; CHECK-NEXT:  jalr s0, r0
 ; CHECK:       [[LITERAL]]:

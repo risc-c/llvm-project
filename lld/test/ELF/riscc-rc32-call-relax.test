@@ -25,7 +25,7 @@
 # RUN: ld.lld -m elf32lriscc --emit-relocs -Ttext=0 debug-layout.o -o debug-layout
 # RUN: llvm-readobj --sections --relocations debug-layout | FileCheck %s --check-prefix=DEBUG-LAYOUT
 # RUN: llvm-objdump -d debug-layout | FileCheck %s --check-prefix=DEBUG-BYTES
-# RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -filetype=obj inline-pool.ll -o inline-pool.o
+# RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -enable-ipra=false -filetype=obj inline-pool.ll -o inline-pool.o
 # RUN: ld.lld -m elf32lriscc -Ttext=0 inline-pool.o -o inline-pool
 # RUN: llvm-objdump -d inline-pool | FileCheck %s --check-prefix=INLINE-POOL
 
@@ -84,6 +84,7 @@
 # DEBUG-BYTES-LABEL: <_start>:
 # DEBUG-BYTES:       jall s7, 14
 
+# Keep IR function order for this forward-call layout test by disabling IPRA.
 # INLINE-POOL-LABEL: <late_call>:
 # INLINE-POOL:       jall s7, 320
 

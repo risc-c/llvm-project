@@ -1,12 +1,26 @@
 ; REQUIRES: riscc-registered-target
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=COMMON,NONNANO
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=COMMON,NONNANO
+; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=COMMON,NONNANO
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=nano -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=COMMON,NANO
 
 target datalayout = "e-m:e-p:16:16-i8:8-i16:16-i32:16-i64:16-f32:16-f64:16-a:8:16-n8:16-S16"
 target triple = "riscc-none-elf"
 
 @byte = global i8 0, align 1
+
+; Register values cannot use LDBS. In particular, a signed-char loop induction
+; variable can be promoted to a native register by the optimizer.
+define i16 @sign_extend_byte_register(i16 %value) {
+; COMMON-LABEL: sign_extend_byte_register:
+; COMMON:       andi r1, 255
+; COMMON-NEXT:  xori r1, 128
+; COMMON-NEXT:  addi r1, -128
+; COMMON-NEXT:  {{ret s7|jalr r0, r6}}
+  %byte_value = trunc i16 %value to i8
+  %extended = sext i8 %byte_value to i16
+  ret i16 %extended
+}
 
 define i16 @load_byte_direct(ptr %address) {
 ; COMMON-LABEL: load_byte_direct:

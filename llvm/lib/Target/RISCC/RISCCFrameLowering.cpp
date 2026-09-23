@@ -13,6 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/CGPassBuilderOption.h"
@@ -32,7 +33,7 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      Register Scratch = RISCC::R0) {
   if (!Amount)
     return;
-  if (IsRC32) {
+  if (IsRC32 && Amount >= -384 && Amount <= 381) {
     while (Amount) {
       int64_t Step = std::clamp<int64_t>(Amount, -128, 127);
       BuildMI(MBB, I, DL, TII.get(RISCC::ADDI32), RISCC::R7)
@@ -51,7 +52,9 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     return;
   }
   TII.materializeImmediate(MBB, I, DL, Scratch, std::abs(Amount), Flag);
-  BuildMI(MBB, I, DL, TII.get(Amount < 0 ? RISCC::SUB : RISCC::ADD), RISCC::R7)
+  unsigned Opcode = IsRC32 ? (Amount < 0 ? RISCC::SUB32 : RISCC::ADD32)
+                           : (Amount < 0 ? RISCC::SUB : RISCC::ADD);
+  BuildMI(MBB, I, DL, TII.get(Opcode), RISCC::R7)
       .addReg(RISCC::R7)
       .addReg(Scratch)
       .setMIFlag(Flag);
@@ -70,15 +73,21 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
 
   const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   int FI = FuncInfo.getLRSpillFI();
-  if (!STI.isNano() && FI >= 0) {
+  MCRegister LRSave = FuncInfo.getLRSaveReg();
+  if (!STI.isNano() && (FI >= 0 || LRSave)) {
     BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
         .addReg(FuncInfo.getReturnAddressReg())
         .setMIFlag(MachineInstr::FrameSetup);
-    BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
-        .addReg(RISCC::R0, RegState::Kill)
-        .addFrameIndex(FI)
-        .addImm(0)
-        .setMIFlag(MachineInstr::FrameSetup);
+    if (LRSave)
+      BuildMI(MBB, I, DL, TII.get(RISCC::MTS), LRSave)
+          .addReg(RISCC::R0, RegState::Kill)
+          .setMIFlag(MachineInstr::FrameSetup);
+    else
+      BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
+          .addReg(RISCC::R0, RegState::Kill)
+          .addFrameIndex(FI)
+          .addImm(0)
+          .setMIFlag(MachineInstr::FrameSetup);
   }
 }
 
@@ -89,15 +98,68 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   const auto &TII = *STI.getInstrInfo();
   const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   int FI = FuncInfo.getLRSpillFI();
-  if (!STI.isNano() && FI >= 0) {
-    BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
-            RISCC::R0)
-        .addFrameIndex(FI)
-        .addImm(0)
-        .setMIFlag(MachineInstr::FrameDestroy);
-    BuildMI(MBB, I, DL, TII.get(RISCC::MTS), FuncInfo.getReturnAddressReg())
-        .addReg(RISCC::R0, RegState::Kill)
-        .setMIFlag(MachineInstr::FrameDestroy);
+  MCRegister LRSave = FuncInfo.getLRSaveReg();
+  // RC16 may tail-call between the public S7 and private S3 conventions.
+  // LowerCall already emitted the link copy before this epilogue. Feed that
+  // copy from our saved address, rather than a link overwritten by a call.
+  bool PrivateTail = I->getOpcode() == RISCC::LINK_S3_TAIL16 ||
+                     I->getOpcode() == RISCC::LINK_S3_TAIL_MIN;
+  bool ChangesLink =
+      I->isCall() && I->isReturn() && !STI.isRC32() &&
+      FuncInfo.getReturnAddressReg() != (PrivateTail ? RISCC::S3 : RISCC::S7);
+  if (ChangesLink && (FI >= 0 || LRSave)) {
+    auto Copy = I;
+    while (Copy != MBB.begin()) {
+      --Copy;
+      if (Copy->isCall() || Copy->getFlag(MachineInstr::FrameSetup))
+        break;
+      if ((!Copy->isCopy() && Copy->getOpcode() != RISCC::MFS) ||
+          Copy->getOperand(1).getReg() != FuncInfo.getReturnAddressReg())
+        continue;
+      if (LRSave)
+        Copy->getOperand(1).setReg(LRSave);
+      else {
+        BuildMI(MBB, Copy, Copy->getDebugLoc(), TII.get(RISCC::LD),
+                Copy->getOperand(0).getReg())
+            .addFrameIndex(FI)
+            .addImm(0)
+            .setMIFlag(MachineInstr::FrameDestroy);
+        Copy->eraseFromParent();
+      }
+      FI = -1;
+      LRSave = MCRegister();
+      break;
+    }
+    assert(FI < 0 && !LRSave && "tail call is missing its link copy");
+  }
+  // A normal return can use the saved address directly. Tail calls still
+  // need the incoming link restored for the callee's calling convention.
+  if (LRSave &&
+      (I->getOpcode() == RISCC::RETS || I->getOpcode() == RISCC::LINK_S3_RET)) {
+    auto Ret = BuildMI(MBB, I, DL, TII.get(RISCC::RET)).addReg(LRSave);
+    for (const MachineOperand &MO : I->implicit_operands())
+      if (!MO.isReg() || MO.getReg() != FuncInfo.getReturnAddressReg())
+        Ret.add(MO);
+    I->eraseFromParent();
+    I = Ret->getIterator();
+    LRSave = MCRegister();
+  }
+  MachineInstr *RestoreLink = nullptr;
+  if (!STI.isNano() && (FI >= 0 || LRSave)) {
+    if (LRSave)
+      BuildMI(MBB, I, DL, TII.get(RISCC::MFS), RISCC::R0)
+          .addReg(LRSave)
+          .setMIFlag(MachineInstr::FrameDestroy);
+    else
+      BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
+              RISCC::R0)
+          .addFrameIndex(FI)
+          .addImm(0)
+          .setMIFlag(MachineInstr::FrameDestroy);
+    RestoreLink =
+        BuildMI(MBB, I, DL, TII.get(RISCC::MTS), FuncInfo.getReturnAddressReg())
+            .addReg(RISCC::R0, RegState::Kill)
+            .setMIFlag(MachineInstr::FrameDestroy);
   }
   // A Nano tail return may hold its target in r0 while a large stack
   // adjustment needs a temporary.
@@ -108,6 +170,15 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
                          : RISCC::R0;
   adjustSP(MBB, I, DL, TII, MF.getFrameInfo().getStackSize(),
            MachineInstr::FrameDestroy, STI.isRC32(), Scratch);
+  // An immediate stack adjustment can hide the return-address load latency.
+  // Large adjustments use r0 as scratch, so keep the link restored first.
+  if (RestoreLink) {
+    auto AfterRestore = std::next(MachineBasicBlock::iterator(RestoreLink));
+    if (llvm::none_of(make_range(AfterRestore, I), [&](const MachineInstr &MI) {
+          return MI.modifiesRegister(RISCC::R0, STI.getRegisterInfo());
+        }))
+      MBB.splice(I, &MBB, RestoreLink->getIterator());
+  }
 }
 
 bool RISCCFrameLowering::assignCalleeSavedSpillSlots(
@@ -168,31 +239,54 @@ MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
 
 static bool needsFrameScavengerSlot(const MachineFunction &MF) {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  // Incoming arguments may lie beyond the short displacement range too.
-  return MFI.getNumFixedObjects() || MFI.estimateStackSize(MF) > 127;
+  // The signed seven-bit displacement is scaled by the native word size.
+  int64_t Limit = 64 * MF.getSubtarget<RISCCSubtarget>().getSlotSize();
+  int64_t FrameSize = MFI.estimateStackSize(MF);
+  if (FrameSize >= Limit)
+    return true;
+  // Stack arguments need a temporary only when their final offsets can fall
+  // outside the direct addressing range. A nearby argument needs no frame.
+  for (int FI = MFI.getObjectIndexBegin(); FI < 0; ++FI) {
+    if (MFI.isDeadObjectIndex(FI))
+      continue;
+    int64_t Offset = MFI.getObjectOffset(FI);
+    int64_t End = Offset + FrameSize + MFI.getObjectSize(FI) - 1;
+    if (Offset < -Limit || End >= Limit)
+      return true;
+  }
+  return false;
 }
 
 void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
     MachineFunction &MF, RegScavenger *RS) const {
   if (MF.getFrameInfo().getMaxAlign() > getStackAlign())
     report_fatal_error("RISC-C does not support stack realignment");
-  bool HasReturningCall = llvm::any_of(MF, [](const MachineBasicBlock &MBB) {
-    return llvm::any_of(MBB, [](const MachineInstr &MI) {
-      return MI.isCall() && !MI.isReturn();
-    });
-  });
-  if (!STI.isNano() && HasReturningCall &&
-      MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI() < 0) {
+  auto *FuncInfo = MF.getInfo<RISCCMachineFunctionInfo>();
+  bool ClobbersLink =
+      !STI.isNano() &&
+      !MF.getRegInfo().use_nodbg_empty(FuncInfo->getReturnAddressReg()) &&
+      llvm::any_of(MF, [&](const MachineBasicBlock &MBB) {
+        return llvm::any_of(MBB, [&](const MachineInstr &MI) {
+          return MI.isCall() && !MI.isReturn() &&
+                 MI.modifiesRegister(FuncInfo->getReturnAddressReg(),
+                                     STI.getRegisterInfo());
+        });
+      });
+  if (ClobbersLink && !FuncInfo->getLRSaveReg() &&
+      FuncInfo->getLRSpillFI() < 0) {
     int FI = MF.getFrameInfo().CreateStackObject(
         STI.getSlotSize(), STI.getStackAlignment(), false);
-    MF.getInfo<RISCCMachineFunctionInfo>()->setLRSpillFI(FI);
+    FuncInfo->setLRSpillFI(FI);
   }
   // RC16 reserves 14 bytes for frame setup/teardown in this estimate.
   int64_t EstimatedSize = MF.estimateFunctionSizeInBytes() + 14;
   if (STI.isRC32()) {
-    // A small frame needs at most an SP adjustment and two LR instructions
-    // at entry and each return. Larger frames reserve a scavenger slot below.
-    EstimatedSize = 6;
+    // Allow SP adjustment and two LR instructions at entry and each return.
+    // Medium frames need two immediate adds; larger frames reserve a
+    // scavenger slot regardless of branch range.
+    unsigned FrameOverhead =
+        MF.getFrameInfo().estimateStackSize(MF) > 127 ? 8 : 6;
+    EstimatedSize = FrameOverhead;
     const RISCCInstrInfo &TII = *STI.getInstrInfo();
     for (const MachineBasicBlock &MBB : MF) {
       // Pool insertion may change the padding before an aligned block.
@@ -200,7 +294,7 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
       for (const MachineInstr &MI : MBB) {
         EstimatedSize += TII.getInstSizeInBytes(MI);
         if (MI.isReturn())
-          EstimatedSize += 6;
+          EstimatedSize += FrameOverhead;
         // Each use may need its own word, two alignment bytes, and a skip.
         switch (MI.getOpcode()) {
         default:

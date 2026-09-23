@@ -1,0 +1,43 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s
+
+# Stack-passed arguments at small offsets need no emergency spill slot.
+# A distant argument still reserves one for address materialization.
+# CHECK-LABEL: name: nearby_argument
+# CHECK: stackSize: 0
+# CHECK: $r1 = LD $r7, 0
+# CHECK-LABEL: name: distant_argument
+# CHECK: stackSize: 2
+# CHECK: $r0 = LDI 202
+# CHECK-NEXT: $r0 = ADD $r7, killed $r0
+# CHECK-NEXT: $r1 = LD $r0, 0
+
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @nearby_argument() { ret i16 0 }
+  define i16 @distant_argument() { ret i16 0 }
+...
+---
+name: nearby_argument
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, offset: 0, size: 2, alignment: 2, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LD %fixed-stack.0, 0 :: (load (s16) from %fixed-stack.0)
+    RETS implicit $s7, implicit killed $r1
+...
+---
+name: distant_argument
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, offset: 200, size: 2, alignment: 2, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LD %fixed-stack.0, 0 :: (load (s16) from %fixed-stack.0)
+    RETS implicit $s7, implicit killed $r1
+...

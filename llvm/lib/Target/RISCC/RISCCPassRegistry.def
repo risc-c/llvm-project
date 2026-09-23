@@ -1,8 +1,14 @@
 // Intentionally no include guard: consumed by TargetPassRegistry.inc.
+#ifndef FUNCTION_PASS
+#define FUNCTION_PASS(NAME, CREATE_PASS)
+#endif
+FUNCTION_PASS("riscc-prepare", RISCCPreparePass())
+#undef FUNCTION_PASS
 #ifndef MACHINE_FUNCTION_PASS
 #define MACHINE_FUNCTION_PASS(NAME, CREATE_PASS)
 #endif
 MACHINE_FUNCTION_PASS("riscc-isel",
                       RISCCISelDAGToDAGPass(*this, getOptLevel()))
 MACHINE_FUNCTION_PASS("riscc-constant-islands", RISCCConstantIslandPass())
+MACHINE_FUNCTION_PASS("riscc-machine-optimize", RISCCMachineOptimizePass())
 #undef MACHINE_FUNCTION_PASS

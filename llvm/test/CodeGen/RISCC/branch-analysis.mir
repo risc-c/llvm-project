@@ -1,0 +1,37 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=branch-folder -verify-machineinstrs %s -o - | FileCheck %s
+
+# Branch analysis must not discard either condition in a multi-way block.
+# CHECK-LABEL: name: three_way
+# CHECK: BEQZ %bb.1
+# CHECK-NEXT: BLTZ %bb.2
+# CHECK-NEXT: JMP8 %bb.3
+
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @three_way() { ret i16 0 }
+...
+---
+name: three_way
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2, %bb.3
+    liveins: $r0, $s7
+    BEQZ %bb.1, implicit $r0
+    BLTZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.1:
+    liveins: $s7
+    $r1 = LDI 1
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $s7
+    $r1 = LDI 2
+    RETS implicit $s7, implicit $r1
+  bb.3:
+    liveins: $s7
+    $r1 = LDI 3
+    RETS implicit $s7, implicit $r1
+...

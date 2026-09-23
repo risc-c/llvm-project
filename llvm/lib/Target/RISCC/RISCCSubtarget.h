@@ -14,6 +14,7 @@
 #include "RISCCInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGenTypes/MachineValueType.h"
+#include "llvm/Support/MathExtras.h"
 
 #define GET_SUBTARGETINFO_HEADER
 #include "RISCCGenSubtargetInfo.inc"
@@ -50,6 +51,10 @@ public:
   bool isRC32() const { return IsRC32; }
   MVT getXLenVT() const { return IsRC32 ? MVT::i32 : MVT::i16; }
   unsigned getSlotSize() const { return IsRC32 ? 4 : 2; }
+  bool isLegalWordOffset(int64_t Offset) const {
+    // Native loads/stores encode a signed seven-bit word displacement.
+    return Offset % getSlotSize() == 0 && isInt<7>(Offset / getSlotSize());
+  }
   Align getStackAlignment() const { return Align(getSlotSize()); }
   const TargetRegisterClass *getGPRClass() const {
     return IsRC32 ? &RISCC::GPR32RegClass : &RISCC::GPRRegClass;
@@ -66,6 +71,8 @@ public:
     return &TLInfo;
   }
   const SelectionDAGTargetInfo *getSelectionDAGInfo() const override;
+  bool enableMachineScheduler() const override { return !IsNano; }
+  bool useAA() const override { return true; }
   void initLibcallLoweringInfo(LibcallLoweringInfo &Info) const override;
 };
 } // namespace llvm

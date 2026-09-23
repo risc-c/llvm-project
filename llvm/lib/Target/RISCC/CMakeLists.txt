@@ -25,6 +25,9 @@ add_llvm_target(RISCCCodeGen
   RISCCInstrInfo.cpp
   RISCCMCInstLower.cpp
   RISCCMachineFunctionInfo.cpp
+  RISCCMachineScheduler.cpp
+  RISCCPrepare.cpp
+  RISCCMachineOptimize.cpp
   RISCCRegisterInfo.cpp
   RISCCSRegAllocator.cpp
   RISCCSubtarget.cpp
