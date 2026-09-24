@@ -11,19 +11,23 @@
 #include "RISCC.h"
 #include "RISCCConstantPoolValue.h"
 #include "RISCCInstrInfo.h"
+#include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/BranchRelaxation.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
+#include <climits>
 #include <optional>
 
 using namespace llvm;
@@ -31,6 +35,57 @@ using namespace llvm;
 #define DEBUG_TYPE "riscc-constant-islands"
 
 namespace {
+// When two adjacent exits are equally likely, branch over the shorter one.
+// This reduces the branch span without duplicating instructions or preferring
+// either outcome when profile information distinguishes them.
+static bool shortenExitBranches(MachineFunction &MF) {
+  if (MF.getFunction().hasOptNone())
+    return false;
+  const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
+  MachineBranchProbabilityInfo MBPI;
+  bool Changed = false;
+  for (MachineBasicBlock &Head : MF) {
+    auto Branch = Head.getFirstTerminator();
+    if (Head.succ_size() != 2 || Branch == Head.end() ||
+        !Branch->isConditionalBranch() ||
+        std::next(Branch) != Head.end())
+      continue;
+    auto *Fall = Head.getNextNode();
+    auto *Taken = TII.getBranchDestBlock(*Branch);
+    if (!Fall || !Taken || Fall->getNextNode() != Taken ||
+        !Head.isSuccessor(Fall) || !Fall->isReturnBlock() ||
+        !Taken->isReturnBlock() || !Fall->succ_empty() || !Taken->succ_empty() ||
+        Fall->pred_size() != 1 || Taken->pred_size() != 1 ||
+        Fall->hasAddressTaken() || Taken->hasAddressTaken() ||
+        Fall->isEHPad() || Taken->isEHPad() ||
+        !Head.sameSection(Fall) || !Head.sameSection(Taken) ||
+        Fall->isBeginSection() || Taken->isBeginSection() || Fall->isEndSection() ||
+        Fall->getAlignment() > Align(2) || Taken->getAlignment() > Align(2) ||
+        MBPI.getEdgeProbability(&Head, Fall) !=
+            MBPI.getEdgeProbability(&Head, Taken))
+      continue;
+    auto Size = [&](const MachineBasicBlock &BB) {
+      unsigned Bytes = 0;
+      for (const auto &MI : BB) {
+        if (MI.isCFIInstruction() || MI.isInlineAsm())
+          return UINT_MAX;
+        Bytes += TII.getInstSizeInBytes(MI);
+      }
+      return Bytes;
+    };
+    unsigned FallSize = Size(*Fall), TakenSize = Size(*Taken);
+    if (FallSize == UINT_MAX || TakenSize >= FallSize)
+      continue;
+    Branch->setDesc(TII.get(TII.getOppositeBranchOpcode(Branch->getOpcode())));
+    Branch->getOperand(0).setMBB(Fall);
+    Fall->setIsEndSection(Taken->isEndSection());
+    Taken->setIsEndSection(false);
+    MF.splice(Fall->getIterator(), Taken);
+    Changed = true;
+  }
+  return Changed;
+}
+
 struct LiteralUse {
   MachineInstr *MI;
   unsigned ValueIndex;
@@ -421,7 +476,7 @@ class RISCCConstantIslands {
     return Offset + Padding;
   }
 
-  void computeOffsets() {
+  void computeOffsets(const SmallPtrSetImpl<MachineInstr *> *Skip = nullptr) {
     // With known instruction sizes and sufficient function alignment these
     // are exact offsets. Otherwise every interval includes maximum padding,
     // so subtracting offsets conservatively bounds its instruction span.
@@ -442,7 +497,8 @@ class RISCCConstantIslands {
       Offset = alignBlock(Offset, MBB);
       for (MachineInstr &MI : MBB) {
         Offsets[&MI] = Offset;
-        Offset += TII.getInstSizeInBytes(MI);
+        if (!Skip || !Skip->contains(&MI))
+          Offset += TII.getInstSizeInBytes(MI);
       }
     }
   }
@@ -573,13 +629,76 @@ class RISCCConstantIslands {
     return Entries.size() != OldSize;
   }
 
+  // Large leaf functions conservatively reserve a scratch spill for branch
+  // relaxation. If it was never used, a frame containing only that slot is
+  // unnecessary. Run after relaxation, and check the new literal alignment
+  // before removing anything: deleting an ADDI can add two pool-padding bytes.
+  bool removeUnusedEmergencyFrame() {
+    auto &Info = *MF->getInfo<RISCCMachineFunctionInfo>();
+    auto &Frame = MF->getFrameInfo();
+    int FI = Info.getBranchRelaxationSpillFI();
+    if (FI < 0 || Frame.getStackSize() != 4 || Frame.hasVarSizedObjects())
+      return false;
+    for (int I = Frame.getObjectIndexBegin(), E = Frame.getObjectIndexEnd();
+         I != E; ++I)
+      if (I != FI && !Frame.isDeadObjectIndex(I))
+        return false;
+
+    const auto &TRI = *MF->getSubtarget().getRegisterInfo();
+    SmallPtrSet<MachineInstr *, 8> Adjustments;
+    for (MachineBasicBlock &MBB : *MF)
+      for (MachineInstr &MI : MBB) {
+        if (MI.isCall() || MI.isCFIInstruction() || MI.isInlineAsm() ||
+            MI.isBundle())
+          return false;
+        if (!MI.readsRegister(RISCC::R7, &TRI) &&
+            !MI.modifiesRegister(RISCC::R7, &TRI))
+          continue;
+        if (MI.getOpcode() != RISCC::ADDI32 || MI.getNumExplicitOperands() != 3 ||
+            MI.getOperand(0).getReg() != RISCC::R7 ||
+            MI.getOperand(1).getReg() != RISCC::R7 ||
+            !((MI.getFlag(MachineInstr::FrameSetup) &&
+               MI.getOperand(2).getImm() == -4) ||
+              (MI.getFlag(MachineInstr::FrameDestroy) &&
+               MI.getOperand(2).getImm() == 4)))
+          return false;
+        Adjustments.insert(&MI);
+      }
+    if (Adjustments.empty())
+      return false;
+
+    computeOffsets(&Adjustments);
+    bool Fits = llvm::all_of(AllUses, [&](const LiteralUse &Use) {
+      auto *Symbol = Use.MI->getOperand(literalOperand(*Use.MI)).getMCSymbol();
+      return inRange(*Use.MI, *Symbols.lookup(Symbol));
+    });
+    for (MachineBasicBlock &MBB : *MF)
+      for (MachineInstr &MI : MBB)
+        if (auto *Dest = TII.getBranchDestBlock(MI))
+          Fits &= !Dest->empty() && MBB.getSectionID() == Dest->getSectionID() &&
+                  TII.isBranchOffsetInRange(
+                      MI.getOpcode(), int64_t(Offsets.lookup(&Dest->front())) -
+                                          Offsets.lookup(&MI));
+    if (!Fits) {
+      computeOffsets();
+      return false;
+    }
+    for (MachineInstr *MI : Adjustments)
+      MI->eraseFromParent();
+    Frame.RemoveStackObject(FI);
+    Frame.setStackSize(0);
+    Info.setBranchRelaxationSpillFI(-1);
+    return true;
+  }
+
 public:
   explicit RISCCConstantIslands(MachineFunction &MF)
       : MF(&MF), TII(*MF.getSubtarget<RISCCSubtarget>().getInstrInfo()) {}
 
   bool run() {
+    bool Changed = shortenExitBranches(*MF);
     if (!MF->getSubtarget<RISCCSubtarget>().isRC32())
-      return false;
+      return Changed;
     // Direct-call symbols remain visible to IPRA until this final pass.
     for (MachineBasicBlock &MBB : *MF)
       for (MachineInstr &MI : MBB) {
@@ -605,7 +724,7 @@ public:
     if (!AllUses.empty())
       MF->ensureAlignment(Align(4));
     materializePools();
-    bool Changed = !AllUses.empty();
+    Changed |= !AllUses.empty();
     // Repair the existing pools after branch expansion. Replanning around
     // the new branch blocks would duplicate words already shared across a gap.
     while (true) {
@@ -630,6 +749,7 @@ public:
         break;
       Changed = true;
     }
+    Changed |= removeUnusedEmergencyFrame();
     MF->RenumberBlocks();
     return Changed;
   }

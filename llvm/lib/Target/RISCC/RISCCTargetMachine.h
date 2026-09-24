@@ -29,6 +29,7 @@ public:
   ~RISCCTargetMachine() override;
 
   const RISCCSubtarget *getSubtargetImpl(const Function &) const override;
+  TargetTransformInfo getTargetTransformInfo(const Function &) const override;
   ScheduleDAGInstrs *
   createPostMachineScheduler(MachineSchedContext *C) const override;
   bool useIPRA() const override { return !Subtarget.isNano(); }

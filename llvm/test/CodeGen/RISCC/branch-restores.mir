@@ -1,0 +1,104 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %t/input.mir -o - | FileCheck %s
+# RUN: sed -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/LDI32/LDI/g' -e 's/ADDI32/ADDI/g' -e 's/CMPI32/CMPI/g' -e 's/(s32)/(s16)/g' %t/input.mir | llc -x mir -mtriple=riscc -mcpu=full -run-pass=postmisched -verify-machineinstrs -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32,-early-branches -run-pass=postmisched -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=OFF
+
+# A common private-slot restore supplies useful work between CMP and branch.
+# CHECK-LABEL: name: common_restore
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: $r4 = LD{{(32)?}} $r7, 0
+# CHECK-NEXT: BNEZ
+# CHECK: bb.3:
+# CHECK-NOT: $r4 = LD
+# CHECK: RETS
+# OFF-LABEL: name: common_restore
+# OFF: CMPI{{(32)?}}
+# OFF-NEXT: BNEZ
+
+# Do not overwrite a value used by either arm, or cross an update to the slot.
+# CHECK-LABEL: name: old_value_used
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.3:
+# CHECK: $r4 = LD
+# CHECK-LABEL: name: slot_written
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.3:
+# CHECK: $r4 = LD
+
+# Stack-pointer changes and ordinary spill reloads are not eligible.
+# CHECK-LABEL: name: stack_adjusted
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.3:
+# CHECK: $r4 = LD
+# CHECK-LABEL: name: ordinary_spill
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.3:
+# CHECK: $r4 = LD
+
+# A load into r0 needs two independent instructions before the branch.
+# CHECK-LABEL: name: load_condition
+# CHECK: $r0 = LD{{(32)?}} $r1, 0
+# CHECK-NEXT: $r4 = LD{{(32)?}} $r7, 0
+# CHECK-NEXT: $r5 = LD{{(32)?}} $r7, 4
+# CHECK-NEXT: BNEZ
+# CHECK: bb.3:
+# CHECK-NOT: = LD
+# CHECK: RETS
+
+#--- generate.py
+for name in ('common_restore', 'old_value_used', 'slot_written',
+             'stack_adjusted', 'ordinary_spill', 'load_condition'):
+    used = name == 'old_value_used'
+    written = name == 'slot_written'
+    load = name == 'load_condition'
+    saved = ", callee-saved-register: '$r4', callee-saved-restored: true"
+    if name == 'ordinary_spill':
+        saved = ''
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  stackSize: {8 if load else 4}
+  isCalleeSavedInfoValid: true
+stack:
+  - {{ id: 0, type: spill-slot, offset: {-8 if load else -4}, size: 4, alignment: 4{saved} }}''')
+    if load:
+        print("  - { id: 1, type: spill-slot, offset: -4, size: 4, alignment: 4, callee-saved-register: '$r5', callee-saved-restored: true }")
+    print(f'''
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r1, $r4, $s7
+    {'$r0 = LD32 $r1, 0 :: (load (s32))' if load else 'CMPI32 $r1, 7, implicit-def $r0'}
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.3
+    liveins: $r1, $s7{', $r4' if used else ''}''')
+    if used:
+        print('    ST32 $r4, $r1, 0 :: (store (s32))')
+    elif written:
+        print('    ST32 $r1, $r7, 0 :: (store (s32) into %stack.0)')
+    elif name == 'stack_adjusted':
+        print('    $r7 = ADDI32 $r7, 4\n    $r7 = ADDI32 $r7, -4')
+    else:
+        print('    ST32 $r1, $r1, 0 :: (store (s32))')
+    print('''    $r1 = LDI32 1
+    JMP8 %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $s7
+    $r1 = LDI32 0
+  bb.3:
+    liveins: $r1, $s7
+    $r4 = LD32 $r7, 0 :: (load (s32) from %stack.0)''')
+    if load:
+        print('    $r5 = LD32 $r7, 4 :: (load (s32) from %stack.1)')
+    print(f'''    RETS implicit $s7, implicit $r1, implicit $r4{', implicit $r5' if load else ''}
+...''')

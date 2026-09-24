@@ -21,6 +21,7 @@
 
 namespace llvm {
 class RISCCSubtarget final : public RISCCGenSubtargetInfo {
+  bool HasEarlyBranches = false;
   bool HasSys = false;
   bool HasLongJall = false;
   bool HasWideShift = false;
@@ -42,6 +43,7 @@ public:
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 
   bool hasSys() const { return HasSys; }
+  bool hasEarlyBranches() const { return HasEarlyBranches; }
   bool hasLongJall() const { return HasLongJall; }
   bool hasWideShift() const { return HasWideShift; }
   bool hasMul() const { return HasMul; }
@@ -73,6 +75,9 @@ public:
   const SelectionDAGTargetInfo *getSelectionDAGInfo() const override;
   bool enableMachineScheduler() const override { return !IsNano; }
   bool useAA() const override { return true; }
+  void adjustSchedDependency(SUnit *Def, int DefOpIdx, SUnit *Use, int UseOpIdx,
+                             SDep &Dep,
+                             const TargetSchedModel *Model) const override;
   void initLibcallLoweringInfo(LibcallLoweringInfo &Info) const override;
 };
 } // namespace llvm

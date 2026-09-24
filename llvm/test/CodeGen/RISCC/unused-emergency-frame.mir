@@ -1,0 +1,45 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=prolog-epilog -verify-machineinstrs %t/input.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=prolog-epilog -verify-machineinstrs -filetype=obj %t/input.mir -o %t/test.o
+
+# Even an actual long branch need not use the conservative spill slot.
+# CHECK-LABEL: unused_frame:
+# CHECK-NOT: addi r7
+# CHECK: jalr s0,
+# CHECK-NOT: addi r7
+# CHECK: ret s7
+
+# A far branch with all scratch registers live still needs its stack slot.
+# CHECK-LABEL: used_frame:
+# CHECK: addi r7, -4
+# CHECK: st r0, [r7 + 0]
+# CHECK: jalr s0,
+# CHECK: ld r0, [r7 + 0]
+# CHECK: addi r7, 4
+# CHECK: ret s7
+
+#--- generate.py
+for used in (False, True):
+    name = 'used_frame' if used else 'unused_frame'
+    live = ', '.join(f'$r{i}' for i in range(7)) if used else '$r1'
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, {live}, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.2
+    liveins: {live}, $s7''')
+    for _ in range(140):
+        print('    $r1 = ADDI32 $r1, 1')
+    print(f'''    JMP8 %bb.2
+  bb.2:
+    liveins: {live}, $s7
+    RETS implicit $s7, {', '.join('implicit '+r for r in live.split(', '))}
+...''')

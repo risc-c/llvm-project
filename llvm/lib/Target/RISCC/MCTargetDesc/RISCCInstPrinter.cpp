@@ -27,7 +27,9 @@ void RISCCInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   if (Op.isReg())
     printRegName(OS, Op.getReg());
   else if (Op.isImm())
-    OS << Op.getImm();
+    // SelectionDAG constants can arrive sign-extended. LDI16's assembly
+    // operand is the unsigned 16-bit pattern accepted by the parser.
+    OS << (MI->getOpcode() == RISCC::LDI16 ? uint16_t(Op.getImm()) : Op.getImm());
   else
     MAI.printExpr(OS, *Op.getExpr());
 }

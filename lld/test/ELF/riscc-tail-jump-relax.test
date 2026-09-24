@@ -1,0 +1,152 @@
+# REQUIRES: riscc
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full tails.s -o rc16.o
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 tails.s -o rc32.o
+# RUN: ld.lld --defsym=base=0x1000 -T layout.ld --emit-relocs rc16.o -o rc16
+# RUN: ld.lld --defsym=base=0x100000 -T layout.ld --emit-relocs rc32.o -o rc32
+# RUN: llvm-objdump -d rc16 | FileCheck %s --check-prefix=JUMPS
+# RUN: llvm-objdump -d rc32 | FileCheck %s --check-prefix=JUMPS
+# RUN: llvm-readobj --sections --relocations rc16 | FileCheck %s --check-prefix=RC16
+# RUN: llvm-readobj --sections --relocations rc32 | FileCheck %s --check-prefix=RC32
+# RUN: ld.lld --no-relax --defsym=base=0x1000 -T layout.ld rc16.o -o no16
+# RUN: ld.lld --no-relax --defsym=base=0x1000 -T layout.ld rc32.o -o no32
+# RUN: llvm-objdump -d no16 | FileCheck %s --check-prefix=LONG
+# RUN: llvm-objdump -d no32 | FileCheck %s --check-prefix=LONG
+# RUN: ld.lld -r rc16.o -o partial16.o
+# RUN: ld.lld -r rc32.o -o partial32.o
+# RUN: llvm-objdump -d partial16.o | FileCheck %s --check-prefix=LONG
+# RUN: llvm-objdump -d partial32.o | FileCheck %s --check-prefix=LONG
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 marked.s -o marked.o
+# RUN: ld.lld -Ttext=0 --emit-relocs marked.o -o marked
+# RUN: llvm-objdump -d marked | FileCheck %s --check-prefix=MARKED
+# RUN: llvm-readobj --relocations marked | FileCheck %s --check-prefix=MARKED-RELOC
+# RUN: not ld.lld --defsym=base=0xff00 -T layout.ld rc16.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full odd.s -o odd.o
+# RUN: not ld.lld -Ttext=0 odd.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=ODD
+# RUN: yaml2obj overlap.yaml -o overlap.o
+# RUN: ld.lld -Ttext=0 overlap.o -o overlap
+# RUN: llvm-objdump -d overlap | FileCheck %s --check-prefix=OVERLAP
+
+# Both ends of the signed halfword range; the next aligned value stays long.
+# JUMPS-LABEL: <_start>:
+# JUMPS-NEXT: jmp8 .+256
+# JUMPS: jall s0,
+# JUMPS: jmp8 .-254
+# JUMPS: jall s0,
+# JUMPS: jall s7,
+# JUMPS: jall s3,
+# JUMPS: ret s7
+
+# LONG-LABEL: <_start>:
+# LONG-COUNT-4: jall s0,
+# LONG-NEXT: jall s7,
+# LONG-NEXT: jall s3,
+# LONG-NEXT: ret s7
+
+# Preserve all original addresses and section size, including unused halfwords.
+# RC16: Name: .text
+# RC16: Size: 26
+# RC16: 0x1000 R_RISCC_PCREL8_WORD forward
+# RC16: 0x1006 R_RISCC_CODE16 forward_far
+# RC16: 0x1008 R_RISCC_PCREL8_WORD backward
+# RC16: 0x100E R_RISCC_CODE16 backward_far
+# RC16: 0x1012 R_RISCC_CODE16 forward
+# RC16: 0x1016 R_RISCC_CODE16 forward
+# RC32: Name: .text
+# RC32: Size: 26
+# RC32: 0x100000 R_RISCC_PCREL8_WORD forward
+# RC32: 0x100004 R_RISCC_JALL21 forward_far
+# RC32: 0x100008 R_RISCC_PCREL8_WORD backward
+# RC32: 0x10000C R_RISCC_JALL21 backward_far
+# RC32: 0x100010 R_RISCC_JALL21 forward
+# RC32: 0x100014 R_RISCC_JALL21 forward
+
+# Also handle the compiler's literal-backed tail-call marker after pool removal.
+# MARKED-LABEL: <_start>:
+# MARKED-NEXT: jmp8 .+4
+# MARKED-LABEL: <callee>:
+# MARKED-NEXT: ret s7
+# MARKED-RELOC: R_RISCC_PCREL8_WORD callee
+# MARKED-RELOC-NOT: R_RISCC_JALL21
+# ADDRESS: cannot encode out-of-range byte address 0x10000
+# ODD: improper alignment
+# OVERLAP-LABEL: <_start>:
+# OVERLAP-NEXT: jall s0, 4
+
+#--- tails.s
+.text
+.globl _start
+_start:
+  jall s0, forward
+  jall s0, forward_far
+  jall s0, backward
+  jall s0, backward_far
+  jall s7, forward
+  jall s3, forward
+  ret s7
+
+#--- layout.ld
+ENTRY(_start)
+SECTIONS {
+  .text base : { *(.text) }
+  forward = ADDR(.text) + 0x100;
+  forward_far = ADDR(.text) + 0x106;
+  backward = ADDR(.text) - 0xf6;
+  backward_far = ADDR(.text) - 0xf4;
+}
+
+#--- marked.s
+.text
+.p2align 2
+.globl _start
+_start:
+.reloc .Ltail, R_RISCC_RELAX_TAIL, .Lliteral
+.Ltail:
+  ldpc r0, .Lliteral
+  jalr s0, r0
+.Lliteral:
+  .long call_target(callee)
+.globl callee
+callee:
+  ret s7
+
+#--- odd.s
+.text
+.globl _start
+_start:
+  jall s0, callee+1
+callee:
+  ret s7
+
+#--- overlap.yaml
+--- !ELF
+FileHeader:
+  Class: ELFCLASS32
+  Data: ELFDATA2LSB
+  Type: ET_REL
+  Machine: EM_RISCC
+  Flags: [ EF_RISCC_ABI_V0, EF_RISCC_PROFILE_FULL ]
+Sections:
+  - Name: .text
+    Type: SHT_PROGBITS
+    Flags: [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign: 2
+    Content: '340000003700'
+  - Name: .rela.text
+    Type: SHT_RELA
+    Info: .text
+    Relocations:
+      - Offset: 0
+        Type: R_RISCC_ABS16
+        Addend: 0x34
+      - Offset: 2
+        Type: R_RISCC_CODE16
+        Symbol: callee
+Symbols:
+  - Name: _start
+    Section: .text
+    Binding: STB_GLOBAL
+  - Name: callee
+    Section: .text
+    Binding: STB_GLOBAL
+    Value: 4

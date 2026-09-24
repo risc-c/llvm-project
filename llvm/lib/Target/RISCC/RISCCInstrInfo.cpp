@@ -180,6 +180,43 @@ void RISCCInstrInfo::materializeImmediate(MachineBasicBlock &MBB,
       .setMIFlag(Flag);
 }
 
+// sext8(x + C) = ((x + ((C & 255) - 128)) & 255) - 128.
+// Fold only after allocation so the biased intermediate does not lengthen
+// live ranges or disrupt coalescing. No intervening use may observe it.
+static bool foldByteExtensionBias(MachineInstr &Extend,
+                                  const RISCCRegisterInfo &RI) {
+  Register Src = Extend.getOperand(1).getReg();
+  // Updating the same register also proves the old sum is dead afterwards.
+  if (Extend.getOperand(0).getReg() != Src)
+    return false;
+  auto &MBB = *Extend.getParent();
+  for (auto I = Extend.getIterator(); I != MBB.begin();) {
+    MachineInstr &MI = *--I;
+    if (MI.isCall() || MI.isTerminator() || MI.isInlineAsm() ||
+        MI.isCFIInstruction() || MI.hasUnmodeledSideEffects())
+      return false;
+    if (MI.modifiesRegister(Src, &RI)) {
+      if ((MI.getOpcode() != RISCC::ADDI && MI.getOpcode() != RISCC::ADDI32) ||
+          MI.getOperand(0).getReg() != Src || MI.getOperand(1).getReg() != Src ||
+          MI.getFlag(MachineInstr::FrameSetup) ||
+          MI.getFlag(MachineInstr::FrameDestroy))
+        return false;
+      int64_t Bias = (MI.getOperand(2).getImm() & 255) - 128;
+      if (Bias) {
+        MI.getOperand(2).setImm(Bias);
+        MI.clearFlag(MachineInstr::NoSWrap);
+        MI.clearFlag(MachineInstr::NoUWrap);
+      } else {
+        MI.eraseFromParent();
+      }
+      return true;
+    }
+    if (MI.readsRegister(Src, &RI))
+      return false;
+  }
+  return false;
+}
+
 bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   if (MI.getOpcode() == RISCC::SEXT8_RC32 ||
       MI.getOpcode() == RISCC::SEXT16_RC32) {
@@ -188,8 +225,10 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register Src = MI.getOperand(1).getReg();
     const DebugLoc &DL = MI.getDebugLoc();
     if (MI.getOpcode() == RISCC::SEXT8_RC32) {
+      bool Biased = foldByteExtensionBias(MI, RI);
       BuildMI(MBB, MI, DL, get(RISCC::ANDI32), Dst).addReg(Src).addImm(0xff);
-      BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst).addReg(Dst).addImm(0x80);
+      if (!Biased)
+        BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst).addReg(Dst).addImm(0x80);
       BuildMI(MBB, MI, DL, get(RISCC::ADDI32), Dst).addReg(Dst).addImm(-128);
     } else {
       materializeImmediate(MBB, MI, DL, RISCC::R0, 0xffff);
@@ -214,6 +253,7 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   Register Dst = MI.getOperand(0).getReg();
   Register Src = MI.getOperand(1).getReg();
   const DebugLoc &DL = MI.getDebugLoc();
+  bool Biased = foldByteExtensionBias(MI, RI);
   bool SourceIsByteLoad = false;
   for (auto I = MI.getIterator(); I != MBB.begin();) {
     --I;
@@ -228,7 +268,8 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     BuildMI(MBB, MI, DL, get(RISCC::ANDI), Dst).addReg(Src).addImm(0xff);
     Extended = Dst;
   }
-  BuildMI(MBB, MI, DL, get(RISCC::XORI), Dst).addReg(Extended).addImm(0x80);
+  if (!Biased)
+    BuildMI(MBB, MI, DL, get(RISCC::XORI), Dst).addReg(Extended).addImm(0x80);
   BuildMI(MBB, MI, DL, get(RISCC::ADDI), Dst).addReg(Dst).addImm(-128);
   MI.eraseFromParent();
   return true;

@@ -66,11 +66,11 @@ return:
   ret i32 %joined
 }
 ; CHECK-LABEL: direct_tail_shared_return:
-; CHECK:       beqz [[RETURN:.LBB[0-9_]+]]
+; CHECK:       bnez [[CALL:.LBB[0-9_]+]]
+; CHECK:       ret s7
+; CHECK:       [[CALL]]:
 ; CHECK:       {{(jall s0, callee|jalr s0, r0)}}
-; CHECK-NOT:   ret
-; CHECK:       [[RETURN]]:
-; CHECK-NEXT:  ret s7
+; CHECK-NEXT:  .Lfunc_end
 
 ; Keep the signed i8 PHI in a native register.  The signed comparison and
 ; call consume the same widened value, so only one sign extension belongs in
@@ -99,7 +99,8 @@ exit:
 ; CHECK-NEXT:  xori [[BYTE]], 128
 ; CHECK-NEXT:  addi [[BYTE]], -128
 ; CHECK-NOT:   andi
-; CHECK:       slt {{r[0-7]}}, {{r[0-7]}}, [[BYTE]]
+; CHECK:       cmpi [[BYTE]], 10
+; CHECK-NEXT:  bgez
 ; CHECK-NOT:   andi
 ; CHECK:       jalr s7,
 ; CHECK-NOT:   andi

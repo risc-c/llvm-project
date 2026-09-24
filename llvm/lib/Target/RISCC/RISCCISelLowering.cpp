@@ -13,6 +13,7 @@
 #include "RISCCMachineFunctionInfo.h"
 #include "RISCCSubtarget.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -121,6 +122,7 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   // Keep 32-bit div/rem pairs together for the __{u}divmodsi4 helpers.
   setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
+  setTargetDAGCombine(ISD::STORE);
   setTargetDAGCombine(ISD::MUL);
   setTargetDAGCombine(ISD::AND);
   setTargetDAGCombine(ISD::OR);
@@ -269,8 +271,66 @@ static SDValue combineSubOfEquality(SDNode *N, SelectionDAG &DAG) {
                      DAG.getConstant(Immediate, DL, VT));
 }
 
+// Inline aggregate copies expose stores hidden from IR DSE. An overwrite can
+// kill one of these through other stores or token factors, provided no chain
+// user can observe the old value before the overwrite.
+static SDValue removeOverwrittenStore(StoreSDNode *Store,
+                                      TargetLowering::DAGCombinerInfo &DCI) {
+  if (!Store->isSimple() || Store->isIndexed() || Store->getBasePtr().isUndef())
+    return {};
+  SmallPtrSet<SDNode *, 32> Visited;
+  SmallVector<SDNode *, 32> Pending{Store->getChain().getNode()};
+  SmallVector<StoreSDNode *, 4> Candidates;
+  while (!Pending.empty() && Visited.size() < 32) {
+    SDNode *N = Pending.pop_back_val();
+    if (!Visited.insert(N).second)
+      continue;
+    if (N->getOpcode() == ISD::TokenFactor) {
+      for (SDValue Op : N->op_values())
+        Pending.push_back(Op.getNode());
+    } else if (auto *Old = dyn_cast<StoreSDNode>(N);
+               Old && Old->isSimple() && Old->isUnindexed()) {
+      if (Old->getBasePtr() == Store->getBasePtr() &&
+          Old->getMemoryVT() == Store->getMemoryVT() &&
+          Old->getAddressSpace() == Store->getAddressSpace())
+        Candidates.push_back(Old);
+      Pending.push_back(Old->getChain().getNode());
+    }
+  }
+  for (StoreSDNode *Old : Candidates) {
+    SmallPtrSet<SDNode *, 32> Users;
+    Pending.clear();
+    Pending.push_back(Old);
+    bool Closed = true;
+    while (!Pending.empty() && Closed) {
+      SDNode *N = Pending.pop_back_val();
+      if (!Users.insert(N).second)
+        continue;
+      for (SDNode *User : N->users()) {
+        if (User == Store)
+          continue;
+        auto *Next = dyn_cast<StoreSDNode>(User);
+        if (!Visited.contains(User) ||
+            (User->getOpcode() != ISD::TokenFactor &&
+             !(Next && Next->isSimple() && Next->isUnindexed()))) {
+          Closed = false;
+          break;
+        }
+        Pending.push_back(User);
+      }
+    }
+    if (Closed) {
+      DCI.CombineTo(Old, Old->getChain());
+      return SDValue(Store, 0);
+    }
+  }
+  return {};
+}
+
 SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
                                                DAGCombinerInfo &DCI) const {
+  if (N->getOpcode() == ISD::STORE)
+    return removeOverwrittenStore(cast<StoreSDNode>(N), DCI);
   SelectionDAG &DAG = DCI.DAG;
   SDLoc DL(N);
   const MVT VT = STI.getXLenVT();
@@ -692,6 +752,20 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
     SDValue V = Op.getOperand(0);
     const Function &Fn = DAG.getMachineFunction().getFunction();
 
+    // A sign mask needs a compare and negation, not fifteen or thirty-one
+    // iterative shift clocks. The extra live zero can increase register
+    // pressure, so size builds retain Full's compact immediate shifts.
+    // Min/Sys otherwise need fifteen or thirty-one one-bit instructions.
+    if (!STI.isNano() && Op.getOpcode() == ISD::SRA &&
+        Amount == VT.getSizeInBits() - 1 &&
+        (!Fn.hasOptSize() || !STI.hasWideShift())) {
+      SDValue Zero = DAG.getConstant(0, DL, VT);
+      SDValue Negative = DAG.getNode(
+          RISCCISD::SET_CC, DL, VT, V, Zero,
+          DAG.getTargetConstant(ISD::SETLT, DL, MVT::i16));
+      return DAG.getNode(ISD::SUB, DL, VT, Zero, Negative);
+    }
+
     // Extracting the highest possible set bit is a range test. Leave OR
     // operands intact so the funnel-shift combine can still see both halves.
     if (Op.getOpcode() == ISD::SRL && Amount > 2 &&
@@ -1026,6 +1100,36 @@ static void simplifyMaskedComparison(SDValue &LHS, SDValue &RHS,
   }
 }
 
+// CMPI followed by a sign branch replaces a materialized bound and SLT when
+// subtraction cannot overflow. Check the entire value range, not just its sign.
+static bool useSubtractionSignTest(SDValue Value, int64_t &Immediate,
+                                  ISD::CondCode &CC, SelectionDAG &DAG) {
+  if (CC != ISD::SETLT && CC != ISD::SETGE && CC != ISD::SETLE &&
+      CC != ISD::SETGT)
+    return false;
+  APInt Bound(Value.getValueSizeInBits(), Immediate, true);
+  if (CC == ISD::SETLE || CC == ISD::SETGT) {
+    if (Bound.isMaxSignedValue())
+      return false;
+    ++Bound;
+  }
+  if (!Bound.isSignedIntN(8))
+    return false;
+  // Two sign bits leave enough headroom for any signed-byte immediate.
+  // KnownBits additionally proves asymmetric ranges, such as nonnegative x.
+  if (DAG.ComputeNumSignBits(Value) == 1) {
+    KnownBits Known = DAG.computeKnownBits(Value);
+    bool MinOverflow, MaxOverflow;
+    (void)Known.getSignedMinValue().ssub_ov(Bound, MinOverflow);
+    (void)Known.getSignedMaxValue().ssub_ov(Bound, MaxOverflow);
+    if (MinOverflow || MaxOverflow)
+      return false;
+  }
+  Immediate = Bound.getSExtValue();
+  CC = CC == ISD::SETLT || CC == ISD::SETLE ? ISD::SETLT : ISD::SETGE;
+  return true;
+}
+
 SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
   SDLoc DL(Op);
   SDValue LHS = Op.getOperand(2);
@@ -1038,7 +1142,10 @@ SDValue RISCCTargetLowering::lowerBRCC(SDValue Op, SelectionDAG &DAG) const {
   }
   if (auto *C = dyn_cast<ConstantSDNode>(RHS)) {
     int64_t Immediate = C->getSExtValue();
-    if (canCompareImmediate(CC, Immediate, STI.isNano())) {
+    bool CanCompare = canCompareImmediate(CC, Immediate, STI.isNano());
+    if (!CanCompare && !STI.isNano())
+      CanCompare = useSubtractionSignTest(LHS, Immediate, CC, DAG);
+    if (CanCompare) {
       return DAG.getNode(
           RISCCISD::BR_CC_IMM, DL, MVT::Other, Op.getOperand(0), LHS,
           DAG.getTargetConstant(
@@ -1561,13 +1668,28 @@ emitImmediateComparisonBranch(MachineInstr &MI, MachineBasicBlock &MBB,
       llvm_unreachable("unsupported sign comparison");
     }
   } else {
-    assert((CC == ISD::SETEQ || CC == ISD::SETNE) &&
-           "unsupported immediate comparison");
+    assert((CC == ISD::SETEQ || CC == ISD::SETNE || CC == ISD::SETLT ||
+            CC == ISD::SETGE) && "unsupported immediate comparison");
     BuildMI(MBB, MI, MI.getDebugLoc(),
             TII.get(IsRC32 ? RISCC::CMPI32 : RISCC::CMPI))
         .addReg(LHS)
         .addImm(RHS);
-    Branch = CC == ISD::SETEQ ? RISCC::BEQZ : RISCC::BNEZ;
+    switch (CC) {
+    case ISD::SETEQ:
+      Branch = RISCC::BEQZ;
+      break;
+    case ISD::SETNE:
+      Branch = RISCC::BNEZ;
+      break;
+    case ISD::SETLT:
+      Branch = RISCC::BLTZ;
+      break;
+    case ISD::SETGE:
+      Branch = RISCC::BGEZ;
+      break;
+    default:
+      llvm_unreachable("unsupported immediate comparison");
+    }
   }
   BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Branch)).addMBB(Target);
 }

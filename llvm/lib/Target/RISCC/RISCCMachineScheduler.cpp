@@ -10,12 +10,157 @@
 #include "RISCCSubtarget.h"
 #include "RISCCTargetMachine.h"
 #include "llvm/CodeGen/AntiDepBreaker.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineScheduler.h"
+#include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 
 using namespace llvm;
 
 namespace {
+// Fill branch gaps with work from a common successor. Only move operations
+// needed on both paths, with no intervening use or change of their operands.
+// This includes private register restores and independent immediate updates.
+// No instruction is duplicated or speculated.
+static void hoistCommonWork(MachineBasicBlock &MBB) {
+  auto &MF = *MBB.getParent();
+  const auto &STI = MF.getSubtarget<RISCCSubtarget>();
+  const auto &TRI = *STI.getRegisterInfo();
+  if (!STI.hasEarlyBranches() || MBB.succ_size() != 2)
+    return;
+  auto Branch = MBB.getFirstTerminator();
+  if (Branch == MBB.end() || !Branch->isConditionalBranch() ||
+      !Branch->readsRegister(RISCC::R0, &TRI))
+    return;
+  unsigned Gap = 0, Needed = 0;
+  for (auto I = Branch; I != MBB.begin();) {
+    MachineInstr &MI = *--I;
+    if (MI.isDebugInstr())
+      continue;
+    if (MI.modifiesRegister(RISCC::R0, &TRI)) {
+      Needed = MI.mayLoad() ? 2 : 1;
+      break;
+    }
+    if (++Gap == 2)
+      return;
+  }
+  if (Gap >= Needed)
+    return;
+
+  // Recognize a small closed diamond, including a direct edge to its join.
+  // Unique predecessors prevent removing work needed by an outside path.
+  auto Chain = [&](MachineBasicBlock *BB) {
+    SmallVector<MachineBasicBlock *, 4> Blocks;
+    while (BB != &MBB && Blocks.size() < 4 && !is_contained(Blocks, BB)) {
+      Blocks.push_back(BB);
+      if (BB->succ_size() != 1)
+        break;
+      BB = *BB->succ_begin();
+    }
+    return Blocks;
+  };
+  auto A = Chain(*MBB.succ_begin());
+  auto B = Chain(*std::next(MBB.succ_begin()));
+  MachineBasicBlock *Join = nullptr;
+  for (auto *BB : A)
+    if (is_contained(B, BB)) {
+      Join = BB;
+      break;
+    }
+  if (!Join || Join->pred_size() != 2)
+    return;
+  SmallVector<MachineBasicBlock *, 6> Arms;
+  for (const auto &Path : {A, B}) {
+    MachineBasicBlock *Previous = &MBB;
+    for (auto *BB : Path) {
+      if (BB == Join) {
+        if (!Join->isPredecessor(Previous))
+          return;
+        break;
+      }
+      if (BB->pred_size() != 1 || *BB->pred_begin() != Previous)
+        return;
+      Arms.push_back(BB);
+      Previous = BB;
+    }
+  }
+
+  bool Changed = false;
+  for (auto I = Join->begin(); I != Join->end() && Gap < Needed;) {
+    MachineInstr &Work = *I++;
+    const bool IsAdd = Work.getOpcode() == RISCC::ADDI ||
+                       Work.getOpcode() == RISCC::ADDI32;
+    const bool IsLoad = Work.getOpcode() == RISCC::LD ||
+                        Work.getOpcode() == RISCC::LD32;
+    if ((!IsAdd && !IsLoad) || Work.getFlag(MachineInstr::FrameSetup) ||
+        Work.getFlag(MachineInstr::FrameDestroy))
+      continue;
+    Register Dst = Work.getOperand(0).getReg();
+    Register Base = Work.getOperand(1).getReg();
+    if (Dst == RISCC::R0 || Dst == RISCC::R7)
+      continue;
+    const FixedStackPseudoSourceValue *Slot = nullptr;
+    if (IsAdd) {
+      if (Base != Dst)
+        continue;
+    } else {
+      if (!Join->isReturnBlock() || Base != RISCC::R7 ||
+          Work.memoperands().size() != 1 ||
+          !Work.memoperands()[0]->isUnordered())
+        continue;
+      Slot = dyn_cast_or_null<FixedStackPseudoSourceValue>(
+          Work.memoperands()[0]->getPseudoValue());
+      if (!Slot || Work.memoperands()[0]->getOffset() != 0 ||
+          !llvm::any_of(MF.getFrameInfo().getCalleeSavedInfo(),
+                       [&](const CalleeSavedInfo &Save) {
+                         return !Save.isSpilledToReg() &&
+                                Save.getReg() == Dst.asMCReg() &&
+                                Save.getFrameIdx() == Slot->getFrameIndex();
+                       }))
+        continue;
+    }
+    auto CanCross = [&](const MachineInstr &MI) {
+      // The call mask must explicitly establish preservation of an update's
+      // register; an unmodelled call cannot be crossed.
+      if (MI.isCall() && !llvm::any_of(MI.operands(), [](const auto &MO) {
+            return MO.isRegMask();
+          }))
+        return false;
+      if ((IsLoad && MI.isCall()) || MI.isInlineAsm() || MI.isCFIInstruction() ||
+          (!MI.isCall() && MI.hasUnmodeledSideEffects()) ||
+          MI.readsRegister(Dst, &TRI) ||
+          MI.modifiesRegister(Dst, &TRI) || MI.modifiesRegister(Base, &TRI))
+        return false;
+      // Compiler spill slots do not alias program-visible memory. A spill
+      // to the same private slot must nevertheless remain before its load.
+      if (IsLoad && MI.mayStore())
+        for (const auto *MMO : MI.memoperands())
+          if (MMO->getPseudoValue() == Slot)
+            return false;
+      return IsAdd || !MI.mayStore() || !MI.memoperands_empty();
+    };
+    if (!llvm::all_of(make_range(Branch, MBB.end()), CanCross) ||
+        !llvm::all_of(make_range(Join->instr_begin(), Work.getIterator()),
+                      CanCross) ||
+        !llvm::all_of(Arms, [&](auto *BB) { return llvm::all_of(*BB, CanCross); }))
+      continue;
+    MBB.splice(Branch, Join, Work.getIterator());
+    ++Gap;
+    Changed = true;
+  }
+  if (Changed) {
+    recomputeLiveIns(*Join);
+    for (auto *BB : llvm::reverse(Arms))
+      recomputeLiveIns(*BB);
+    recomputeLiveIns(MBB);
+    recomputeLivenessFlags(*Join);
+    for (auto *BB : Arms)
+      recomputeLivenessFlags(*BB);
+    recomputeLivenessFlags(MBB);
+  }
+}
+
 // (a - b) + C can evaluate a + C while the second load completes. Do this
 // after allocation: the dying first operand supplies the temporary, so the
 // rewrite adds neither an instruction nor register pressure. Both loads stay
@@ -137,6 +282,7 @@ public:
   }
 
   void startBlock(MachineBasicBlock *MBB) override {
+    hoistCommonWork(*MBB);
     ScheduleDAGMI::startBlock(MBB);
     AntiDeps->StartBlock(MBB);
     Cursor = MBB->end();

@@ -1,0 +1,83 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %t/input.mir -o - | FileCheck %s
+# RUN: sed -e 's/ADDI32/ADDI/g' -e 's/CMPI32/CMPI/g' -e 's/CALL32_LITERAL/CALL16/g' -e 's/ST32/ST/g' %t/input.mir | llc -x mir -mtriple=riscc -mcpu=full -run-pass=postmisched -verify-machineinstrs -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32,-early-branches -run-pass=postmisched %t/input.mir -o - | FileCheck %s --check-prefix=OFF
+
+# Move an existing update out of the join, even across a call which preserves
+# its register. Nothing is duplicated, including on the other branch arm.
+# CHECK-LABEL: name: independent
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: $r4 = ADDI{{(32)?}} killed $r4, 1
+# CHECK-NEXT: BNEZ
+# CHECK: bb.2:
+# CHECK-NOT: ADDI
+# CHECK: RETS
+# CHECK-LABEL: name: preserved_call
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: $r4 = ADDI{{(32)?}} killed $r4, 1
+# CHECK-NEXT: BNEZ
+# CHECK: bb.2:
+# CHECK-NOT: ADDI
+# CHECK: RETS
+# OFF-LABEL: name: independent
+# OFF: CMPI{{(32)?}}
+# OFF-NEXT: BNEZ
+
+# Calls must preserve the register. Either arm's old-value uses, definitions,
+# and outside predecessors of the join also prevent motion.
+# CHECK-LABEL: name: clobbered_call
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.2:
+# CHECK: $r3 = ADDI
+# CHECK-LABEL: name: old_value_used
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.2:
+# CHECK: $r4 = ADDI
+# CHECK-LABEL: name: redefined
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.2:
+# CHECK: $r4 = ADDI
+# CHECK-LABEL: name: outside_predecessor
+# CHECK: CMPI{{(32)?}}
+# CHECK-NEXT: BNEZ
+# CHECK: bb.2:
+# CHECK: $r4 = ADDI
+
+#--- generate.py
+for name in ('independent', 'preserved_call', 'clobbered_call',
+             'old_value_used', 'redefined', 'outside_predecessor'):
+    reg = '$r3' if name == 'clobbered_call' else '$r4'
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r1, {reg}, $s7
+    CMPI32 $r1, 7, implicit-def $r0
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.2
+    liveins: $r1, {reg}, $s7''')
+    if name.endswith('_call'):
+        print('    CALL32_LITERAL &callee, csr_riscc_callpreserved, implicit-def $s7, implicit-def $r0')
+    elif name == 'old_value_used':
+        print('    ST32 $r4, $r1, 0')
+    elif name == 'redefined':
+        print('    $r4 = COPY $r1')
+    print(f'''  bb.2:
+    liveins: {reg}, $s7
+    {reg} = ADDI32 {reg}, 1
+    RETS implicit $s7, implicit {reg}''')
+    if name == 'outside_predecessor':
+        print('''  bb.3:
+    successors: %bb.2
+    liveins: $r4, $s7
+    JMP8 %bb.2''')
+    print('...')

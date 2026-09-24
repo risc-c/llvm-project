@@ -1,0 +1,155 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-after=branch-relaxation -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/LDI32/LDI/g' -e 's/ADDI32/ADDI/g' %s | llc -x mir -mtriple=riscc -mcpu=full -start-after=branch-relaxation -verify-machineinstrs -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-after=branch-relaxation -verify-machineinstrs -filetype=obj %s -o %t
+
+# At equal probabilities, the shorter exit makes the conditional branch span
+# smaller. Its opposite outcome still reaches the same longer return path.
+# CHECK-LABEL: equal_exits:
+# CHECK: beqz [[LONG:.LBB[0-9_]+]]
+# CHECK-NEXT: {{.*}}bb.
+# CHECK-NEXT: ldi r1, 0
+# CHECK-NEXT: ret s7
+# CHECK: [[LONG]]:
+# CHECK-NEXT: ldi r1, 7
+# CHECK-NEXT: addi r1, 1
+# CHECK-NEXT: ret s7
+
+# Preserve a known preference for the existing fallthrough, equal-sized exits,
+# outside predecessors, and CFI whose interpretation depends on layout.
+# CHECK-LABEL: weighted_exits:
+# CHECK: bnez
+# CHECK: ldi r1, 7
+# CHECK-LABEL: same_size:
+# CHECK: bnez
+# CHECK: ldi r1, 7
+# CHECK-LABEL: outside_predecessor:
+# CHECK: bnez
+# CHECK: ldi r1, 7
+# CHECK-LABEL: cfi_exit:
+# CHECK: bnez
+# CHECK: ldi r1, 7
+# CHECK-LABEL: address_taken:
+# CHECK: bnez
+# CHECK: ldi r1, 7
+
+---
+name: equal_exits
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    $r1 = LDI32 7
+    $r1 = ADDI32 $r1, 1
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: weighted_exits
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1(0x70000000), %bb.2(0x10000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    $r1 = LDI32 7
+    $r1 = ADDI32 $r1, 1
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: same_size
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    $r1 = LDI32 7
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: outside_predecessor
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    $r1 = LDI32 7
+    $r1 = ADDI32 $r1, 1
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+  bb.3:
+    successors: %bb.2
+    JMP8 %bb.2
+...
+---
+name: cfi_exit
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    CFI_INSTRUCTION remember_state
+    $r1 = LDI32 7
+    $r1 = ADDI32 $r1, 1
+    CFI_INSTRUCTION restore_state
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: address_taken
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    $r1 = LDI32 7
+    $r1 = ADDI32 $r1, 1
+    RETS implicit $s7, implicit $r1
+  bb.2 (machine-block-address-taken):
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+...
+
+# Alignment can change the layout size even when instruction sizes decrease.
+# CHECK-LABEL: aligned_exit:
+# CHECK: ldi r1, 7
+# CHECK-NEXT: addi r1, 1
+# CHECK-NEXT: ret s7
+# CHECK: ldi r1, 0
+# CHECK-NEXT: ret s7
+---
+name: aligned_exit
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0, $s7
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    $r1 = LDI32 7
+    $r1 = ADDI32 $r1, 1
+    RETS implicit $s7, implicit $r1
+  bb.2 (align 4):
+    liveins: $s7
+    $r1 = LDI32 0
+    RETS implicit $s7, implicit $r1
+...

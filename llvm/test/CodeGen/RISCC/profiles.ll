@@ -84,9 +84,12 @@ define i16 @shift_arithmetic_fifteen_size(i16 %value) minsize {
 ; SMALL-LABEL: shift_arithmetic_fifteen_size:
 ; NANO:        ldi16 r0, __riscc_ashrhi15
 ; NANO-NEXT:   jalr r6, r0
-; MIN:         ldi16 r0, __riscc_ashrhi15
-; MIN-NEXT:    jalr s7, r0
-; SYS:         jall s7, __riscc_ashrhi15
+; MIN:         ldi [[ZERO:r[0-7]]], 0
+; MIN-NEXT:    slt r1, r1, [[ZERO]]
+; MIN-NEXT:    sub r1, [[ZERO]], r1
+; SYS:         ldi [[ZERO:r[0-7]]], 0
+; SYS-NEXT:    slt r1, r1, [[ZERO]]
+; SYS-NEXT:    sub r1, [[ZERO]], r1
 ; WIDE-LABEL:  shift_arithmetic_fifteen_size:
 ; WIDE:        srai [[HALF:r[0-7]]], {{r[0-7]}}, 8
 ; WIDE-NEXT:   srai {{r[0-7]}}, [[HALF]], 7

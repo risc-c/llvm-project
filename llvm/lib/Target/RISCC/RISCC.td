@@ -30,14 +30,21 @@ def FeatureNano : SubtargetFeature<"nano", "IsNano", "true",
 def FeatureRC32 : SubtargetFeature<"rc32", "IsRC32", "true",
   "Select the 32-bit RISC-C base ISA">;
 
+def FeatureEarlyBranches : SubtargetFeature<"early-branches", "HasEarlyBranches", "true",
+  "Schedule independent work before Decode-stage conditional branches">;
+
 include "RISCCSchedule.td"
 include "RISCCInstrInfo.td"
 
-def : ProcessorModel<"min", RISCCSchedModel, []>;
+// Tune the shared ISA profiles for the pipeline. This only reorders existing
+// instructions; multicycle implementations need no different instruction set.
+def : ProcessorModel<"min", RISCCSchedModel, [FeatureEarlyBranches]>;
 def : ProcessorModel<"nano", NoSchedModel, [FeatureNano]>;
-def : ProcessorModel<"sys", RISCCSchedModel, [FeatureSys, FeatureLongJall]>;
+def : ProcessorModel<"sys", RISCCSchedModel,
+                     [FeatureSys, FeatureLongJall, FeatureEarlyBranches]>;
 def : ProcessorModel<"full", RISCCSchedModel,
-                     [FeatureSys, FeatureLongJall, FeatureWideShift, FeatureMul]>;
+                     [FeatureSys, FeatureLongJall, FeatureWideShift, FeatureMul,
+                      FeatureEarlyBranches]>;
 
 def RISCCInstrInfo : InstrInfo;
 

@@ -15,6 +15,7 @@
 #include "RISCCPrepare.h"
 #include "RISCCSRegAllocator.h"
 #include "TargetInfo/RISCCTargetInfo.h"
+#include "llvm/CodeGen/BasicTTIImpl.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
@@ -107,6 +108,26 @@ MachineFunctionInfo *RISCCTargetMachine::createMachineFunctionInfo(
 }
 
 namespace {
+class RISCCTTIImpl final : public BasicTTIImpl {
+  bool OptimizeForSize;
+
+public:
+  RISCCTTIImpl(const RISCCTargetMachine *TM, const Function &F)
+      : BasicTTIImpl(TM, F), OptimizeForSize(F.hasOptSize()) {}
+
+  bool isLSRCostLess(const TargetTransformInfo::LSRCost &A,
+                    const TargetTransformInfo::LSRCost &B) const override {
+    if (OptimizeForSize)
+      return BasicTTIImpl::isLSRCostLess(A, B);
+    // Registers remain the limiting resource. Among equally demanding loop
+    // forms, prefer fewer instructions before the individual addressing costs.
+    return std::tie(A.NumRegs, A.Insns, A.AddRecCost, A.NumIVMuls,
+                    A.NumBaseAdds, A.ScaleCost, A.ImmCost, A.SetupCost) <
+           std::tie(B.NumRegs, B.Insns, B.AddRecCost, B.NumIVMuls,
+                    B.NumBaseAdds, B.ScaleCost, B.ImmCost, B.SetupCost);
+  }
+};
+
 class RISCCPassConfigImpl final : public TargetPassConfig {
 public:
   RISCCPassConfigImpl(RISCCTargetMachine &TM, PassManagerBase &PM)
@@ -148,6 +169,11 @@ public:
   void addPreEmitPass2() override { addPass(createRISCCConstantIslandPass()); }
 };
 } // namespace
+
+TargetTransformInfo
+RISCCTargetMachine::getTargetTransformInfo(const Function &F) const {
+  return TargetTransformInfo(std::make_unique<RISCCTTIImpl>(this, F));
+}
 
 TargetPassConfig *RISCCTargetMachine::createPassConfig(PassManagerBase &PM) {
   return new RISCCPassConfigImpl(*this, PM);

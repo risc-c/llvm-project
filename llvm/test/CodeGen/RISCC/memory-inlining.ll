@@ -32,21 +32,21 @@ define void @copy_constant16(ptr %dst) {
 ; RC16-LABEL: copy_constant16:
 ; RC16-NOT:   ldb
 ; RC16-NOT:   stb
-; RC16-DAG:   ldi16 [[C16_1:r[0-7]]], -13424
+; RC16-DAG:   ldi16 [[C16_1:r[0-7]]], 52112
 ; RC16-DAG:   st [[C16_1]], [r1 + 14]
 ; RC16-DAG:   ldi16 [[C16_2:r[0-7]]], 2428
 ; RC16-DAG:   st [[C16_2]], [r1 + 12]
-; RC16-DAG:   ldi16 [[C16_3:r[0-7]]], -7663
+; RC16-DAG:   ldi16 [[C16_3:r[0-7]]], 57873
 ; RC16-DAG:   st [[C16_3]], [r1 + 10]
-; RC16-DAG:   ldi16 [[C16_4:r[0-7]]], -16843
+; RC16-DAG:   ldi16 [[C16_4:r[0-7]]], 48693
 ; RC16-DAG:   st [[C16_4]], [r1 + 8]
 ; RC16-DAG:   ldi16 [[C16_5:r[0-7]]], 18679
 ; RC16-DAG:   st [[C16_5]], [r1 + 6]
 ; RC16-DAG:   ldi16 [[C16_6:r[0-7]]], 1665
 ; RC16-DAG:   st [[C16_6]], [r1 + 4]
-; RC16-DAG:   ldi16 [[C16_7:r[0-7]]], -9412
+; RC16-DAG:   ldi16 [[C16_7:r[0-7]]], 56124
 ; RC16-DAG:   st [[C16_7]], [r1 + 2]
-; RC16-DAG:   ldi16 [[C16_8:r[0-7]]], -23278
+; RC16-DAG:   ldi16 [[C16_8:r[0-7]]], 42258
 ; RC16-DAG:   st [[C16_8]], [r1 + 0]
 ; RC16-NOT:   ldb
 ; RC16-NOT:   stb
@@ -54,21 +54,21 @@ define void @copy_constant16(ptr %dst) {
 ; NANO-LABEL: copy_constant16:
 ; NANO-NOT:   ldb
 ; NANO-NOT:   stb
-; NANO:       ldi16 [[CNANO:r[0-7]]], -13424
+; NANO:       ldi16 [[CNANO:r[0-7]]], 52112
 ; NANO-NEXT:  st [[CNANO]], [r1 + 14]
 ; NANO:       ldi16 [[CNANO:r[0-7]]], 2428
 ; NANO-NEXT:  st [[CNANO]], [r1 + 12]
-; NANO:       ldi16 [[CNANO:r[0-7]]], -7663
+; NANO:       ldi16 [[CNANO:r[0-7]]], 57873
 ; NANO-NEXT:  st [[CNANO]], [r1 + 10]
-; NANO:       ldi16 [[CNANO:r[0-7]]], -16843
+; NANO:       ldi16 [[CNANO:r[0-7]]], 48693
 ; NANO-NEXT:  st [[CNANO]], [r1 + 8]
 ; NANO:       ldi16 [[CNANO:r[0-7]]], 18679
 ; NANO-NEXT:  st [[CNANO]], [r1 + 6]
 ; NANO:       ldi16 [[CNANO:r[0-7]]], 1665
 ; NANO-NEXT:  st [[CNANO]], [r1 + 4]
-; NANO:       ldi16 [[CNANO:r[0-7]]], -9412
+; NANO:       ldi16 [[CNANO:r[0-7]]], 56124
 ; NANO-NEXT:  st [[CNANO]], [r1 + 2]
-; NANO:       ldi16 [[CNANO:r[0-7]]], -23278
+; NANO:       ldi16 [[CNANO:r[0-7]]], 42258
 ; NANO-NEXT:  st [[CNANO]], [r1 + 0]
 ; NANO-NOT:   ldb
 ; NANO-NOT:   stb

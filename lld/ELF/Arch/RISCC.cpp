@@ -95,7 +95,8 @@ static bool hasOverlappingRelocation(ArrayRef<Relocation> rels, uint64_t offset,
                                      const Relocation *first,
                                      const Relocation *second = nullptr) {
   for (const Relocation &rel : rels) {
-    if (&rel == first || &rel == second)
+    if (&rel == first || &rel == second || rel.type == R_RISCC_NONE ||
+        rel.expr == R_RELAX_HINT)
       continue;
     unsigned size = 1;
     switch (rel.type) {
@@ -735,6 +736,44 @@ void RISCC::finalizeRelax(int passes) const {
     literal.expr = R_RELAX_HINT;
     literal.type = R_RISCC_NONE;
     literal.addend = 0;
+  }
+
+  // A nearby tail transfer needs no link write. Keep its unused second
+  // halfword: shrinking by two would disturb RC32 literal alignment and
+  // assembler-resolved RC16 branches. All buffers below were copied above.
+  const uint64_t codeLimit =
+      calcEFlags() & EF_RISCC_RC32 ? 0x1'0000'0000ULL : 0x10000;
+  for (OutputSection *osec : ctx.outputSections) {
+    if (!(osec->flags & SHF_EXECINSTR))
+      continue;
+    for (InputSection *sec : getInputSections(*osec, storage)) {
+      if (!sec->relaxAux || sec->relocs().empty())
+        continue;
+      auto *buf = const_cast<uint8_t *>(sec->content().data());
+      for (Relocation &rel : sec->relocs()) {
+        uint64_t offset = rel.offset;
+        if (rel.type == R_RISCC_CODE16) {
+          if (offset < 2)
+            continue;
+          offset -= 2;
+        } else if (rel.type != R_RISCC_JALL21) {
+          continue;
+        }
+        if (!rel.sym || offset > sec->size || sec->size - offset < 4 ||
+            (offset & 1) || read16le(buf + offset) != 0x0034 ||
+            hasOverlappingRelocation(sec->relocs(), offset, &rel))
+          continue;
+        uint64_t target = rel.sym->getVA(ctx, rel.addend);
+        int64_t distance = target - (sec->getVA(offset) + 2);
+        if ((target & 1) || target >= codeLimit || !isInt<9>(distance))
+          continue;
+        write16le(buf + offset, 0xa700); // JMP8; operand relocated below.
+        write16le(buf + offset + 2, target); // Retain the old operand halfword.
+        rel.offset = offset;
+        rel.type = R_RISCC_PCREL8_WORD;
+        rel.expr = R_PC;
+      }
+    }
   }
 }
 
