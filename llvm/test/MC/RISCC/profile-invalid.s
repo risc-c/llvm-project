@@ -4,6 +4,8 @@
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=nano -filetype=null < %s 2>&1 | FileCheck %s --check-prefix=NANO
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=null < %s 2>&1 | FileCheck %s --check-prefix=RC32-MIN
 # RUN: not llvm-mc -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 -filetype=null < %s 2>&1 | FileCheck %s --check-prefix=RC32-SYS
+# RUN: not llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=null < %s 2>&1 | FileCheck %s --check-prefix=FULL
+# RUN: not llvm-mc -triple=riscc-none-elf -mcpu=min -mattr=+iflush -filetype=null < %s 2>&1 | FileCheck %s --check-prefix=MIN-IFLUSH
 
 mul r1, r2, r3
 # MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
@@ -52,3 +54,11 @@ cli
 sti
 # MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
 # NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
+
+iflush
+# MIN: :[[@LINE-1]]:1: error: invalid operand for RISC-C instruction
+# NANO: :[[@LINE-2]]:1: error: invalid operand for RISC-C instruction
+# SYS: :[[@LINE-3]]:1: error: invalid operand for RISC-C instruction
+# RC32-SYS: :[[@LINE-4]]:1: error: invalid operand for RISC-C instruction
+# FULL: :[[@LINE-5]]:1: error: invalid operand for RISC-C instruction
+# MIN-IFLUSH: :[[@LINE-6]]:1: error: invalid operand for RISC-C instruction

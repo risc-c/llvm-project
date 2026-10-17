@@ -1,6 +1,6 @@
 # REQUIRES: riscc-registered-target
-# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -show-encoding < %s | FileCheck %s --check-prefix=ENC
-# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -filetype=obj < %s | llvm-objdump -d - | FileCheck %s --check-prefix=DIS
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -mattr=+iflush -show-encoding < %s | FileCheck %s --check-prefix=ENC
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -mattr=+iflush -filetype=obj < %s | llvm-objdump -d - | FileCheck %s --check-prefix=DIS
 
 # Full-profile formats with boundary registers and immediates.
 
@@ -74,6 +74,8 @@ cli
 # ENC: cli{{ *}}; encoding: [0xf8,0xd0]
 sti
 # ENC: sti{{ *}}; encoding: [0xf8,0xf8]
+iflush
+# ENC: iflush{{ *}}; encoding: [0xf8,0xd8]
 
 ldi16 r0, 4660
 # ENC: ldi16	r0, 4660{{ *}}; encoding: [0x12,0x81,0x34,0x85]

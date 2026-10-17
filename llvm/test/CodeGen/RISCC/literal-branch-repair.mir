@@ -1,0 +1,346 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %s -o %t.min.o
+# RUN: llc -mtriple=riscc -mcpu=sys -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %s -o %t.sys.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %s -o %t.full.o
+
+# Repeated calls and constants force pool repair after branch relaxation.
+# A block with a conditional branch to its layout successor and an explicit
+# false branch has no implicit fallthrough. Inserting another skip after that
+# false branch hides it from relaxation and can leave it out of range.
+# Keep the pool/branch layout below: the old pass asserts when checking its
+# remaining short branches. Object emission also checks resolved fixup ranges.
+# CHECK-LABEL: literal_branch_repair:
+# CHECK: ldpc
+# CHECK: jalr s0,
+# CHECK: .Lfunc_end
+
+--- |
+  declare void @callee0()
+  declare void @callee1()
+  declare void @callee2()
+  declare void @callee3()
+  declare void @callee4()
+  define void @literal_branch_repair() { ret void }
+...
+---
+name: literal_branch_repair
+tracksRegLiveness: true
+constants:
+  - { id: 13, value: 'i32 -1' }
+  - { id: 15, value: 'i32 65535' }
+  - { id: 16, value: 'i32 -131071' }
+  - { id: 17, value: 'i32 65536' }
+  - { id: 18, value: 'i32 -2' }
+  - { id: 19, value: 'i32 -2147483648' }
+  - { id: 20, value: 'i32 -1584365736' }
+  - { id: 21, value: 'i32 65537' }
+  - { id: 22, value: 'i32 131073' }
+  - { id: 23, value: 'i32 -1985229329' }
+  - { id: 24, value: 'i32 1985229328' }
+  - { id: 25, value: 'i32 -446591760' }
+  - { id: 26, value: 'i32 -65535' }
+  - { id: 27, value: 'i32 131071' }
+  - { id: 28, value: 'i32 196607' }
+  - { id: 29, value: 'i32 -2147418111' }
+  - { id: 30, value: 'i32 131074' }
+  - { id: 31, value: 'i32 1073774592' }
+  - { id: 32, value: 'i32 32769' }
+  - { id: 33, value: 'i32 -1073709056' }
+  - { id: 34, value: 'i32 -32767' }
+  - { id: 45, value: 'i32 916259689' }
+  - { id: 46, value: 'i32 -801727280' }
+  - { id: 47, value: 'i32 -2147418110' }
+  - { id: 48, value: 'i32 262145' }
+  - { id: 49, value: 'i32 131076' }
+  - { id: 50, value: 'i32 524290' }
+  - { id: 51, value: 'i32 1073774593' }
+  - { id: 52, value: 'i32 131072' }
+  - { id: 53, value: 'i32 -1073709055' }
+  - { id: 54, value: 'i32 4660' }
+  - { id: 55, value: 'i32 1145329272' }
+  - { id: 56, value: 'i32 34936' }
+  - { id: 57, value: 'i32 -100' }
+body: |
+  bb.0:
+    successors: %bb.24, %bb.1
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r6, 0
+    $r0 = LD32 $r6, 4
+    BNEZ %bb.24, implicit $r0
+
+  bb.1:
+    successors: %bb.27, %bb.2
+
+    $r1 = LDPC %const.17
+    $r0 = MOV32 killed $r1
+    BEQZ %bb.27, implicit $r0
+
+  bb.2:
+    successors: %bb.27, %bb.3
+    liveins: $r4, $r6
+
+    $r1 = LDPC %const.13
+    $r3 = LDPC %const.18
+    $r2 = LDI32 2
+    ST32 killed $r4, $r7, 0
+    $r4 = MOV32 $r3
+    CALL32_LITERAL @callee0, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit killed $r3, implicit-def $r7, implicit-def $r1
+    $r0 = MOV32 killed $r1
+    BEQZ %bb.27, implicit $r0
+
+  bb.3:
+    successors: %bb.24, %bb.4
+    liveins: $r4, $r6
+
+    $r1 = LDPC %const.13
+    $r0 = LDI32 1
+    $r3 = LDI32 1
+    $r2 = MOV32 $r1
+    ST32 killed $r0, $r7, 0
+    CALL32_LITERAL @callee0, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit killed $r3, implicit-def $r7, implicit-def $r1
+    $r0 = MOV32 killed $r1
+    $r3 = LDI32 16
+    BEQZ %bb.24, implicit $r0
+
+  bb.4:
+    successors: %bb.5, %bb.24
+    liveins: $r4, $r6
+
+    $r1 = LD32 $r7, 52
+    $r2 = LDI32 0
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = MOV32 killed $r1
+    $r3 = LDI32 1
+    BNEZ %bb.24, implicit $r0
+
+  bb.5:
+    successors: %bb.6, %bb.28
+    liveins: $r4, $r6
+
+    $r5 = LD32 $r7, 52
+    $r2 = LDI32 1
+    $r1 = MOV32 $r5
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = SUB32 killed $r1, killed $r5
+    BNEZ %bb.28, implicit $r0
+
+  bb.6:
+    successors: %bb.7, %bb.28
+    liveins: $r4, $r6
+
+    $r5 = LDPC %const.19
+    $r1 = LDI32 3
+    $r2 = MOV32 $r5
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = SUB32 killed $r1, $r5
+    BNEZ %bb.28, implicit $r0
+
+  bb.7:
+    successors: %bb.8, %bb.28
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 52
+    $r2 = LDI32 37
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.20
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.28, implicit $r0
+
+  bb.8:
+    successors: %bb.9, %bb.28
+    liveins: $r4, $r5, $r6
+
+    $r1 = LDPC %const.13
+    $r2 = MOV32 $r1
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    CMPI32 killed $r1, 1, implicit-def $r0
+    BNEZ %bb.28, implicit $r0
+
+  bb.9:
+    successors: %bb.10, %bb.28
+    liveins: $r4, $r5, $r6
+
+    $r1 = LDPC %const.21
+    $r2 = MOV32 $r1
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.22
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.28, implicit $r0
+
+  bb.10:
+    successors: %bb.11, %bb.28
+    liveins: $r4, $r5, $r6
+
+    $r1 = LDPC %const.23
+    $r2 = LDPC %const.24
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.25
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.28, implicit $r0
+
+  bb.11:
+    successors: %bb.12, %bb.24
+    liveins: $r4, $r5, $r6
+
+    $r1 = LDPC %const.26
+    $r2 = LDPC %const.27
+    CALL32_LITERAL @callee1, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.28
+    $r3 = LDI32 1
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.24, implicit $r0
+
+  bb.12:
+    successors: %bb.13, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 0
+    CALL32_LITERAL @callee2, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.29
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.13:
+    successors: %bb.14, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 1
+    CALL32_LITERAL @callee2, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.30
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.14:
+    successors: %bb.15, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 16
+    CALL32_LITERAL @callee2, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = SUB32 killed $r1, $r6
+    BNEZ %bb.22, implicit $r0
+
+  bb.15:
+    successors: %bb.16, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 31
+    CALL32_LITERAL @callee2, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = SUB32 killed $r1, killed $r5
+    BNEZ %bb.22, implicit $r0
+
+  bb.16:
+    successors: %bb.17, %bb.22
+    liveins: $r4, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 1
+    CALL32_LITERAL @callee3, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.31
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.17:
+    successors: %bb.18, %bb.22
+    liveins: $r4, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 16
+    CALL32_LITERAL @callee3, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.32
+    $r5 = MOV32 $r0
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.18:
+    successors: %bb.19, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 31
+    CALL32_LITERAL @callee3, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    CMPI32 killed $r1, 1, implicit-def $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.19:
+    successors: %bb.20, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 1
+    CALL32_LITERAL @callee4, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.33
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.20:
+    successors: %bb.21, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 16
+    CALL32_LITERAL @callee4, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    $r0 = LDPC %const.34
+    $r0 = SUB32 killed $r1, killed $r0
+    BNEZ %bb.22, implicit $r0
+
+  bb.21:
+    successors: %bb.28, %bb.22
+    liveins: $r4, $r5, $r6
+
+    $r1 = LD32 $r7, 20
+    $r2 = LDI32 31
+    CALL32_LITERAL @callee4, csr_riscc_callpreserved, implicit-def dead $s7, implicit-def dead $r0, implicit killed $r1, implicit killed $r2, implicit-def $r7, implicit-def $r1
+    CMPI32 killed $r1, -1, implicit-def $r0
+    BEQZ %bb.28, implicit $r0
+
+  bb.22:
+    successors: %bb.24
+
+    $r3 = LDI32 2
+    JMP8 %bb.24
+
+  bb.23:
+    successors: %bb.24
+
+    $r3 = LDI32 12
+
+  bb.24:
+    liveins: $r3
+
+    $r0 = LDPC %const.15
+    $r1 = AND32 killed $r3, killed $r0
+    $r5 = LD32 $r7, 92
+    $r4 = LD32 $r7, 96
+    $r0 = frame-destroy LD32 $r7, 16
+    $r7 = frame-destroy ADDI32 $r7, 100
+    $s7 = frame-destroy MTS killed $r0
+    RETS implicit $s7
+
+  bb.25:
+    successors: %bb.24
+
+    JMP8 %bb.24
+
+  bb.26:
+    successors: %bb.24
+
+    $r3 = LDI32 15
+    JMP8 %bb.24
+
+  bb.27:
+    successors: %bb.24
+
+    $r3 = LDI32 16
+    JMP8 %bb.24
+
+  bb.28:
+    successors: %bb.24
+
+    JMP8 %bb.24
+...

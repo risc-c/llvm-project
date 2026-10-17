@@ -44,14 +44,10 @@ static bool delayAddsAcrossCalls(MachineFunction &MF) {
       Register Dst = Add->getOperand(0).getReg();
       Register Base = Add->getOperand(1).getReg();
       MachineInstr *FirstUse = nullptr;
-      bool Local = true;
-      for (MachineInstr &Use : MRI.use_nodbg_instructions(Dst)) {
-        if (Use.getParent() != &MBB || Use.isPHI()) {
-          Local = false;
-          break;
-        }
-      }
-      if (!Local)
+      if (llvm::any_of(MRI.use_nodbg_instructions(Dst),
+                       [&](const MachineInstr &Use) {
+                         return Use.getParent() != &MBB || Use.isPHI();
+                       }))
         continue;
       MachineInstr *LastCall = nullptr;
       for (auto I = std::next(Add->getIterator()); I != MBB.end(); ++I) {

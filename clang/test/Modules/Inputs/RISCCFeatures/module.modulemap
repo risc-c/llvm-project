@@ -7,4 +7,5 @@ module RISCCFeatures {
   module jal16 { requires jal16 }
   module mul { requires mul }
   module full { requires full }
+  module iflush { requires iflush }
 }

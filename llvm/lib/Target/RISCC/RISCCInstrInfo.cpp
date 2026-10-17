@@ -218,59 +218,51 @@ static bool foldByteExtensionBias(MachineInstr &Extend,
 }
 
 bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
-  if (MI.getOpcode() == RISCC::SEXT8_RC32 ||
-      MI.getOpcode() == RISCC::SEXT16_RC32) {
-    MachineBasicBlock &MBB = *MI.getParent();
-    Register Dst = MI.getOperand(0).getReg();
-    Register Src = MI.getOperand(1).getReg();
-    const DebugLoc &DL = MI.getDebugLoc();
-    if (MI.getOpcode() == RISCC::SEXT8_RC32) {
-      bool Biased = foldByteExtensionBias(MI, RI);
-      BuildMI(MBB, MI, DL, get(RISCC::ANDI32), Dst).addReg(Src).addImm(0xff);
-      if (!Biased)
-        BuildMI(MBB, MI, DL, get(RISCC::XORI32), Dst).addReg(Dst).addImm(0x80);
-      BuildMI(MBB, MI, DL, get(RISCC::ADDI32), Dst).addReg(Dst).addImm(-128);
-    } else {
-      materializeImmediate(MBB, MI, DL, RISCC::R0, 0xffff);
-      BuildMI(MBB, MI, DL, get(RISCC::AND32), Dst)
-          .addReg(Src)
-          .addReg(RISCC::R0);
-      materializeImmediate(MBB, MI, DL, RISCC::R0, 0x8000);
-      BuildMI(MBB, MI, DL, get(RISCC::XOR32), Dst)
-          .addReg(Dst)
-          .addReg(RISCC::R0);
-      BuildMI(MBB, MI, DL, get(RISCC::SUB32), Dst)
-          .addReg(Dst)
-          .addReg(RISCC::R0);
-    }
-    MI.eraseFromParent();
-    return true;
-  }
-  if (MI.getOpcode() != RISCC::SEXT8_RC16)
+  unsigned Opcode = MI.getOpcode();
+  if (Opcode != RISCC::SEXT8_RC16 && Opcode != RISCC::SEXT8_RC32 &&
+      Opcode != RISCC::SEXT16_RC32)
     return false;
 
   MachineBasicBlock &MBB = *MI.getParent();
   Register Dst = MI.getOperand(0).getReg();
   Register Src = MI.getOperand(1).getReg();
   const DebugLoc &DL = MI.getDebugLoc();
+  if (Opcode == RISCC::SEXT16_RC32) {
+    materializeImmediate(MBB, MI, DL, RISCC::R0, 0xffff);
+    BuildMI(MBB, MI, DL, get(RISCC::AND32), Dst).addReg(Src).addReg(RISCC::R0);
+    materializeImmediate(MBB, MI, DL, RISCC::R0, 0x8000);
+    BuildMI(MBB, MI, DL, get(RISCC::XOR32), Dst).addReg(Dst).addReg(RISCC::R0);
+    BuildMI(MBB, MI, DL, get(RISCC::SUB32), Dst).addReg(Dst).addReg(RISCC::R0);
+    MI.eraseFromParent();
+    return true;
+  }
+
+  bool IsRC32 = Opcode == RISCC::SEXT8_RC32;
   bool Biased = foldByteExtensionBias(MI, RI);
   bool SourceIsByteLoad = false;
-  for (auto I = MI.getIterator(); I != MBB.begin();) {
-    --I;
-    if (!I->modifiesRegister(Src, &RI))
-      continue;
-    SourceIsByteLoad =
-        I->getOpcode() == RISCC::LDB && I->getOperand(0).getReg() == Src;
-    break;
-  }
+  if (!IsRC32)
+    for (auto I = MI.getIterator(); I != MBB.begin();) {
+      --I;
+      if (!I->modifiesRegister(Src, &RI))
+        continue;
+      SourceIsByteLoad =
+          I->getOpcode() == RISCC::LDB && I->getOperand(0).getReg() == Src;
+      break;
+    }
   Register Extended = Src;
   if (!SourceIsByteLoad) {
-    BuildMI(MBB, MI, DL, get(RISCC::ANDI), Dst).addReg(Src).addImm(0xff);
+    BuildMI(MBB, MI, DL, get(IsRC32 ? RISCC::ANDI32 : RISCC::ANDI), Dst)
+        .addReg(Src)
+        .addImm(0xff);
     Extended = Dst;
   }
   if (!Biased)
-    BuildMI(MBB, MI, DL, get(RISCC::XORI), Dst).addReg(Extended).addImm(0x80);
-  BuildMI(MBB, MI, DL, get(RISCC::ADDI), Dst).addReg(Dst).addImm(-128);
+    BuildMI(MBB, MI, DL, get(IsRC32 ? RISCC::XORI32 : RISCC::XORI), Dst)
+        .addReg(Extended)
+        .addImm(0x80);
+  BuildMI(MBB, MI, DL, get(IsRC32 ? RISCC::ADDI32 : RISCC::ADDI), Dst)
+      .addReg(Dst)
+      .addImm(-128);
   MI.eraseFromParent();
   return true;
 }
@@ -281,22 +273,16 @@ void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  bool Kill, bool, bool) const {
   const TargetRegisterClass *GPR = STI.getGPRClass();
   const TargetRegisterClass *SReg = STI.getSRegClass();
-  if (GPR->contains(Dst, Src)) {
-    BuildMI(MBB, I, DL, get(STI.isRC32() ? RISCC::MOV32 : RISCC::MOV), Dst)
-        .addReg(Src, getKillRegState(Kill));
-    return;
-  }
-  if (GPR->contains(Dst) && SReg->contains(Src)) {
-    BuildMI(MBB, I, DL, get(RISCC::MFS), Dst)
-        .addReg(Src, getKillRegState(Kill));
-    return;
-  }
-  if (SReg->contains(Dst) && GPR->contains(Src)) {
-    BuildMI(MBB, I, DL, get(RISCC::MTS), Dst)
-        .addReg(Src, getKillRegState(Kill));
-    return;
-  }
-  llvm_unreachable("unsupported RISC-C physical-register copy");
+  unsigned Opcode;
+  if (GPR->contains(Dst, Src))
+    Opcode = STI.isRC32() ? RISCC::MOV32 : RISCC::MOV;
+  else if (GPR->contains(Dst) && SReg->contains(Src))
+    Opcode = RISCC::MFS;
+  else if (SReg->contains(Dst) && GPR->contains(Src))
+    Opcode = RISCC::MTS;
+  else
+    llvm_unreachable("unsupported RISC-C physical-register copy");
+  BuildMI(MBB, I, DL, get(Opcode), Dst).addReg(Src, getKillRegState(Kill));
 }
 
 std::optional<DestSourcePair>
@@ -323,18 +309,13 @@ void RISCCInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
   if (SReg) {
     BuildMI(MBB, I, DebugLoc(), get(RISCC::MFS), RISCC::R0)
         .addReg(Src, getKillRegState(Kill));
-    BuildMI(MBB, I, DebugLoc(), get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
-        .addReg(RISCC::R0)
-        .addFrameIndex(FI)
-        .addImm(0)
-        .addMemOperand(MMO)
-        .setMIFlag(Flags);
-    return;
+    Src = RISCC::R0;
+    Kill = false;
   }
-  BuildMI(MBB, I, DebugLoc(),
-          get(STI.isRC32()   ? RISCC::ST32
-              : STI.isNano() ? RISCC::ST_NANO
-                             : RISCC::ST))
+  unsigned Opcode = STI.isRC32()            ? RISCC::ST32
+                    : STI.isNano() && !SReg ? RISCC::ST_NANO
+                                            : RISCC::ST;
+  BuildMI(MBB, I, DebugLoc(), get(Opcode))
       .addReg(Src, getKillRegState(Kill))
       .addFrameIndex(FI)
       .addImm(0)
@@ -356,25 +337,16 @@ void RISCCInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOLoad,
       MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
-  if (SReg) {
-    BuildMI(MBB, I, DebugLoc(), get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
-            RISCC::R0)
-        .addFrameIndex(FI)
-        .addImm(0)
-        .addMemOperand(MMO)
-        .setMIFlag(Flags);
-    BuildMI(MBB, I, DebugLoc(), get(RISCC::MTS), Dst).addReg(RISCC::R0);
-    return;
-  }
-  BuildMI(MBB, I, DebugLoc(),
-          get(STI.isRC32()   ? RISCC::LD32
-              : STI.isNano() ? RISCC::LD_NANO
-                             : RISCC::LD),
-          Dst)
+  unsigned Opcode = STI.isRC32()            ? RISCC::LD32
+                    : STI.isNano() && !SReg ? RISCC::LD_NANO
+                                            : RISCC::LD;
+  BuildMI(MBB, I, DebugLoc(), get(Opcode), SReg ? Register(RISCC::R0) : Dst)
       .addFrameIndex(FI)
       .addImm(0)
       .addMemOperand(MMO)
       .setMIFlag(Flags);
+  if (SReg)
+    BuildMI(MBB, I, DebugLoc(), get(RISCC::MTS), Dst).addReg(RISCC::R0);
 }
 
 bool RISCCInstrInfo::isConditionalBranchOpcode(unsigned Opcode) {
@@ -465,23 +437,15 @@ unsigned RISCCInstrInfo::insertBranch(
     MachineBasicBlock &MBB, MachineBasicBlock *TBB, MachineBasicBlock *FBB,
     ArrayRef<MachineOperand> Cond, const DebugLoc &DL, int *BytesAdded) const {
   assert(TBB && Cond.size() <= 1);
-  unsigned Count = 0, Bytes = 0;
-  if (!Cond.empty()) {
-    BuildMI(&MBB, DL, get(Cond[0].getImm())).addMBB(TBB);
+  unsigned Opcode = Cond.empty() ? RISCC::JMP8 : Cond[0].getImm();
+  BuildMI(&MBB, DL, get(Opcode)).addMBB(TBB);
+  unsigned Count = 1;
+  if (!Cond.empty() && FBB) {
+    BuildMI(&MBB, DL, get(RISCC::JMP8)).addMBB(FBB);
     ++Count;
-    Bytes += 2;
-    if (FBB) {
-      BuildMI(&MBB, DL, get(RISCC::JMP8)).addMBB(FBB);
-      ++Count;
-      Bytes += 2;
-    }
-  } else {
-    BuildMI(&MBB, DL, get(RISCC::JMP8)).addMBB(TBB);
-    ++Count;
-    Bytes += 2;
   }
   if (BytesAdded)
-    *BytesAdded = Bytes;
+    *BytesAdded = 2 * Count;
   return Count;
 }
 

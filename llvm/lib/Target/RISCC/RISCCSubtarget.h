@@ -23,6 +23,7 @@ namespace llvm {
 class RISCCSubtarget final : public RISCCGenSubtargetInfo {
   bool HasEarlyBranches = false;
   bool HasSys = false;
+  bool HasIFLUSH = false;
   bool HasLongJall = false;
   bool HasWideShift = false;
   bool HasMul = false;
@@ -43,6 +44,7 @@ public:
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 
   bool hasSys() const { return HasSys; }
+  bool hasIFLUSH() const { return HasIFLUSH; }
   bool hasEarlyBranches() const { return HasEarlyBranches; }
   bool hasLongJall() const { return HasLongJall; }
   bool hasWideShift() const { return HasWideShift; }

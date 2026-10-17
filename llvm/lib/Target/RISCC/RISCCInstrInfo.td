@@ -24,6 +24,10 @@ def : MnemonicAlias<"jmp16", "jmpl">;
 
 def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
+def HasIFLUSHPred : Predicate<"Subtarget->hasSys() && Subtarget->hasIFLUSH() && "
+                             "!Subtarget->isNano()">,
+                  AssemblerPredicate<(all_of FeatureSys, FeatureIFLUSH,
+                                             (not FeatureNano))>;
 def HasLongJallPred : Predicate<"Subtarget->hasLongJall()">,
                       AssemblerPredicate<(all_of FeatureLongJall)>;
 def HasMulPred : Predicate<"Subtarget->hasMul()">,
@@ -520,6 +524,16 @@ def JAL16 : RISCCInst32<(outs SREG:$sd), (ins codeaddr:$target),
 let Predicates = [HasSysPred] in {
 def CLI : SYS<0, (outs), (ins), "cli"> { let sd = 2; let ra = 0; }
 def STI : SYS<0, (outs), (ins), "sti"> { let sd = 7; let ra = 0; }
+}
+// Optional frontend/cache flush; it has no architectural memory-ordering
+// semantics and does not terminate control flow.
+let Predicates = [HasIFLUSHPred] in
+def IFLUSH : SYS<0, (outs), (ins), "iflush"> {
+  let sd = 3;
+  let ra = 0;
+  let hasSideEffects = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
 }
 
 // ABI-bound call/return forms remain compiler pseudos only. Source assembly

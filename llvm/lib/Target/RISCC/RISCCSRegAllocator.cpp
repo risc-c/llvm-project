@@ -305,6 +305,13 @@ static bool allocateSRegisters(MachineFunction &MF,
     }
     if (C.Kind == CandidateKind::Spill) {
       auto It = llvm::find_if(Free, [&](MCRegister Reg) {
+        // First use of a callee-saved cache register adds MFS/ST at entry
+        // and LD/MTS at exit. Moving the spill itself saves no code bytes.
+        // Charge that setup once; disjoint spills can reuse a paid register.
+        if ((Reg == RISCC::S5 || Reg == RISCC::S6) && !UsedBySpill(Reg) &&
+            (MF.getFunction().hasOptSize() ||
+             C.Weight <= SaturatingMultiply(EntryFrequency, uint64_t(4))))
+          return false;
         return !Spills.Clobbers[C.FrameIndex].test(Reg) &&
                llvm::none_of(SpillAssignments, [&](const auto &A) {
                  return A.second == Reg &&

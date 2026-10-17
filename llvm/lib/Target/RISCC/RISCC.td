@@ -14,6 +14,8 @@ defm : RemapAllTargetPseudoPointerOperands<GPR>;
 
 def FeatureSys : SubtargetFeature<"sys", "HasSys", "true",
   "Enable interrupt and system instructions">;
+def FeatureIFLUSH : SubtargetFeature<"iflush", "HasIFLUSH", "true",
+  "Enable the optional instruction-cache flush instruction">;
 def FeatureLongJall : SubtargetFeature<"jall", "HasLongJall", "true",
   "Enable the two-word JALL/JMPL control transfers">;
 def FeatureWideShift : SubtargetFeature<"wide-shift", "HasWideShift", "true",

@@ -1,6 +1,6 @@
 # REQUIRES: riscc-registered-target
-# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -disassemble < %s 2>&1 | FileCheck %s --check-prefix=FULL
-# RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -disassemble < %s 2>&1 | FileCheck %s --check-prefix=SYS
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=full -mattr=+iflush -disassemble < %s 2>&1 | FileCheck %s --check-prefix=FULL
+# RUN: llvm-mc -triple=riscc-none-elf -mcpu=sys -mattr=+iflush -disassemble < %s 2>&1 | FileCheck %s --check-prefix=SYS
 
 # Sys and Full both consume the two-word JALL encoding.
 0x34 0x38 0x04 0x00
@@ -16,3 +16,8 @@
 0xf8 0xe8
 # FULL: reti s0
 # SYS: reti s0
+
+# IFLUSH is available with explicit +iflush on Sys and Full and has no operands.
+0xf8 0xd8
+# FULL: iflush
+# SYS: iflush

@@ -64,6 +64,7 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("min", CPU == "min")
       .Case("full", CPU == "full")
       .Cases({"mdu", "mulhu", "divu"}, HasMdu)
+      .Case("iflush", HasIFLUSH)
       .Cases({"sys", "system", "jal16"}, CPU == "sys" || CPU == "full")
       .Cases({"wide-shift", "wide-shifts"}, CPU == "full")
       .Case("mul", CPU == "full")
@@ -73,12 +74,22 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
 bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
                                            DiagnosticsEngine &Diags) {
   HasMdu = false;
+  HasIFLUSH = false;
+  bool HasSys = CPU == "sys" || CPU == "full";
   IsRC32 = false;
   for (StringRef Feature : Features) {
     if (Feature == "+mdu")
       HasMdu = true;
     else if (Feature == "-mdu")
       HasMdu = false;
+    else if (Feature == "+iflush")
+      HasIFLUSH = true;
+    else if (Feature == "-iflush")
+      HasIFLUSH = false;
+    else if (Feature == "+sys")
+      HasSys = true;
+    else if (Feature == "-sys")
+      HasSys = false;
     else if (Feature == "+rc32")
       IsRC32 = true;
     else if (Feature == "-rc32")
@@ -101,6 +112,7 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
         << "mdu requires -mcpu=full";
     return false;
   }
+  HasIFLUSH &= HasSys && CPU != "nano";
   setDataModel(IsRC32);
   return true;
 }

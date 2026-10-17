@@ -866,34 +866,20 @@ SDValue RISCCTargetLowering::lowerDivRem(SDValue Op, SelectionDAG &DAG) const {
 
   bool QuotientUnused = Op.getValue(0).use_empty();
   bool RemainderUnused = Op.getValue(1).use_empty();
-  if (QuotientUnused || RemainderUnused) {
-    const char *Name;
-    if (QuotientUnused)
-      Name = IsSigned ? "__modsi3" : "__umodsi3";
-    else
-      Name = IsSigned ? "__divsi3" : "__udivsi3";
-    SDValue Callee =
-        DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
-    SDLoc DL(Op);
-    CallLoweringInfo CLI(DAG);
-    CLI.setDebugLoc(DL)
-        .setChain(DAG.getEntryNode())
-        .setLibCallee(CallingConv::C, I32, Callee, std::move(Args))
-        .setSExtResult(IsSigned)
-        .setZExtResult(!IsSigned);
-    SDValue Result = LowerCallTo(CLI).first;
-    SDValue Unused = DAG.getPOISON(MVT::i32);
-    return QuotientUnused ? DAG.getMergeValues({Unused, Result}, DL)
-                          : DAG.getMergeValues({Result, Unused}, DL);
+  SDValue RemPtr;
+  const char *Name;
+  if (QuotientUnused)
+    Name = IsSigned ? "__modsi3" : "__umodsi3";
+  else if (RemainderUnused)
+    Name = IsSigned ? "__divsi3" : "__udivsi3";
+  else {
+    Name = IsSigned ? "__divmodsi4" : "__udivmodsi4";
+    RemPtr = DAG.CreateStackTemporary(MVT::i32);
+    Args.emplace_back(RemPtr, PointerType::getUnqual(*DAG.getContext()));
   }
 
-  SDValue RemPtr = DAG.CreateStackTemporary(MVT::i32);
-  ArgListEntry RemArg(RemPtr, PointerType::getUnqual(*DAG.getContext()));
-  Args.push_back(RemArg);
-
   SDValue Callee =
-      DAG.getExternalSymbol(IsSigned ? "__divmodsi4" : "__udivmodsi4",
-                            getPointerTy(DAG.getDataLayout()));
+      DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
   SDLoc DL(Op);
   CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(DL)
@@ -902,6 +888,12 @@ SDValue RISCCTargetLowering::lowerDivRem(SDValue Op, SelectionDAG &DAG) const {
       .setSExtResult(IsSigned)
       .setZExtResult(!IsSigned);
   std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
+
+  if (!RemPtr) {
+    SDValue Unused = DAG.getPOISON(MVT::i32);
+    return QuotientUnused ? DAG.getMergeValues({Unused, CallInfo.first}, DL)
+                          : DAG.getMergeValues({CallInfo.first, Unused}, DL);
+  }
 
   int FI = cast<FrameIndexSDNode>(RemPtr)->getIndex();
   MachinePointerInfo PtrInfo =
@@ -1649,24 +1641,6 @@ emitImmediateComparisonBranch(MachineInstr &MI, MachineBasicBlock &MBB,
   if (IsSignTest) {
     BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), RISCC::R0)
         .addReg(LHS);
-    switch (CC) {
-    case ISD::SETEQ:
-      Branch = RISCC::BEQZ;
-      break;
-    case ISD::SETNE:
-      Branch = RISCC::BNEZ;
-      break;
-    case ISD::SETLT:
-    case ISD::SETLE:
-      Branch = RISCC::BLTZ;
-      break;
-    case ISD::SETGE:
-    case ISD::SETGT:
-      Branch = RISCC::BGEZ;
-      break;
-    default:
-      llvm_unreachable("unsupported sign comparison");
-    }
   } else {
     assert((CC == ISD::SETEQ || CC == ISD::SETNE || CC == ISD::SETLT ||
             CC == ISD::SETGE) && "unsupported immediate comparison");
@@ -1674,22 +1648,24 @@ emitImmediateComparisonBranch(MachineInstr &MI, MachineBasicBlock &MBB,
             TII.get(IsRC32 ? RISCC::CMPI32 : RISCC::CMPI))
         .addReg(LHS)
         .addImm(RHS);
-    switch (CC) {
-    case ISD::SETEQ:
-      Branch = RISCC::BEQZ;
-      break;
-    case ISD::SETNE:
-      Branch = RISCC::BNEZ;
-      break;
-    case ISD::SETLT:
-      Branch = RISCC::BLTZ;
-      break;
-    case ISD::SETGE:
-      Branch = RISCC::BGEZ;
-      break;
-    default:
-      llvm_unreachable("unsupported immediate comparison");
-    }
+  }
+  switch (CC) {
+  case ISD::SETEQ:
+    Branch = RISCC::BEQZ;
+    break;
+  case ISD::SETNE:
+    Branch = RISCC::BNEZ;
+    break;
+  case ISD::SETLT:
+  case ISD::SETLE:
+    Branch = RISCC::BLTZ;
+    break;
+  case ISD::SETGE:
+  case ISD::SETGT:
+    Branch = RISCC::BGEZ;
+    break;
+  default:
+    llvm_unreachable("unsupported immediate comparison");
   }
   BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Branch)).addMBB(Target);
 }

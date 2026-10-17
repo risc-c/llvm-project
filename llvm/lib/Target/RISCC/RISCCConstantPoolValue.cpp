@@ -46,25 +46,23 @@ RISCCConstantPoolSymbol::CreateCallTarget(LLVMContext &Context,
 
 int RISCCConstantPoolSymbol::getExistingMachineCPValue(
     MachineConstantPool *Pool, Align Alignment) {
-  // A relaxable call owns its pool word so the linker can delete that exact
-  // word when it rewrites the call to JALL/JMPL.
-  if (IsCallTarget) {
-    for (unsigned I = 0; I != Pool->getConstants().size(); ++I) {
-      const MachineConstantPoolEntry &Entry = Pool->getConstants()[I];
-      if (Entry.isMachineConstantPoolEntry() && Entry.Val.MachineCPVal == this)
-        return I;
-    }
-    return -1;
-  }
   const auto &Constants = Pool->getConstants();
   for (unsigned I = 0; I != Constants.size(); ++I) {
     const MachineConstantPoolEntry &Entry = Constants[I];
-    if (!Entry.isMachineConstantPoolEntry() || Entry.getAlign() < Alignment)
+    if (!Entry.isMachineConstantPoolEntry())
       continue;
     auto *Other =
         static_cast<RISCCConstantPoolSymbol *>(Entry.Val.MachineCPVal);
-    if (!Other->IsCallTarget && Other->Global == Global &&
-        Other->Symbol == Symbol && Other->IsTPOFF == IsTPOFF)
+    // A relaxable call owns its pool word so the linker can delete that exact
+    // word when it rewrites the call to JALL/JMPL. Only reuse the same object.
+    if (IsCallTarget) {
+      if (Other == this)
+        return I;
+      continue;
+    }
+    if (Entry.getAlign() >= Alignment && !Other->IsCallTarget &&
+        Other->Global == Global && Other->Symbol == Symbol &&
+        Other->IsTPOFF == IsTPOFF)
       return I;
   }
   return -1;

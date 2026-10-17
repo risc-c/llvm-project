@@ -122,16 +122,12 @@ DecodeStatus RISCCDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
   uint16_t Instruction = support::endian::read16le(Bytes.data());
   Size = 2;
   bool IsJALL = (Instruction & 0xc03f) == 0x0034;
-  DecodeStatus Result = Fail;
-  if (STI.hasFeature(RISCC::FeatureNano))
-    Result = decodeInstruction(DecoderTableNano16, MI, Instruction, Address,
-                               this, STI);
-  else if (STI.hasFeature(RISCC::FeatureRC32))
-    Result = decodeInstruction(DecoderTableRC3216, MI, Instruction, Address,
-                               this, STI);
-  else
-    Result = decodeInstruction(DecoderTableRC1616, MI, Instruction, Address,
-                               this, STI);
+  const uint8_t *Table = STI.hasFeature(RISCC::FeatureNano) ? DecoderTableNano16
+                         : STI.hasFeature(RISCC::FeatureRC32)
+                             ? DecoderTableRC3216
+                             : DecoderTableRC1616;
+  DecodeStatus Result =
+      decodeInstruction(Table, MI, Instruction, Address, this, STI);
   if (Result == Fail) {
     MI.clear();
     Result =
@@ -147,9 +143,8 @@ DecodeStatus RISCCDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
   MI.clear();
   uint32_t LongInstruction = support::endian::read32le(Bytes.data());
   Size = 4;
-  Result = decodeInstruction(DecoderTable32, MI, LongInstruction, Address, this,
-                             STI);
-  return Result;
+  return decodeInstruction(DecoderTable32, MI, LongInstruction, Address, this,
+                           STI);
 }
 
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void

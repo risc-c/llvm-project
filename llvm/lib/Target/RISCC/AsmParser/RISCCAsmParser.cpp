@@ -188,8 +188,7 @@ ParseStatus RISCCAsmParser::tryParseRegister(MCRegister &Reg, SMLoc &S,
 }
 
 bool RISCCAsmParser::parseRegister(MCRegister &Reg, SMLoc &S, SMLoc &E) {
-  ParseStatus Status = tryParseRegister(Reg, S, E);
-  if (Status.isSuccess())
+  if (tryParseRegister(Reg, S, E).isSuccess())
     return false;
   return Error(Parser.getTok().getLoc(), "expected RISC-C register");
 }
@@ -255,16 +254,14 @@ bool RISCCAsmParser::parseOperand(OperandVector &Operands) {
   if (Parser.getTok().is(AsmToken::LBrac))
     return parseMemory(Operands);
 
-  if (Parser.getTok().is(AsmToken::Identifier)) {
-    MCRegister R;
-    SMLoc S, E;
-    if (tryParseRegister(R, S, E).isSuccess()) {
-      Operands.push_back(RISCCOperand::reg(R, S, E));
-      return false;
-    }
+  MCRegister R;
+  SMLoc S, E;
+  if (tryParseRegister(R, S, E).isSuccess()) {
+    Operands.push_back(RISCCOperand::reg(R, S, E));
+    return false;
   }
 
-  SMLoc S = Parser.getTok().getLoc();
+  S = Parser.getTok().getLoc();
   const MCExpr *Expr;
   if (Parser.parseExpression(Expr))
     return Error(S, "expected register, immediate, or expression");
@@ -274,9 +271,8 @@ bool RISCCAsmParser::parseOperand(OperandVector &Operands) {
 
 bool RISCCAsmParser::parseInstruction(ParseInstructionInfo &, StringRef Name,
                                       SMLoc NameLoc, OperandVector &Operands) {
-  std::string Lower = Name.lower();
-  CurrentMnemonic = Lower;
-  Operands.push_back(RISCCOperand::token(Lower, NameLoc));
+  CurrentMnemonic = Name.lower();
+  Operands.push_back(RISCCOperand::token(CurrentMnemonic, NameLoc));
 
   if (Parser.getTok().is(AsmToken::EndOfStatement))
     return false;

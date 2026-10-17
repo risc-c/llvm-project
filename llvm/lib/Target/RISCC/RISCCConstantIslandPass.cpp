@@ -1,5 +1,4 @@
-//===-- RISCCConstantIslandPass.cpp - Place literal pools
-//------------------===//
+//===-- RISCCConstantIslandPass.cpp - Place literal pools ----------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -176,12 +175,12 @@ class RISCCConstantIslands {
 
   MachineBasicBlock &insertIsland(MachineFunction::iterator Where) {
     auto *Island = MF->CreateMachineBasicBlock();
-    if (Where != MF->begin())
-      Island->setSectionID(std::prev(Where)->getSectionID());
     Island->setAlignment(Align(4));
     if (Where != MF->begin()) {
-      Island->setIsEndSection(std::prev(Where)->isEndSection());
-      std::prev(Where)->setIsEndSection(false);
+      MachineBasicBlock &Prev = *std::prev(Where);
+      Island->setSectionID(Prev.getSectionID());
+      Island->setIsEndSection(Prev.isEndSection());
+      Prev.setIsEndSection(false);
     }
     MF->insert(Where, Island);
     return *Island;
@@ -205,7 +204,9 @@ class RISCCConstantIslands {
   MachineBasicBlock &islandBefore(MachineBasicBlock &Next) {
     assert(&Next != &MF->front() && "island before function entry");
     MachineBasicBlock &Prev = *Next.getPrevNode();
-    if (!isIsland(Prev) && Prev.canFallThrough())
+    // An explicit branch to Next already skips the island. Only an
+    // implicit fallthrough needs a new jump; canFallThrough includes both.
+    if (!isIsland(Prev) && Prev.getLogicalFallThrough())
       BuildMI(Prev, Prev.end(), DebugLoc(), TII.get(RISCC::JMP8)).addMBB(&Next);
     return insertIsland(Next.getIterator());
   }
@@ -332,7 +333,6 @@ class RISCCConstantIslands {
     SmallVector<LiteralUse, 8> Uses;
     SmallVector<PoolSite, 32> Sites;
     unsigned Offset = 0;
-    const auto &TII = *MF->getSubtarget().getInstrInfo();
 
     // Plan each region between natural gaps, inserting pools only where
     // neither end is reachable.
@@ -561,7 +561,7 @@ class RISCCConstantIslands {
           isIsland(*Next.getPrevNode()))
         continue;
       MachineBasicBlock &Prev = *Next.getPrevNode();
-      bool NeedsJump = Prev.canFallThrough();
+      bool NeedsJump = Prev.getLogicalFallThrough() != nullptr;
       unsigned Depth = Loops.getLoopDepth(&Prev);
       if ((!Best || NeedsJump < BestJump ||
            (NeedsJump == BestJump && Depth < BestDepth)) &&

@@ -22,6 +22,7 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
   static const TargetInfo::GCCRegAlias GCCRegAliases[];
   std::string CPU = "full";
   bool HasMdu = false;
+  bool HasIFLUSH = false;
   bool IsRC32 = false;
 
   void setDataModel(bool RC32) {

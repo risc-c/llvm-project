@@ -134,9 +134,6 @@ public:
       : TargetPassConfig(TM, PM) {
     substitutePass(&PostRASchedulerID, &PostMachineSchedulerID);
   }
-  RISCCTargetMachine &getRISCCTargetMachine() const {
-    return getTM<RISCCTargetMachine>();
-  }
   void addIRPasses() override {
     addPass(createAtomicExpandLegacyPass());
     TargetPassConfig::addIRPasses();
@@ -151,7 +148,7 @@ public:
     return false;
   }
   bool addInstSelector() override {
-    addPass(createRISCCISelDag(getRISCCTargetMachine(), getOptLevel()));
+    addPass(createRISCCISelDag(getTM<RISCCTargetMachine>(), getOptLevel()));
     return false;
   }
   void addPreRegAlloc() override {

@@ -26,13 +26,15 @@
 # CHECK-NOT:   ST $r1
 # CHECK:       RET $s2
 
-# An ordinary call preserves S5/S6, so the allocator can keep this spill in
-# S5 across the call and prologue/epilogue saves the cache register.
+# A one-shot spill across an ordinary call does not repay the four extra
+# save/restore instructions required by first use of S5/S6.
 # CHECK-LABEL: name: spill_across_ordinary_call
-# CHECK:       $s5 = MTS killed $r1
+# CHECK-NOT:   $s5
+# CHECK:       ST killed $r1,
 # CHECK:       CALL $r2, csr_riscc
-# CHECK:       $r1 = MFS $s5
-# CHECK:       RETS implicit $s7, implicit $r1, implicit $s5
+# CHECK:       $r1 = LD
+# CHECK-NOT:   $s5
+# CHECK:       RETS implicit $s7, implicit $r1
 
 --- |
   target triple = "riscc-none-elf"

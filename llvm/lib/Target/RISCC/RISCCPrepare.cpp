@@ -108,6 +108,7 @@ static bool sinkPartiallyDeadStores(Function &F) {
     // duplication even in speed builds.
     if (Slice.size() < 3 || Slice.size() > 8)
       continue;
+    Slice.push_back(Store);
     for (BasicBlock *Succ : Live) {
       BasicBlock *Edge =
           SplitEdge(BB, Succ, nullptr, nullptr, nullptr, "store.needed");
@@ -118,9 +119,6 @@ static bool sinkPartiallyDeadStores(Function &F) {
         Clone->insertBefore(Edge->getTerminator()->getIterator());
         Map[I] = Clone;
       }
-      Instruction *Clone = Store->clone();
-      RemapInstruction(Clone, Map, RF_IgnoreMissingLocals);
-      Clone->insertBefore(Edge->getTerminator()->getIterator());
     }
     Value *StoredValue = Store->getValueOperand();
     Store->eraseFromParent();
@@ -133,9 +131,8 @@ static bool sinkPartiallyDeadStores(Function &F) {
 // A loop may need p + C while an exit needs p. Keep only the adjusted pointer
 // across calls in the loop, then recover p with one ADDI at the exit. This
 // avoids preserving two registers for two forms of the same address.
-static bool shortenLoopPointerLifetimes(Function &F) {
-  DominatorTree DT(F);
-  LoopInfo LI(DT);
+static bool shortenLoopPointerLifetimes(Function &F, const DominatorTree &DT,
+                                        const LoopInfo &LI) {
   const DataLayout &DL = F.getDataLayout();
   bool Changed = false;
   for (Loop *L : LI.getLoopsInPreorder()) {
@@ -207,9 +204,7 @@ static bool shortenLoopPointerLifetimes(Function &F) {
 // Carry an address which the previous iteration already calculated. Generic
 // GVN deliberately avoids PRE of GEPs and loop backedges; on RISC-C, repeating
 // the scale and add is expensive because indexed addressing has no scale.
-static bool reuseLoopAddresses(Function &F) {
-  DominatorTree DT(F);
-  LoopInfo LI(DT);
+static bool reuseLoopAddresses(const DominatorTree &DT, const LoopInfo &LI) {
   bool Changed = false;
   for (Loop *L : LI.getLoopsInPreorder()) {
     BasicBlock *Header = L->getHeader();
@@ -326,9 +321,13 @@ static bool splitConstantReturns(Function &F) {
 namespace {
 static bool prepare(Function &F) {
   bool Changed = sinkPartiallyDeadStores(F);
-  Changed |= shortenLoopPointerLifetimes(F);
-  Changed |= reuseLoopAddresses(F);
-  return splitConstantReturns(F) || Changed;
+  // Store sinking changes the CFG; the two loop transforms only change values.
+  DominatorTree DT(F);
+  LoopInfo LI(DT);
+  Changed |= shortenLoopPointerLifetimes(F, DT, LI);
+  Changed |= reuseLoopAddresses(DT, LI);
+  Changed |= splitConstantReturns(F);
+  return Changed;
 }
 
 class RISCCPrepareLegacy : public FunctionPass {
