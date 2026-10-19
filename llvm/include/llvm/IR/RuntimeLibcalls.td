@@ -3071,6 +3071,19 @@ def PPCSystemLibrary
            AvailableIf<__stack_chk_guard, isNotOSAIXAndNotOSOpenBSD>)>;
 
 //===----------------------------------------------------------------------===//
+// RISC-C Runtime Libcalls
+//===----------------------------------------------------------------------===//
+
+// RC16 and RC32 use the standard compiler-rt/libgcc names, including the
+// combined i32 divide/remainder helpers selected by their shared lowering.
+// Register them here so LTO extracts bitcode implementations before codegen
+// introduces calls that are not present in the input IR.
+def isRISCC : RuntimeLibcallPredicate<"TT.getArch() == Triple::riscc">;
+def RISCCSystemLibrary
+    : SystemRuntimeLibrary<isRISCC,
+      (add DefaultRuntimeLibcallImpls, __divmodsi4, __udivmodsi4)>;
+
+//===----------------------------------------------------------------------===//
 // RISCV Runtime Libcalls
 //===----------------------------------------------------------------------===//
 

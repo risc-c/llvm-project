@@ -1,0 +1,328 @@
+# REQUIRES: riscc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/basic.s -o %t/basic.o
+# RUN: ld.lld --threads=1 --gc-sections --emit-relocs -e first -u second -Ttext=0 %t/basic.o -o %t/basic
+# RUN: llvm-readobj --symbols --relocations %t/basic | FileCheck %s --check-prefix=BASIC --implicit-check-not=unused
+# RUN: llvm-nm -S %t/basic | FileCheck %s --check-prefix=SIZES
+# RUN: llvm-objdump -d %t/basic | FileCheck %s --check-prefix=LOADS
+# RUN: ld.lld --threads=1 --gc-sections --no-relax -e first -u second -Ttext=0 %t/basic.o -o %t/no-relax
+# RUN: llvm-nm -S %t/no-relax | FileCheck %s --check-prefix=NO-RELAX
+# RUN: ld.lld -r %t/basic.o -o %t/partial.o
+# RUN: llvm-nm -S %t/partial.o | FileCheck %s --check-prefix=NO-RELAX
+# RUN: ld.lld --threads=1 --gc-sections -e first -u second -T %t/commands.lds %t/basic.o -o %t/commands
+# RUN: llvm-nm -S %t/commands | FileCheck %s --check-prefix=LOCAL
+# RUN: ld.lld --threads=1 --gc-sections -e first -u second -T %t/gap.lds %t/basic.o -o %t/gap
+# RUN: llvm-nm -S %t/gap | FileCheck %s --check-prefix=LOCAL
+# RUN: ld.lld --threads=1 --gc-sections -e first -u second -T %t/outputs.lds %t/basic.o -o %t/outputs
+# RUN: llvm-nm -S %t/outputs | FileCheck %s --check-prefix=LOCAL
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/range.s -o %t/range.o
+# RUN: ld.lld --threads=1 --emit-relocs -e early -Ttext=0 %t/range.o -o %t/range
+# RUN: llvm-nm -S %t/range | FileCheck %s --check-prefix=RANGE
+# RUN: llvm-objdump -d --start-address=0xfe --stop-address=0x102 %t/range | FileCheck %s --check-prefix=BACKWARD
+# RUN: llvm-mc -triple=riscc -mcpu=full -mattr=+rc32 -filetype=obj %t/relocated.s -o %t/relocated.o
+# RUN: ld.lld --threads=1 --emit-relocs -e pointers_a -Ttext=0 %t/relocated.o -o %t/relocated
+# RUN: llvm-nm -S %t/relocated | FileCheck %s --check-prefix=RELOCATED
+# RUN: llvm-readobj --relocations %t/relocated | FileCheck %s --check-prefix=VALUES
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/alignment.s -o %t/alignment.o
+# RUN: ld.lld --threads=1 -e aligned_a -Ttext=0 %t/alignment.o -o %t/alignment
+# RUN: llvm-nm -S %t/alignment | FileCheck %s --check-prefix=ALIGNMENT
+# RUN: llvm-mc -triple=riscc -mcpu=full -mattr=+rc32 -filetype=obj %t/calls.s -o %t/calls.o
+# RUN: ld.lld --threads=1 -e early -Ttext=0 --defsym=callee=0x1800 %t/calls.o -o %t/calls
+# RUN: llvm-nm -S %t/calls | FileCheck %s --check-prefix=CALLS
+# RUN: llvm-objdump -d --start-address=0 --stop-address=4 %t/calls | FileCheck %s --check-prefix=LIMIT
+# RUN: ld.lld --threads=1 -e early -Ttext=0 --defsym=callee=0x200000 %t/calls.o -o %t/far
+# RUN: llvm-nm -S %t/far | FileCheck %s --check-prefix=FAR
+# RUN: ld.lld --threads=1 -e early -T %t/undo.lds %t/calls.o -o %t/undo
+# RUN: llvm-nm -S %t/undo | FileCheck %s --check-prefix=FAR
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/anchors.s -o %t/anchors.o
+# RUN: ld.lld --threads=1 -e anchored -Ttext=0 %t/anchors.o -o %t/anchors
+# RUN: llvm-nm -S %t/anchors | FileCheck %s --check-prefix=ANCHORS
+# RUN: llvm-objdump -d --start-address=0 --stop-address=6 %t/anchors | FileCheck %s --check-prefix=ANCHOR-LOAD
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/extra.s -o %t/extra.o
+# RUN: ld.lld --threads=1 --gc-sections --emit-relocs -e first -u extra_entry -Ttext=0 %t/basic.o %t/extra.o \
+# RUN:   -o %t/objects
+# RUN: llvm-nm -S %t/objects | FileCheck %s --check-prefix=OBJECTS
+
+# First merge two local copies, then redirect all of their loads/aliases to
+# second's word. A third, unreachable function remains garbage-collected.
+# BASIC:      0x0 R_RISCC_PCREL8_WORD .Lc 0x0
+# BASIC:      0x2 R_RISCC_PCREL8_WORD .Lc 0x0
+# BASIC:      Name: .La
+# BASIC-NEXT: Value: 0x10
+# BASIC:      Name: .Lb
+# BASIC-NEXT: Value: 0x10
+# BASIC:      Name: .Lc
+# BASIC-NEXT: Value: 0x10
+# SIZES:      00000000 0000000a T first
+# SIZES:      0000000c 00000008 T second
+# LOADS:      0: {{.*}} ldpc r1, .+16
+# LOADS:      2: {{.*}} ldpc r2, .+14
+# LOADS:      4: {{.*}} beqz .+4
+# LOADS:      c: {{.*}} ldpc r3, .+4
+# NO-RELAX:   00000000 00000012 T first
+# LOCAL:      0000000e T first
+
+# The later slot is out of reach of early's load, but late's load can reach
+# early's word. A still more distant duplicate must remain separate.
+# RANGE-DAG:  00000000 00000008 T early
+# RANGE-DAG:  00000008 00000100 T late
+# RANGE-DAG:  00000108 00000208 T distant
+# BACKWARD:   fe: {{.*}} ldpc r2, .-250
+
+# Merge equal pointers and TLS offsets, not different symbol/addend pairs.
+# A two-byte-aligned, unmarked intervening section does not block sharing.
+# RELOCATED-DAG: 00000008 T pointers_a
+# RELOCATED-DAG: 00000014 T pointers_b
+# RELOCATED-DAG: 00000004 T tls_a
+# RELOCATED-DAG: 00000008 T tls_b
+# VALUES-COUNT-3: R_RISCC_ABS32
+# VALUES-NOT: R_RISCC_ABS32
+# VALUES-COUNT-1: R_RISCC_TPOFF32
+# VALUES-NOT: R_RISCC_TPOFF32
+
+# A section aligned more strictly than a word breaks the sharing region.
+# ALIGNMENT-DAG: 00000008 T aligned_a
+# ALIGNMENT-DAG: 00000008 T aligned_b
+
+# Removing a call-target word in an intervening section makes the shared
+# slot reachable at the positive LDPC limit. If a script undoes that call
+# relaxation, the duplicate must also be restored on the next pass.
+# CALLS-DAG: 00000000 00000004 T early
+# CALLS-DAG: 00000004 000000f8 T middle
+# CALLS-DAG: 000000fc 00000008 T late
+# LIMIT:     0: {{.*}} ldpc r1, .+256
+# FAR-DAG:   00000000 00000008 T early
+# FAR-DAG:   00000008 000000fc T middle
+# FAR-DAG:   00000104 00000008 T late
+
+# A literal label used as the base of another word's marker is not private:
+# moving it to a different section would change that marker's meaning.
+# ANCHORS-DAG: 00000008 00000000 t .Lanchor
+# ANCHORS-DAG: 00000000 00000010 T anchored
+# ANCHOR-LOAD: 0: {{.*}} ldpc r1, .+8
+# ANCHOR-LOAD: 2: {{.*}} ldpc r2, .+10
+# OBJECTS-DAG: 00000000 0000000a T first
+# OBJECTS-DAG: 0000000c 00000008 T extra_entry
+
+#--- basic.s
+.section .text.first,"ax",@progbits
+.p2align 2
+.globl first
+.type first,@function
+first:
+  ldpc r1, .La
+  ldpc r2, .Lb
+  beqz .Ldone
+  ret s7
+.La:
+  .long 0x12345678
+.Lb:
+  .long 0x12345678
+.Ldone:
+  ret s7
+.size first, .-first
+.reloc .La, R_RISCC_RELAX_LITERAL, .La
+.reloc .Lb, R_RISCC_RELAX_LITERAL, .Lb
+.section .text.second,"ax",@progbits
+.p2align 2
+.globl second
+.type second,@function
+second:
+  ldpc r3, .Lc
+  ret s7
+.Lc:
+  .long 0x12345678
+.size second, .-second
+.reloc .Lc, R_RISCC_RELAX_LITERAL, .Lc
+.section .text.unused,"ax",@progbits
+.p2align 2
+.globl unused
+unused:
+  ldpc r4, .Lunused
+  ret s7
+.Lunused:
+  .long 0x12345678
+.reloc .Lunused, R_RISCC_RELAX_LITERAL, .Lunused
+
+#--- commands.lds
+SECTIONS { .text 0 : { *(.text.first) *(.text.second) } }
+#--- gap.lds
+SECTIONS { .text 0 : { *(.text.first) . = ALIGN(512); *(.text.second) } }
+#--- outputs.lds
+SECTIONS { .first 0 : { *(.text.first) } .second : { *(.text.second) } }
+
+#--- range.s
+.section .text.early,"ax",@progbits
+.p2align 2
+.globl early
+.type early,@function
+early:
+  ldpc r1, .Learly
+  ret s7
+.Learly:
+  .long 0x12345678
+.size early, .-early
+.reloc .Learly, R_RISCC_RELAX_LITERAL, .Learly
+.section .text.late,"ax",@progbits
+.p2align 2
+.globl late
+.type late,@function
+late:
+  .space 246
+  ldpc r2, .Llate
+  ret s7
+  .space 6
+.Llate:
+  .long 0x12345678
+.size late, .-late
+.reloc .Llate, R_RISCC_RELAX_LITERAL, .Llate
+.section .text.distant,"ax",@progbits
+.p2align 2
+.globl distant
+.type distant,@function
+distant:
+  .space 512
+  ldpc r3, .Ldistant
+  ret s7
+.Ldistant:
+  .long 0x12345678
+.size distant, .-distant
+.reloc .Ldistant, R_RISCC_RELAX_LITERAL, .Ldistant
+
+#--- relocated.s
+.macro pointer name, first, second, third
+.section .text.\name,"ax",@progbits
+.p2align 2
+.globl \name
+.type \name,@function
+\name:
+  ldpc r1, .L\name\()0
+  ldpc r2, .L\name\()1
+  ldpc r3, .L\name\()2
+  ret s7
+.L\name\()0: .long \first
+.L\name\()1: .long \second
+.L\name\()2: .long \third
+.size \name, .-\name
+.reloc .L\name\()0, R_RISCC_RELAX_LITERAL, .L\name\()0
+.reloc .L\name\()1, R_RISCC_RELAX_LITERAL, .L\name\()1
+.reloc .L\name\()2, R_RISCC_RELAX_LITERAL, .L\name\()2
+.endm
+pointer pointers_a, payload, payload+4, other
+.section .text.between,"ax",@progbits
+.p2align 1
+  ret s7
+pointer pointers_b, payload, payload+4, other
+.macro tls name
+.section .text.\name,"ax",@progbits
+.p2align 2
+.globl \name
+.type \name,@function
+\name:
+  ldpc r1, .L\name
+  ret s7
+.L\name: .long tpoff(tls_data)
+.size \name, .-\name
+.reloc .L\name, R_RISCC_RELAX_LITERAL, .L\name
+.endm
+tls tls_a
+tls tls_b
+.data
+payload: .long 1, 2
+other: .long 3
+.section .tdata,"awT",@progbits
+.type tls_data,@tls_object
+tls_data: .long 4
+
+#--- alignment.s
+.macro aligned name
+.section .text.\name,"ax",@progbits
+.p2align 2
+.globl \name
+.type \name,@function
+\name:
+  ldpc r1, .L\name
+  ret s7
+.L\name: .long 0x12345678
+.size \name, .-\name
+.reloc .L\name, R_RISCC_RELAX_LITERAL, .L\name
+.endm
+aligned aligned_a
+.section .text.barrier,"ax",@progbits
+.p2align 3
+  ret s7
+aligned aligned_b
+
+#--- calls.s
+.section .text.early,"ax",@progbits
+.p2align 2
+.globl early
+.type early,@function
+early:
+  ldpc r1, .Learly
+  ret s7
+.Learly: .long 0x12345678
+.size early, .-early
+.reloc .Learly, R_RISCC_RELAX_LITERAL, .Learly
+.section .text.middle,"ax",@progbits
+.p2align 2
+.globl middle
+.type middle,@function
+middle:
+.Lcall:
+  ldpc r0, .Lcallee
+  jalr s7, r0
+  ret s7
+  .p2align 2
+.Lcallee: .long call_target(callee)
+  .space 240
+.size middle, .-middle
+.reloc .Lcall, R_RISCC_RELAX_CALL, .Lcallee
+.section .text.late,"ax",@progbits
+.p2align 2
+.globl late
+.type late,@function
+late:
+  ldpc r2, .Llate
+  ret s7
+.Llate: .long 0x12345678
+.size late, .-late
+.reloc .Llate, R_RISCC_RELAX_LITERAL, .Llate
+
+#--- undo.lds
+SECTIONS { .text 0 : { *(.text*) } }
+callee = SIZEOF(.text) <= 264 ? 0x200000 : 0x1800;
+
+#--- anchors.s
+.section .text.anchored,"ax",@progbits
+.p2align 2
+.globl anchored
+.type anchored,@function
+anchored:
+  ldpc r1, .Lanchor
+  ldpc r2, .Lderived
+  ret s7
+  .p2align 2
+.Lanchor: .long 0x12345678
+.Lderived: .long 0x87654321
+.size anchored, .-anchored
+.reloc .Lanchor, R_RISCC_RELAX_LITERAL, .Lanchor
+.reloc .Lderived, R_RISCC_RELAX_LITERAL, .Lanchor+4
+.section .text.copy,"ax",@progbits
+.p2align 2
+  ldpc r3, .Lcopy
+  ret s7
+.Lcopy: .long 0x12345678
+.reloc .Lcopy, R_RISCC_RELAX_LITERAL, .Lcopy
+
+#--- extra.s
+.section .text.extra,"ax",@progbits
+.p2align 2
+.globl extra_entry
+.type extra_entry,@function
+extra_entry:
+  ldpc r3, .Lextra
+  ret s7
+.Lextra: .long 0x12345678
+.size extra_entry, .-extra_entry
+.reloc .Lextra, R_RISCC_RELAX_LITERAL, .Lextra

@@ -1,15 +1,23 @@
 # REQUIRES: riscc-registered-target
 # RUN: split-file %s %t
 # RUN: %python %t/generate.py > %t/input.mir
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir -o - | FileCheck %s
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir -o - | FileCheck %s
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %t/input.mir -o %t/min.o
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %t/input.mir -o %t/full.o
-# RUN: llvm-objdump -d --mattr=+rc32 %t/min.o | FileCheck %s --check-prefix=OBJ
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/alignment.mir -o - | FileCheck %s --check-prefix=ALIGN
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj %t/alignment.mir -o %t/alignment.o
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=block-placement -align-all-blocks=9 -max-bytes-for-alignment=2 -verify-machineinstrs %t/alignment.mir -o - | FileCheck %s --check-prefix=PAD
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=block-placement -align-all-blocks=9 -max-bytes-for-alignment=2 -verify-machineinstrs -filetype=obj %t/alignment.mir -o %t/max-padding.o
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir \
+# RUN:   -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir \
+# RUN:   -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/min.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/full.o
+# RUN: llvm-objdump -dr --mattr=+rc32 %t/min.o | FileCheck %s --check-prefix=OBJ
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs \
+# RUN:   %t/alignment.mir -o - | FileCheck %s --check-prefix=ALIGN
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/alignment.mir -o %t/alignment.o
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=block-placement -align-all-blocks=9 \
+# RUN:   -max-bytes-for-alignment=2 -verify-machineinstrs %t/alignment.mir -o - | FileCheck %s --check-prefix=PAD
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=block-placement -align-all-blocks=9 \
+# RUN:   -max-bytes-for-alignment=2 -verify-machineinstrs -filetype=obj %t/alignment.mir -o %t/max-padding.o
 
 # Displacements are measured from PC + 2. Ordinary branches beyond 32 bytes
 # and both endpoints of the hardware range must stay short.
@@ -36,14 +44,17 @@
 # CHECK:       ldpc [[SCRATCH:r[0-7]]],
 # CHECK-NEXT:  jalr s0, [[SCRATCH]]
 
-# Min resolves local references; Full retains relocations for the linker.
-# Objdump prints offsets relative to the branch itself, rather than PC + 2.
+# All RC32 profiles retain local branch relocations so literal deletion can
+# adjust their displacements. Check the original section-relative targets.
 # OBJ-LABEL: <forward_64>:
-# OBJ:       bnez .+66
+# OBJ:       bnez
+# OBJ-NEXT:  00000000: R_RISCC_PCREL8_WORD .text+0x42
 # OBJ-LABEL: <forward_254>:
-# OBJ:       bnez .+256
+# OBJ:       bnez
+# OBJ-NEXT:  00000044: R_RISCC_PCREL8_WORD .text+0x144
 # OBJ-LABEL: <backward_256>:
-# OBJ:       bnez .-254
+# OBJ:       bnez
+# OBJ-NEXT:  00000356: R_RISCC_PCREL8_WORD .text+0x258
 
 # The original displacement is +252. A word and its alignment after the
 # intervening return move the destination out of range.

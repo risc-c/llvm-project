@@ -1,8 +1,10 @@
 # REQUIRES: riscc-registered-target
 # RUN: split-file %s %t
 # RUN: %python %t/generate.py > %t/input.mir
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=prolog-epilog -verify-machineinstrs %t/input.mir -o - | FileCheck %s
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=prolog-epilog -verify-machineinstrs -filetype=obj %t/input.mir -o %t/test.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=prolog-epilog -verify-machineinstrs %t/input.mir -o - \
+# RUN:   | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=prolog-epilog -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/test.o
 
 # Even an actual long branch need not use the conservative spill slot.
 # CHECK-LABEL: unused_frame:
@@ -36,8 +38,10 @@ body: |
   bb.1:
     successors: %bb.2
     liveins: {live}, $s7''')
+    # Do not use ADDI padding: native immediate-chain folding can collapse it
+    # and accidentally turn this into a short-branch test.
     for _ in range(140):
-        print('    $r1 = ADDI32 $r1, 1')
+        print('    $r1 = XORI32 $r1, 1')
     print(f'''    JMP8 %bb.2
   bb.2:
     liveins: {live}, $s7

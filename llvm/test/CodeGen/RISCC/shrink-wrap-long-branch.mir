@@ -1,0 +1,68 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=branch-relaxation -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s --check-prefix=RC32FULL
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -run-pass=branch-relaxation -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s --check-prefix=RC32MIN
+# RUN: sed -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/LDI32/LDI/g' -e 's/ADDI32/ADDI/g' %s | llc -x mir -mtriple=riscc \
+# RUN:   -mcpu=min -run-pass=branch-relaxation -verify-machineinstrs -o - | FileCheck %s --check-prefix=RC16MIN
+# RUN: sed -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/LDI32/LDI/g' -e 's/ADDI32/ADDI/g' %s | llc -x mir -mtriple=riscc \
+# RUN:   -mcpu=full -run-pass=branch-relaxation -verify-machineinstrs -o - | FileCheck %s --check-prefix=RC16FULL
+
+# With every GPR live at the branch, register scavenging cannot provide the
+# scratch for the long branch. The pre-existing shrink-wrap save point makes
+# a frame-index spill unsafe; use a balanced temporary slot instead.
+# RC32FULL-LABEL: name: shrink_wrap_long_branch
+# RC32FULL: $r7 = ADDI32 $r7, -4
+# RC32FULL-NEXT: ST32 {{.*}}$r0, $r7, 0
+# RC32FULL: $r0 = LD32 $r7, 0
+# RC32FULL-NEXT: $r7 = ADDI32 $r7, 4
+# RC32FULL: RETS
+# RC32FULL-NOT: BranchRelaxationSpillFI
+# RC32MIN-LABEL: name: shrink_wrap_long_branch
+# RC32MIN: $r7 = ADDI32 $r7, -4
+# RC32MIN-NEXT: ST32 {{.*}}$r0, $r7, 0
+# RC32MIN: $r0 = LD32 $r7, 0
+# RC32MIN-NEXT: $r7 = ADDI32 $r7, 4
+# RC32MIN: RETS
+# RC16MIN-LABEL: name: shrink_wrap_long_branch
+# RC16MIN: $r7 = ADDI $r7, -2
+# RC16MIN-NEXT: ST {{.*}}$r0, $r7, 0
+# RC16MIN: $r0 = LD $r7, 0
+# RC16MIN-NEXT: $r7 = ADDI $r7, 2
+# RC16MIN: RETS
+# RC16FULL-LABEL: name: shrink_wrap_long_branch
+# RC16FULL: JMP16
+# RC16FULL-NOT: ST $r0
+# RC16FULL-NOT: LD $r0
+# RC16FULL-NOT: ADDI $r7, -2
+# RC16FULL-NOT: ADDI $r7, 2
+
+---
+name: shrink_wrap_long_branch
+tracksRegLiveness: true
+frameInfo:
+  stackSize: 0
+  savePoint:
+    - { point: '%bb.1' }
+  restorePoint:
+    - { point: '%bb.3' }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    BNEZ %bb.2, implicit $r0
+
+  bb.1:
+    successors: %bb.2
+    INLINEASM &".space 300", sideeffect attdialect
+    JMP8 %bb.2
+
+  bb.2:
+    successors: %bb.3
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    JMP8 %bb.3
+
+  bb.3:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r0, implicit $r1, implicit $r2, implicit $r3, implicit $r4, implicit $r5, implicit $r6
+...

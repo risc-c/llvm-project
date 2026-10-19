@@ -1,8 +1,16 @@
 ; REQUIRES: riscc-registered-target
 ; RUN: llc -mtriple=riscc -mcpu=full -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=FAST,SIZE16
-; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=full -mattr=+rc32 -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,SIZE32
+; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=full -mattr=+rc32 -verify-machineinstrs \
+; RUN:   -o - | FileCheck %s --check-prefixes=FAST,LATE
+; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=full -mattr=+rc32 \
+; RUN:   -riscc-late-sign-mask=false -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,SIZE32
 ; RUN: llc -mtriple=riscc -mcpu=min -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=FAST,SMALL
-; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=min -mattr=+rc32 -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,SMALL
+; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=min -mattr=+rc32 -verify-machineinstrs \
+; RUN:   -o - | FileCheck %s --check-prefixes=FAST,SMALL
+; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-late-sign-mask \
+; RUN:   -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,LATE
+; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -enable-new-pm -mtriple=riscc -mcpu=full -mattr=+rc32 \
+; RUN:   -riscc-late-sign-mask -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,LATE
 
 ; A native sign mask uses no iterative shift in speed code. The constant
 ; zero is shared by the compare and negation. INT_MIN remains well defined.
@@ -18,6 +26,12 @@ define i16 @sign_mask(i16 %x) {
 }
 
 define i16 @small_sign_mask(i16 %x) optsize {
+; LATE-LABEL: small_sign_mask:
+; LATE: ldi [[ZERO:r[0-6]]], 0
+; LATE-NEXT: slt r1, r1, [[ZERO]]
+; LATE-NEXT: sub r1, [[ZERO]], r1
+; LATE-NOT: srai
+; LATE: ret
 ; SIZE16-LABEL: small_sign_mask:
 ; SIZE16: srai [[TMP:r[0-6]]], r1, 8
 ; SIZE16-NEXT: srai r1, [[TMP]], 7
@@ -36,6 +50,12 @@ define i16 @small_sign_mask(i16 %x) optsize {
 }
 
 define i16 @tiny_sign_mask(i16 %x) minsize optsize {
+; LATE-LABEL: tiny_sign_mask:
+; LATE: ldi [[ZERO:r[0-6]]], 0
+; LATE-NEXT: slt r1, r1, [[ZERO]]
+; LATE-NEXT: sub r1, [[ZERO]], r1
+; LATE-NOT: srai
+; LATE: ret
 ; SIZE16-LABEL: tiny_sign_mask:
 ; SIZE16: srai [[TMP:r[0-6]]], r1, 8
 ; SIZE16-NEXT: srai r1, [[TMP]], 7

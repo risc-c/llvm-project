@@ -16,6 +16,8 @@
 #include "RISCCMCInstLower.h"
 #include "RISCCSubtarget.h"
 #include "TargetInfo/RISCCTargetInfo.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -30,6 +32,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -38,13 +41,112 @@ using namespace llvm;
 #define DEBUG_TYPE "riscc-asm-printer"
 
 namespace {
+static cl::opt<bool> EnableLinkLiteralPools(
+    "riscc-link-literals", cl::Hidden, cl::init(true),
+    cl::desc("Mark private RISC-C literal words for link-time sharing"));
+
 class RISCCAsmPrinter final : public AsmPrinter {
+  SmallPtrSet<const MachineInstr *, 16> RelaxableBranches;
+  SmallPtrSet<const MCSymbol *, 16> BranchLiterals;
+
+  void emitLiteralPoolMarkers() {
+    if (!EnableLinkLiteralPools ||
+        !MF->getSubtarget<RISCCSubtarget>().isRC32() ||
+        !MF->getFunction().hasOptSize() || MF->hasBBSections())
+      return;
+    // A private-word marker promises that code/data references are relocatable
+    // and that removing four bytes cannot break a stronger alignment contract.
+    for (const MachineBasicBlock &MBB : *MF) {
+      if (MBB.getAlignment() > Align(4))
+        return;
+      for (const MachineInstr &MI : MBB)
+        if (MI.isBundle() ||
+            (MI.isInlineAsm() && MI.getOperand(0).getSymbolName()[0] != '\0'))
+          return;
+    }
+    for (const MachineBasicBlock &MBB : *MF)
+      for (const MachineInstr &MI : MBB) {
+        if (MI.getOpcode() != RISCC::CONSTPOOL_ENTRY ||
+            !MI.getOperand(1).isCPI())
+          continue;
+        const auto &Entry =
+            MF->getConstantPool()->getConstants()[MI.getOperand(1).getIndex()];
+        if (Entry.isMachineConstantPoolEntry() &&
+            static_cast<RISCCConstantPoolSymbol *>(Entry.Val.MachineCPVal)
+                ->isCallTarget())
+          continue;
+        if (!Entry.isMachineConstantPoolEntry() &&
+            getDataLayout().getTypeAllocSize(Entry.Val.ConstVal->getType()) !=
+                4)
+          continue;
+        const MCExpr *Word =
+            MCSymbolRefExpr::create(MI.getOperand(0).getMCSymbol(), OutContext);
+        OutStreamer->emitRelocDirective(*Word, "R_RISCC_RELAX_LITERAL", Word);
+      }
+  }
+
 public:
   static char ID;
   RISCCAsmPrinter(TargetMachine &TM, std::unique_ptr<MCStreamer> S)
       : AsmPrinter(TM, std::move(S), ID) {}
   StringRef getPassName() const override { return "RISC-C Assembly Printer"; }
   void emitConstantPool() override {}
+  void emitFunctionBodyStart() override {
+    emitLiteralPoolMarkers();
+    RelaxableBranches.clear();
+    BranchLiterals.clear();
+    const auto &STI = MF->getSubtarget<RISCCSubtarget>();
+    if (!STI.isRC32() || !STI.hasLongJall() ||
+        !MF->getProperties().hasTracksLiveness())
+      return;
+
+    // A local far jump has the same range-checked linker relaxation as a
+    // sibling call. Keep the full-range sequence in the object and let LLD
+    // decide whether its final address fits JMPL. A shared word is safe only
+    // when every reference is a marked transfer whose scratch is dispensable.
+    DenseMap<const MCSymbol *, unsigned> Uses;
+    DenseMap<const MCSymbol *, unsigned> BranchUses;
+    DenseMap<const MCSymbol *, const MachineBasicBlock *> LocalTargets;
+    SmallVector<const MachineInstr *, 16> Candidates;
+    for (const MachineBasicBlock &MBB : *MF)
+      for (const MachineInstr &MI : MBB) {
+        if (MI.getOpcode() == RISCC::CONSTPOOL_ENTRY) {
+          if (MI.getOperand(1).isMBB())
+            LocalTargets[MI.getOperand(0).getMCSymbol()] =
+                MI.getOperand(1).getMBB();
+          continue;
+        }
+        for (const MachineOperand &MO : MI.operands())
+          if (MO.isMCSymbol())
+            ++Uses[MO.getMCSymbol()];
+        if (MI.getOpcode() != RISCC::LDPC || !MI.getOperand(1).isMCSymbol())
+          continue;
+        Register Scratch = MI.getOperand(0).getReg();
+        if (!RISCC::GPR32RegClass.contains(Scratch) || Scratch == RISCC::R7)
+          continue;
+        auto Next = std::next(MI.getIterator());
+        if (Next != MBB.end() && Next->getOpcode() == RISCC::JALR &&
+            Next->getOperand(0).getReg() == RISCC::S0 &&
+            Next->getOperand(1).getReg() == Scratch) {
+          Candidates.push_back(&MI);
+        }
+      }
+    // A load whose result remains live at the destination is an ordinary
+    // value use, even when it also supplies the jump's target address.
+    for (const MachineInstr *MI : Candidates) {
+      const MCSymbol *Literal = MI->getOperand(1).getMCSymbol();
+      if (const MachineBasicBlock *Target = LocalTargets.lookup(Literal);
+          Target && !Target->isLiveIn(MI->getOperand(0).getReg()))
+        ++BranchUses[Literal];
+    }
+    for (const MachineInstr *MI : Candidates) {
+      const MCSymbol *Literal = MI->getOperand(1).getMCSymbol();
+      if (Uses.lookup(Literal) == BranchUses.lookup(Literal)) {
+        RelaxableBranches.insert(MI);
+        BranchLiterals.insert(Literal);
+      }
+    }
+  }
   void emitMachineConstantPoolValue(MachineConstantPoolValue *Value) override {
     auto *Symbol = static_cast<RISCCConstantPoolSymbol *>(Value);
     const MCExpr *Expr = MCSymbolRefExpr::create(
@@ -65,8 +167,8 @@ public:
       const MCExpr *SiteExpr = MCSymbolRefExpr::create(Site, OutContext);
       const MCExpr *LiteralExpr = MCSymbolRefExpr::create(Literal, OutContext);
       OutStreamer->emitRelocDirective(*SiteExpr,
-                                      Link == RISCC::S7 ? "R_RISCC_RELAX_CALL"
-                                                        : "R_RISCC_RELAX_TAIL",
+                                      Link == RISCC::S0 ? "R_RISCC_RELAX_TAIL"
+                                                        : "R_RISCC_RELAX_CALL",
                                       LiteralExpr);
       OutStreamer->emitLabel(Site);
     }
@@ -89,19 +191,35 @@ public:
         else
           emitGlobalConstant(getDataLayout(), Constant.Val.ConstVal);
       } else {
-        OutStreamer->emitValue(
-            MCSymbolRefExpr::create(Value.getMBB()->getSymbol(), OutContext),
-            4);
+        const MCExpr *Target =
+            MCSymbolRefExpr::create(Value.getMBB()->getSymbol(), OutContext);
+        if (BranchLiterals.contains(MI->getOperand(0).getMCSymbol()))
+          Target = RISCCMCExpr::create(RISCCMCExpr::VK_CALL_TARGET, Target,
+                                       OutContext);
+        OutStreamer->emitValue(Target, 4);
       }
       return;
     }
     if (MI->getOpcode() == RISCC::CALL32_LITERAL ||
-        MI->getOpcode() == RISCC::TAIL32_LITERAL) {
+        MI->getOpcode() == RISCC::TAIL32_LITERAL ||
+        MI->getOpcode() == RISCC::LINK_S3_CALL32_LITERAL ||
+        MI->getOpcode() == RISCC::LINK_S3_TAIL32_LITERAL) {
       RISCC_MC::verifyInstructionPredicates(
           MI->getOpcode(), getSubtargetInfo().getFeatureBits());
       emitLiteralCall(MI, MI->getOpcode() == RISCC::CALL32_LITERAL ? RISCC::S7
-                                                                   : RISCC::S0);
+                          : MI->getOpcode() == RISCC::LINK_S3_CALL32_LITERAL
+                              ? RISCC::S3
+                              : RISCC::S0);
       return;
+    }
+    if (RelaxableBranches.contains(MI)) {
+      MCSymbol *Site = OutContext.createTempSymbol();
+      const MCExpr *SiteExpr = MCSymbolRefExpr::create(Site, OutContext);
+      const MCExpr *LiteralExpr =
+          MCSymbolRefExpr::create(MI->getOperand(1).getMCSymbol(), OutContext);
+      OutStreamer->emitRelocDirective(*SiteExpr, "R_RISCC_RELAX_TAIL",
+                                      LiteralExpr);
+      OutStreamer->emitLabel(Site);
     }
     MCInst Out;
     RISCCMCInstLower(OutContext, *this).lower(MI, Out);
@@ -117,6 +235,11 @@ public:
       break;
     case RISCC::RETS:
       EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::RET).addReg(RISCC::S7));
+      return;
+    case RISCC::RET_REG:
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::JALR)
+                                       .addReg(RISCC::S0)
+                                       .addOperand(Out.getOperand(0)));
       return;
     case RISCC::RET_NANO:
       EmitToStreamer(*OutStreamer, MCInstBuilder(RISCC::JALR_NANO)

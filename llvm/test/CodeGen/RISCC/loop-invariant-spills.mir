@@ -1,0 +1,661 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+mulhu -riscc-loop-spill-promotion=false \
+# RUN:   -riscc-loop-spill-hoist=false -riscc-loop-invariant-spills -run-pass=riscc-sreg-allocator \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' -e 's/\bADDI\b/ADDI32/g' -e 's/\bADD\b/ADD32/g' \
+# RUN:   -e 's/\bMULHU\b/MULHU32/g' -e 's/size: 2/size: 4/g' -e 's/alignment: 2/alignment: 4/g' -e 's/(s16)/(s32)/g' \
+# RUN:   %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32,+mulhu -riscc-loop-spill-promotion=false \
+# RUN:   -riscc-loop-spill-hoist=false -riscc-loop-invariant-spills -run-pass=riscc-sreg-allocator \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+
+# FI0 is invariant in the loop.  R2 briefly carries an unrelated value, then
+# receives a copy of the invariant and is reused for the scalar lifetime after
+# R1 reloads FI1.  The invariant load and copy disappear; the entry copy/load
+# are the only added instructions.
+# CHECK-LABEL: name: invariant_spill
+# CHECK:       bb.0.entry:
+# CHECK:       $r2 = COPY killed $r1
+# CHECK:       {{\$r1 = MFS(32)? \$s2}}
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   %stack.0
+# CHECK-NOT:   MFS
+# CHECK-NOT:   COPY
+# CHECK:       {{\$r2 = LD(32)? .*%stack.1}}
+# CHECK:       {{\$r3 = ADD(32)? .*\$r1}}
+# CHECK:       {{\$r2 = ADDI(32)? .*\$r2}}
+# CHECK:       bb.2.exit:
+# CHECK:       RETS implicit $s7, implicit{{.*}}$r3
+
+# The same invariant web spans an outer loop with a nested inner loop.  The
+# inner reload/copy pair is removed, while the outer scalar remains carried in
+# the spare register and is reloaded at the outer latch.
+# CHECK-LABEL: name: nested_loop
+# CHECK:       bb.0.entry:
+# CHECK:       $r2 = COPY killed $r1
+# CHECK:       {{\$r1 = MFS(32)? \$s2}}
+# CHECK:       bb.1.outer:
+# CHECK:       {{ST(32)?.*\$r2.*%stack\.1}}
+# CHECK:       dead $r2 = ADD
+# CHECK:       bb.2.inner:
+# CHECK-NOT:   %stack.0
+# CHECK-NOT:   MFS
+# CHECK-NOT:   COPY
+# CHECK:       {{\$r0 = ADD(32)?.*\$r4.*\$r5}}
+# CHECK:       bb.3.latch:
+# CHECK:       {{\$r2 = LD(32)?.*%stack\.1}}
+# CHECK:       {{\$r3 = ADD(32)?.*\$r1.*\$r6}}
+
+# Repeated FI0 accesses must remain when the candidate is not private,
+# unordered, call-free, and statically profitable.
+# CHECK-LABEL: name: store_in_loop
+# CHECK:       bb.1.loop:
+# CHECK:       {{(ST(32)?.*%stack\.0|\$s[2-6] = MTS)}}
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+
+# CHECK-LABEL: name: volatile_in_loop
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*volatile load|\$r1 = MFS \$s[2-6])}}
+
+# CHECK-LABEL: name: call_in_loop
+# CHECK:       bb.1.loop:
+# CHECK:       CALL
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+
+# With no copy to remove, the unconditional entry load would grow the
+# sequence, so the invariant transform must reject this loop.
+# CHECK-LABEL: name: static_growth
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+
+# Both original register values are live at the exit; parallel restoration is
+# deliberately not handled by the transform.
+# CHECK-LABEL: name: parallel_exit
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       COPY
+
+# An incoming R2 value used before the forwarding copy overlaps the scalar
+# web and must not be clobbered by the entry carrier copy.
+# CHECK-LABEL: name: overlap_spare
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       COPY
+
+# A join carrying invariant and non-invariant R1 values is not a legal
+# rename point without edge copies.
+# CHECK-LABEL: name: mixed_join
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       COPY
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       bb.4.join:
+# CHECK:       {{\$r3 = ADD(32)?.*\$r1}}
+
+# R1 is conservatively listed live-in but dead until its first reload.  R2 is
+# a real loop-carried counter, so the entry carrier copy must not clobber it.
+# The two reloads make the candidate profitable, but physical liveness at the
+# header rejects it because R2 would be clobbered.  R3-R6 are also live
+# throughout, blocking alternate carrier choices.
+# CHECK-LABEL: name: conservative_entry
+# CHECK:       bb.0.entry:
+# CHECK-NOT:   COPY
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+
+# A dead R2 definition must still not clobber the relocated scalar R1 value;
+# the after-only interference check must reject this candidate.
+# CHECK-LABEL: name: dead_def_overlap
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       COPY
+
+# A non-growing instance remains legal under optsize: one loop load and its
+# forwarding copy are replaced by one preheader load.
+# CHECK-LABEL: name: invariant_optsize
+# CHECK:       bb.0.entry:
+# CHECK:       {{\$r1 = MFS(32)? \$s[2-6]}}
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   %stack.0
+# CHECK-NOT:   MFS
+# CHECK-NOT:   COPY
+# CHECK:       {{\$r3 = ADD(32)?.*\$r1}}
+
+# An early-clobber paired result cannot overlap a relocated killed divisor.
+# CHECK-LABEL: name: early_clobber
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r1 = LD(32)?.*%stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       COPY
+# CHECK:       {{MULHU(32)?}}
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @invariant_spill() {
+  entry:
+    br label %loop
+  loop:
+    br i1 true, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @nested_loop() {
+  entry:
+    br label %outer
+  outer:
+    br label %inner
+  inner:
+    br i1 true, label %inner, label %latch
+  latch:
+    br i1 true, label %outer, label %exit
+  exit:
+    ret void
+  }
+  define void @store_in_loop() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @volatile_in_loop() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @call_in_loop() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @static_growth() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @parallel_exit() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @overlap_spare() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @mixed_join() {
+  entry: br label %loop
+  loop: br i1 true, label %alt, label %body
+  alt: br label %join
+  body: br label %join
+  join: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @conservative_entry() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @dead_def_overlap() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @invariant_optsize() optsize {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+  define void @early_clobber() {
+  entry: br label %loop
+  loop: br i1 true, label %loop, label %exit
+  exit: ret void
+  }
+...
+---
+name:            invariant_spill
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: default, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    $r0 = ADD $r0, $r6
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    ST $r3, %stack.1, 0 :: (store (s16) into %stack.1)
+    JMP8 %bb.1.loop
+
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r2 = ADD $r4, $r5
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r3 = ADD $r2, $r6
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+
+  bb.2.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            nested_loop
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: default, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.outer
+    $r0 = ADD $r4, $r5
+    $r0 = ADD $r0, $r6
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.outer
+
+  bb.1.outer:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.2.inner
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    dead $r2 = ADD $r4, $r5
+    JMP8 %bb.2.inner
+
+  bb.2.inner:
+    liveins: $r0, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.2.inner(0x7f000000), %bb.3.latch(0x01000000)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r0 = ADD $r4, $r5
+    BNEZ %bb.2.inner, implicit $r0
+    JMP8 %bb.3.latch
+
+  bb.3.latch:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.outer(0x7f000000), %bb.4.exit(0x01000000)
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r3 = ADD $r2, $r6
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.outer, implicit $r0
+    JMP8 %bb.4.exit
+
+  bb.4.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            store_in_loop
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            volatile_in_loop
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    $r1 = LD %stack.0, 0 :: (volatile load (s16) from %stack.0)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            call_in_loop
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  hasCalls: true
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    CALL $r3, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            static_growth
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            parallel_exit
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: default, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    ST $r3, %stack.1, 0 :: (store (s16) into %stack.1)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    $r3 = ADD $r1, $r2
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            overlap_spare
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: default, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    ST $r3, %stack.1, 0 :: (store (s16) into %stack.1)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r4 = ADD $r2, $r5
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            mixed_join
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.2.alt, %bb.3.body
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    BNEZ %bb.2.alt, implicit $r0
+    JMP8 %bb.3.body
+  bb.2.alt:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.4.join
+    $r1 = ADDI $r1, 1
+    JMP8 %bb.4.join
+  bb.3.body:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.4.join
+    $r2 = ADD $r4, $r5
+    JMP8 %bb.4.join
+  bb.4.join:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.5.exit(0x01000000)
+    $r3 = ADD $r1, $r4
+    $r0 = ADD $r4, $r5
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.5.exit
+  bb.5.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            conservative_entry
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r3 = ADD $r3, $r4
+    $r4 = ADD $r4, $r5
+    $r5 = ADD $r5, $r6
+    $r6 = ADD $r6, $r3
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    $r3 = ADD $r3, $r4
+    $r4 = ADD $r4, $r5
+    $r5 = ADD $r5, $r6
+    $r6 = ADD $r6, $r3
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI $r2, -1
+    $r0 = MOV $r2
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            dead_def_overlap
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: default, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r3 = ADD $r3, $r4
+    $r4 = ADD $r4, $r5
+    $r5 = ADD $r5, $r6
+    $r6 = ADD $r6, $r3
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r2, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r3 = ADD $r3, $r4
+    $r4 = ADD $r4, $r5
+    $r5 = ADD $r5, $r6
+    $r6 = ADD $r6, $r3
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    dead $r2 = ADD $r4, $r5
+    $r3 = ADD $r1, $r6
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            invariant_optsize
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r3 = ADD $r2, $r4
+    $r0 = ADD $r4, $r5
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...
+---
+name:            early_clobber
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: default, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop
+    $r0 = ADD $r4, $r5
+    $r3 = ADD $r3, $r4
+    $r4 = ADD $r4, $r5
+    $r5 = ADD $r5, $r6
+    $r6 = ADD $r6, $r3
+    ST $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r3, $r4, $r5, $r6, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    ST $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r3 = ADD $r3, $r4
+    $r4 = ADD $r4, $r5
+    $r5 = ADD $r5, $r6
+    $r6 = ADD $r6, $r3
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = COPY $r1
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    early-clobber $r2, $r0 = MULHU $r0, killed $r1
+    $r1 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r1 = ADDI $r1, -1
+    $r0 = MOV $r1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r3, $r4, $r5, $r6, $s7
+    RETS implicit $s7, implicit $r3
+...

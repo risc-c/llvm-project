@@ -1,0 +1,180 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-literal-values -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bMOV32\b/MOV/g' -e 's/\bLD32\b/LD/g' -e 's/\bADDI32\b/ADDI/g' -e 's/\bCALL32\b/CALL/g' \
+# RUN:   -e 's/(s32)/(s16)/g' -e 's/i32 65535/i16 255/g' -e 's/i32 65536/i16 256/g' %s | llc -x mir -mtriple=riscc \
+# RUN:   -mcpu=full -riscc-literal-values -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# Literal-pool contents are immutable, unlike ordinary loads. The constant
+# identity also survives a copy and a native-width immediate adjustment.
+# CHECK-LABEL: name: literal_copy
+# CHECK: $r1 = LDPC %const.0
+# CHECK-NEXT: $r2 = MOV{{(32)?}} {{(killed )?}}renamable $r1
+# CHECK-NOT: LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: literal_after_add
+# CHECK: $r1 = LDPC %const.0
+# CHECK: $r1 = ADDI{{(32)?}} {{(killed )?}}$r1, 1
+# CHECK-NOT: LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: literal_clobber
+# CHECK: $r1 = LDPC %const.0
+# CHECK: $r1 = LD{{(32)?}}
+# CHECK: $r2 = LDPC %const.0
+# CHECK: RETS
+# CHECK-LABEL: name: different_literals
+# CHECK: $r1 = LDPC %const.0
+# CHECK: $r2 = LDPC %const.1
+# CHECK: RETS
+# CHECK-LABEL: name: symbol_literal
+# CHECK: $r1 = LDPC %const.0
+# CHECK-NEXT: $r2 = MOV{{(32)?}} {{(killed )?}}renamable $r1
+# CHECK: RETS
+# CHECK-LABEL: name: offset_literal
+# CHECK: $r1 = LDPC %const.0
+# CHECK-NEXT: $r2 = LDPC %const.0 + 4
+# CHECK: RETS
+# CHECK-LABEL: name: ordered_literal
+# CHECK: $r1 = LDPC %const.0
+# CHECK-NEXT: $r2 = LDPC %const.0
+# CHECK: RETS
+# CHECK-LABEL: name: preserved_literal
+# CHECK: $r4 = LDPC %const.0
+# CHECK: CALL{{(32)?}}
+# CHECK-NOT: LDPC
+# CHECK: RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  @object = external global i8
+  define void @literal_copy() { ret void }
+  define void @literal_after_add() { ret void }
+  define void @literal_clobber() { ret void }
+  define void @different_literals() { ret void }
+  define void @symbol_literal() { ret void }
+  define void @offset_literal() { ret void }
+  define void @ordered_literal() { ret void }
+  define void @preserved_literal() { ret void }
+...
+---
+name: literal_copy
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65535'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: literal_after_add
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65535'
+    alignment: 4
+  - id: 1
+    value: 'i32 65536'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = ADDI32 $r1, 1
+    $r1 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: literal_clobber
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65535'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = LD32 $r1, 0 :: (load (s32))
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: different_literals
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65535'
+    alignment: 4
+  - id: 1
+    value: 'i32 65536'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r2 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: symbol_literal
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'ptr getelementptr (i8, ptr @object, i32 1)'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: offset_literal
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i64 4294967296'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r2 = LDPC %const.0 + 4 :: (load (s32) from constant-pool + 4)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: ordered_literal
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65535'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r2 = LDPC %const.0 :: (volatile load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: preserved_literal
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65535'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $r1
+    $r4 = LDPC %const.0 :: (load (s32) from constant-pool)
+    CALL32 $r1, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r4 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r4
+...

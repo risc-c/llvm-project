@@ -1,0 +1,196 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -run-pass=postrapseudos -verify-machineinstrs %s -o - | FileCheck %s \
+# RUN:   --check-prefix=RC16
+# RUN: sed -e 's/\bLDB\b/LDB32/g' -e 's/\bLDBS\b/LDBS32/g' -e 's/\bSEXT8_RC16\b/SEXT8_RC32/g' \
+# RUN:   -e 's/\bXORI\b/XORI32/g' -e 's/\bADDI\b/ADDI32/g' -e 's/\bANDI\b/ANDI32/g' -e 's/\bCALL\b/CALL32/g' \
+# RUN:   -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -run-pass=postrapseudos \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s --check-prefix=RC32
+
+# An unsigned byte load already establishes the low-byte range.  Expansion of
+# the following signed extension therefore needs the two bias operations but
+# no separate ANDI, in either native register width.
+# RC16-LABEL: name: unsigned_same
+# RC16:       $r1 = LDB $r1
+# RC16-NEXT:  $r1 = XORI $r1, 128
+# RC16-NEXT:  $r1 = ADDI $r1, -128
+# RC16-NOT:   ANDI
+# RC32-LABEL: name: unsigned_same
+# RC32:       $r1 = LDB32 $r1
+# RC32-NEXT:  $r1 = XORI32 $r1, 128
+# RC32-NEXT:  $r1 = ADDI32 $r1, -128
+# RC32-NOT:   ANDI32
+
+# A load destination distinct from its address register is also safe.
+# RC16-LABEL: name: unsigned_different
+# RC16:       $r2 = LDB $r1
+# RC16-NEXT:  $r2 = XORI $r2, 128
+# RC16-NEXT:  $r2 = ADDI $r2, -128
+# RC16-NOT:   ANDI
+# RC32-LABEL: name: unsigned_different
+# RC32:       $r2 = LDB32 $r1
+# RC32-NEXT:  $r2 = XORI32 $r2, 128
+# RC32-NEXT:  $r2 = ADDI32 $r2, -128
+# RC32-NOT:   ANDI32
+
+# Volatile loads stay in place, but they still carry the byte-range fact.
+# RC16-LABEL: name: volatile_byte
+# RC16:       $r1 = LDB $r1 :: (volatile load (s8))
+# RC16:       $r1 = XORI $r1, 128
+# RC16:       $r1 = ADDI $r1, -128
+# RC16-NOT:   ANDI
+# RC32-LABEL: name: volatile_byte
+# RC32:       $r1 = LDB32 $r1 :: (volatile load (s8))
+# RC32:       $r1 = XORI32 $r1, 128
+# RC32:       $r1 = ADDI32 $r1, -128
+# RC32-NOT:   ANDI32
+
+# Signed loads do not establish an unsigned byte range for this pseudo.
+# RC16-LABEL: name: signed_byte
+# RC16:       $r1 = LDBS $r1
+# RC16:       $r1 = ANDI $r1, 255
+# RC16:       $r1 = XORI $r1, 128
+# RC16:       $r1 = ADDI $r1, -128
+# RC32-LABEL: name: signed_byte
+# RC32:       $r1 = LDBS32 $r1
+# RC32:       $r1 = ANDI32 $r1, 255
+# RC32:       $r1 = XORI32 $r1, 128
+# RC32:       $r1 = ADDI32 $r1, -128
+
+# A source redefinition invalidates the byte-load fact, so the mask returns.
+# RC16-LABEL: name: intervening_def
+# RC16:       $r1 = LDB $r1
+# RC16:       $r1 = ADDI $r1, -127
+# RC16:       $r1 = ANDI $r1, 255
+# RC16:       $r1 = ADDI $r1, -128
+# RC32-LABEL: name: intervening_def
+# RC32:       $r1 = LDB32 $r1
+# RC32:       $r1 = ADDI32 $r1, -127
+# RC32:       $r1 = ANDI32 $r1, 255
+# RC32:       $r1 = ADDI32 $r1, -128
+
+# The byte-bias idiom folds to one adjusted add when the extension overwrites
+# its source.
+# RC16-LABEL: name: bias_fold
+# RC16:       $r1 = LDB $r1
+# RC16-NEXT:  $r1 = ADDI $r1, -128
+# RC16-NOT:   XORI
+# RC16-NOT:   ANDI
+# RC32-LABEL: name: bias_fold
+# RC32:       $r1 = LDB32 $r1
+# RC32-NEXT:  $r1 = ADDI32 $r1, -128
+# RC32-NOT:   XORI32
+# RC32-NOT:   ANDI32
+
+# A call clobber breaks the source's known-byte chain.
+# RC16-LABEL: name: call_clobber
+# RC16:       $r0 = LDB $r1
+# RC16:       CALL $r2, csr_riscc
+# RC16:       $r0 = ANDI $r0, 255
+# RC32-LABEL: name: call_clobber
+# RC32:       $r0 = LDB32 $r1
+# RC32:       CALL32 $r2, csr_riscc
+# RC32:       $r0 = ANDI32 $r0, 255
+# RC16-LABEL: name: call_mask_only
+# RC16:       $r1 = LDB $r1
+# RC16:       CALL $r2, csr_riscc
+# RC16:       $r1 = ANDI $r1, 255
+# RC32-LABEL: name: call_mask_only
+# RC32:       $r1 = LDB32 $r1
+# RC32:       CALL32 $r2, csr_riscc
+# RC32:       $r1 = ANDI32 $r1, 255
+
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @unsigned_same() { ret i16 0 }
+  define i16 @unsigned_different() { ret i16 0 }
+  define i16 @volatile_byte() { ret i16 0 }
+  define i16 @signed_byte() { ret i16 0 }
+  define i16 @intervening_def() { ret i16 0 }
+  define i16 @bias_fold() { ret i16 0 }
+  define i16 @call_clobber() { ret i16 0 }
+  define i16 @call_mask_only() { ret i16 0 }
+...
+---
+name: unsigned_same
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r1 = LDB $r1 :: (load (s8))
+    $r1 = SEXT8_RC16 $r1
+    RETS implicit $s7, implicit $r1
+---
+name: unsigned_different
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LDB $r1 :: (load (s8))
+    $r2 = SEXT8_RC16 $r2
+    RETS implicit $s7, implicit $r2
+---
+name: volatile_byte
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r1 = LDB $r1 :: (volatile load (s8))
+    $r1 = SEXT8_RC16 $r1
+    RETS implicit $s7, implicit $r1
+---
+name: signed_byte
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r1 = LDBS $r1 :: (load (s8))
+    $r1 = SEXT8_RC16 $r1
+    RETS implicit $s7, implicit $r1
+---
+name: intervening_def
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r1 = LDB $r1 :: (load (s8))
+    $r1 = ADDI $r1, 1
+    $r1 = SEXT8_RC16 $r1
+    RETS implicit $s7, implicit $r1
+---
+name: bias_fold
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r1 = LDB $r1 :: (load (s8))
+    $r1 = ADDI $r1, 128
+    $r1 = SEXT8_RC16 $r1
+    RETS implicit $s7, implicit $r1
+---
+name: call_clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r0 = LDB $r1 :: (load (s8))
+    CALL $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r0 = SEXT8_RC16 $r0
+    RETS implicit $s7, implicit $r0
+---
+name: call_mask_only
+tracksRegLiveness: false
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = LDB $r1 :: (load (s8))
+    CALL $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = SEXT8_RC16 $r1
+    RETS implicit $s7, implicit $r1

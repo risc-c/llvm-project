@@ -8,10 +8,7 @@
 
 #include "RISCCSubtarget.h"
 #include "llvm/CodeGen/LibcallLoweringInfo.h"
-#include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/CodeGen/SelectionDAGTargetInfo.h"
-#include <algorithm>
 
 using namespace llvm;
 
@@ -48,7 +45,8 @@ const SelectionDAGTargetInfo *RISCCSubtarget::getSelectionDAGInfo() const {
 }
 
 void RISCCSubtarget::initLibcallLoweringInfo(LibcallLoweringInfo &Info) const {
-  // These runtime helpers are not covered by LLVM's system-library tables.
+  // Select the standard helper implementations used by both widths. Their
+  // availability is also registered in RuntimeLibcalls.td for LTO discovery.
   static constexpr struct {
     RTLIB::Libcall Op;
     RTLIB::LibcallImpl Impl;
@@ -145,24 +143,4 @@ void RISCCSubtarget::initLibcallLoweringInfo(LibcallLoweringInfo &Info) const {
   };
   for (const auto &Helper : Helpers)
     Info.setLibcallImpl(Helper.Op, Helper.Impl);
-}
-
-void RISCCSubtarget::adjustSchedDependency(
-    SUnit *Def, int DefOpIdx, SUnit *Use, int UseOpIdx, SDep &Dep,
-    const TargetSchedModel *Model) const {
-  // Keep allocation unchanged: separating producers before allocation can
-  // extend live ranges and introduce spills just to save a branch bubble.
-  if (!HasEarlyBranches ||
-      !Def->getInstr()->getMF()->getProperties().hasProperty(
-          MachineFunctionProperties::Property::NoVRegs) ||
-      Dep.getKind() != SDep::Data || Dep.getReg() != RISCC::R0 ||
-      !Use->getInstr() || !Use->getInstr()->isConditionalBranch())
-    return;
-
-  // Decode reads saved flags, one stage earlier than ordinary operands.
-  // ALU, shift and multiply flags are saved at Execute completion; loads
-  // save theirs at writeback. This also covers a branch at the region exit.
-  // These are scheduling preferences: no NOPs or extra pipeline stages.
-  Dep.setLatency(
-      std::max(Dep.getLatency(), Def->getInstr()->mayLoad() ? 3u : 2u));
 }

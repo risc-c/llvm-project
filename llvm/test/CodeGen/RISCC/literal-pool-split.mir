@@ -1,0 +1,102 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/on.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs \
+# RUN:   -riscc-evacuate-literals=false -filetype=obj %t/input.mir -o %t/off.o
+# RUN: llvm-nm -S %t/on.o | FileCheck %s --check-prefix=ON
+# RUN: llvm-nm -S %t/off.o | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/min.o
+# RUN: llvm-nm -S %t/min.o | FileCheck %s --check-prefix=ON
+# RUN: %python %t/generate.py minsize > %t/minsize.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/minsize.mir -o %t/minsize.o
+# RUN: llvm-nm -S %t/minsize.o | FileCheck %s --check-prefix=ON
+# RUN: %python %t/generate.py speed > %t/speed.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/speed.mir -o %t/speed-on.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs \
+# RUN:   -riscc-evacuate-literals=false -filetype=obj %t/speed.mir -o %t/speed-off.o
+# RUN: cmp %t/speed-on.o %t/speed-off.o
+# RUN: %python %t/generate.py optsize duplicate > %t/duplicate.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/duplicate.mir -o %t/duplicate-on.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs \
+# RUN:   -riscc-evacuate-literals=false -filetype=obj %t/duplicate.mir -o %t/duplicate-off.o
+# RUN: llvm-nm -S %t/duplicate-on.o | FileCheck %s --check-prefix=DUP-ON
+# RUN: llvm-nm -S %t/duplicate-off.o | FileCheck %s --check-prefix=DUP-OFF
+# RUN: llvm-readobj -r %t/duplicate-on.o | grep R_RISCC_RELAX_LITERAL | count 12
+# RUN: llvm-readobj -r %t/duplicate-off.o | grep R_RISCC_RELAX_LITERAL | count 13
+
+# A whole pool cannot move to either reachable gap. Distributing its words
+# between two gaps removes one dedicated skip and two alignment bytes. Keep
+# all literal users and the long loop-back branch in range. Speed-optimized
+# functions must not use this size-only layout policy.
+# ON:  00000392 T split_pool
+# OFF: 00000396 T split_pool
+
+# Joint placement can also make duplicate words shareable. The second case
+# removes one literal word and one skip, plus two bytes of alignment padding.
+# DUP-ON:  00000428 T split_duplicate_pool
+# DUP-OFF: 00000430 T split_duplicate_pool
+
+#--- generate.py
+import sys
+
+attribute = sys.argv[1] if len(sys.argv) > 1 else 'optsize'
+if attribute == 'speed':
+    attribute = ''
+duplicate = len(sys.argv) > 2 and sys.argv[2] == 'duplicate'
+name = 'split_duplicate_pool' if duplicate else 'split_pool'
+print(f'''--- |
+  define i32 @{name}() {attribute} {{ ret i32 0 }}
+...''')
+print(f'''---
+name: {name}
+tracksRegLiveness: true
+constants:''')
+for index in range(5 if duplicate else 8):
+    print(f"  - {{ id: {index}, value: 'i32 {0x11111111 + index}', alignment: 4 }}")
+print('body: |')
+
+
+def block(number, successors, loads, tail=0, branch=None):
+    print(f'  bb.{number}:')
+    if successors:
+        print('    successors: ' + ', '.join(f'%bb.{n}' for n in successors))
+    print('    liveins: $s7')
+    for padding, value in loads:
+        for _ in range(padding):
+            print('    $r0 = LDI32 0')
+        print(f'    $r1 = LDPC %const.{value}')
+    for _ in range(tail):
+        print('    $r0 = LDI32 0')
+    if branch:
+        print('    ' + branch)
+
+
+if duplicate:
+    block(0, [1, 0], [(0, 1), (0, 4), (0, 0), (0, 4)], 1,
+          'BNEZ %bb.0, implicit $r0')
+    block(1, [2], [(0, 1), (0, 2), (0, 0)], branch='JMP8 %bb.2')
+    block(2, [3, 4], [(12, 2), (11, 4), (0, 4), (7, 4), (16, 1), (9, 1)], 1,
+          'BNEZ %bb.4, implicit $r0')
+    block(3, [4, 1], [(26, 4), (0, 2), (13, 0), (22, 4)], 6,
+          'BNEZ %bb.1, implicit $r0')
+    block(4, [5, 7], [(17, 4), (4, 2), (8, 2), (4, 0), (12, 3), (21, 2),
+                      (7, 1), (13, 2)], 19, 'BNEZ %bb.7, implicit $r0')
+    block(5, [6], [(71, 4), (9, 4), (15, 2)], 10, 'JMP8 %bb.6')
+    block(6, [7], [(2, 4), (50, 0), (9, 3), (8, 3), (9, 2), (0, 0),
+                   (24, 2), (0, 3)])
+    block(7, [], [(18, 2), (0, 2)], branch='RETS implicit $s7')
+else:
+    block(0, [1], [(0, 2), (89, 4), (17, 1)], 29, 'JMP8 %bb.1')
+    block(1, [2], [(21, 2), (0, 6), (70, 1), (21, 0), (30, 6)], 4, 'JMP8 %bb.2')
+    block(2, [3], [(33, 5), (6, 7), (0, 4), (8, 3)], 29)
+    block(3, [4], [(6, 5), (2, 6), (0, 1), (17, 5), (0, 3),
+                   (7, 7), (0, 4), (1, 7)], 2, 'JMP8 %bb.4')
+    block(4, [5, 0], [(0, 3), (0, 5), (0, 2)], 1, 'BNEZ %bb.0, implicit $r0')
+    block(5, [], [(0, 4), (0, 2), (0, 0), (0, 6)], branch='RETS implicit $s7')
+print('...')

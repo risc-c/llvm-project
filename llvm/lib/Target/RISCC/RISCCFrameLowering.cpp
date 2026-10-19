@@ -15,6 +15,8 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/CGPassBuilderOption.h"
 #include "llvm/Target/TargetMachine.h"
@@ -22,10 +24,63 @@
 
 using namespace llvm;
 
+static cl::opt<bool> EnableShrinkWrap(
+    "riscc-shrink-wrap", cl::Hidden, cl::init(true),
+    cl::desc("Shrink wrap RISC-C functions with dedicated return blocks"));
+
 RISCCFrameLowering::RISCCFrameLowering(const RISCCSubtarget &STI)
     : TargetFrameLowering(StackGrowsDown, STI.getStackAlignment(), 0,
                           STI.getStackAlignment()),
       STI(STI) {}
+
+bool RISCCFrameLowering::enableCalleeSaveSkip(const MachineFunction &MF) const {
+  // The S-register planner also queries this before PEI determines the saves.
+  // Keep its eligibility identical to the generic noreturn/nounwind check;
+  // interrupt handlers must still preserve the interrupted register state.
+  const Function &F = MF.getFunction();
+  return F.hasFnAttribute(Attribute::NoReturn) &&
+         F.hasFnAttribute(Attribute::NoUnwind) &&
+         !F.hasFnAttribute(Attribute::UWTable) &&
+         !F.hasFnAttribute("interrupt");
+}
+
+bool RISCCFrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
+  const Function &F = MF.getFunction();
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  const TargetMachine &TM = MF.getTarget();
+  if (!EnableShrinkWrap || STI.isNano() || F.hasOptNone() ||
+      F.hasFnAttribute("interrupt") || F.hasFnAttribute(Attribute::UWTable) ||
+      F.hasPersonalityFn() || MFI.hasVarSizedObjects() ||
+      MFI.getMaxAlign() > getStackAlign() ||
+      TM.getBBSectionsType() != BasicBlockSection::None ||
+      TM.Options.EnableMachineFunctionSplitter ||
+      getCGPassBuilderOption().EnableMachineFunctionSplitter)
+    return false;
+  for (const MachineBasicBlock &MBB : MF) {
+    if (MBB.isEHPad() || MBB.hasAddressTaken())
+      return false;
+    for (const MachineInstr &MI : MBB) {
+      if (MI.isDebugInstr())
+        continue;
+      if (MI.isInlineAsm() || MI.isBundled() || MI.isCFIInstruction())
+        return false;
+    }
+  }
+  return true;
+}
+
+bool RISCCFrameLowering::canUseAsPrologue(const MachineBasicBlock &MBB) const {
+  // LR and S-register saves use R0 even when the SP adjustment is immediate.
+  return !MBB.isLiveIn(RISCC::R0);
+}
+
+bool RISCCFrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
+  // emitEpilogue currently restores immediately before a return/tail transfer.
+  // Do not move it before ordinary work in a fallthrough restore block.
+  auto I = MBB.getLastNonDebugInstr();
+  return I != MBB.end() && I->isReturn() &&
+         !I->readsRegister(RISCC::R0, STI.getRegisterInfo());
+}
 
 static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      const DebugLoc &DL, const RISCCInstrInfo &TII,
@@ -33,10 +88,12 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      Register Scratch = RISCC::R0) {
   if (!Amount)
     return;
-  if (IsRC32 && Amount >= -384 && Amount <= 381) {
+  // RC32 can use up to three ADDIs before a literal becomes worthwhile;
+  // RC16 can materialize the adjustment without a pool. Share the emission.
+  if (isInt<8>(Amount) || (IsRC32 && Amount >= -384 && Amount <= 381)) {
     while (Amount) {
       int64_t Step = std::clamp<int64_t>(Amount, -128, 127);
-      BuildMI(MBB, I, DL, TII.get(RISCC::ADDI32), RISCC::R7)
+      BuildMI(MBB, I, DL, TII.get(TII.getNativeOpcode(RISCC::ADDI)), RISCC::R7)
           .addReg(RISCC::R7)
           .addImm(Step)
           .setMIFlag(Flag);
@@ -44,16 +101,8 @@ static void adjustSP(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     }
     return;
   }
-  if (isInt<8>(Amount)) {
-    BuildMI(MBB, I, DL, TII.get(RISCC::ADDI), RISCC::R7)
-        .addReg(RISCC::R7)
-        .addImm(Amount)
-        .setMIFlag(Flag);
-    return;
-  }
   TII.materializeImmediate(MBB, I, DL, Scratch, std::abs(Amount), Flag);
-  unsigned Opcode = IsRC32 ? (Amount < 0 ? RISCC::SUB32 : RISCC::ADD32)
-                           : (Amount < 0 ? RISCC::SUB : RISCC::ADD);
+  unsigned Opcode = TII.getNativeOpcode(Amount < 0 ? RISCC::SUB : RISCC::ADD);
   BuildMI(MBB, I, DL, TII.get(Opcode), RISCC::R7)
       .addReg(RISCC::R7)
       .addReg(Scratch)
@@ -83,7 +132,7 @@ void RISCCFrameLowering::emitPrologue(MachineFunction &MF,
           .addReg(RISCC::R0, RegState::Kill)
           .setMIFlag(MachineInstr::FrameSetup);
     else
-      BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::ST32 : RISCC::ST))
+      BuildMI(MBB, I, DL, TII.get(TII.getNativeOpcode(RISCC::ST)))
           .addReg(RISCC::R0, RegState::Kill)
           .addFrameIndex(FI)
           .addImm(0)
@@ -99,13 +148,14 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
   const auto &FuncInfo = *MF.getInfo<RISCCMachineFunctionInfo>();
   int FI = FuncInfo.getLRSpillFI();
   MCRegister LRSave = FuncInfo.getLRSaveReg();
-  // RC16 may tail-call between the public S7 and private S3 conventions.
+  // Mainline code may tail-call between public S7 and private S3 conventions.
   // LowerCall already emitted the link copy before this epilogue. Feed that
   // copy from our saved address, rather than a link overwritten by a call.
   bool PrivateTail = I->getOpcode() == RISCC::LINK_S3_TAIL16 ||
-                     I->getOpcode() == RISCC::LINK_S3_TAIL_MIN;
+                     I->getOpcode() == RISCC::LINK_S3_TAIL_MIN ||
+                     I->getOpcode() == RISCC::LINK_S3_TAIL32_LITERAL;
   bool ChangesLink =
-      I->isCall() && I->isReturn() && !STI.isRC32() &&
+      I->isCall() && I->isReturn() && !STI.isNano() &&
       FuncInfo.getReturnAddressReg() != (PrivateTail ? RISCC::S3 : RISCC::S7);
   if (ChangesLink && (FI >= 0 || LRSave)) {
     auto Copy = I;
@@ -119,7 +169,8 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
       if (LRSave)
         Copy->getOperand(1).setReg(LRSave);
       else {
-        BuildMI(MBB, Copy, Copy->getDebugLoc(), TII.get(RISCC::LD),
+        BuildMI(MBB, Copy, Copy->getDebugLoc(),
+                TII.get(TII.getNativeOpcode(RISCC::LD)),
                 Copy->getOperand(0).getReg())
             .addFrameIndex(FI)
             .addImm(0)
@@ -151,8 +202,7 @@ void RISCCFrameLowering::emitEpilogue(MachineFunction &MF,
           .addReg(LRSave)
           .setMIFlag(MachineInstr::FrameDestroy);
     else
-      BuildMI(MBB, I, DL, TII.get(STI.isRC32() ? RISCC::LD32 : RISCC::LD),
-              RISCC::R0)
+      BuildMI(MBB, I, DL, TII.get(TII.getNativeOpcode(RISCC::LD)), RISCC::R0)
           .addFrameIndex(FI)
           .addImm(0)
           .setMIFlag(MachineInstr::FrameDestroy);
@@ -239,6 +289,28 @@ MachineBasicBlock::iterator RISCCFrameLowering::eliminateCallFramePseudoInstr(
 
 static bool needsFrameScavengerSlot(const MachineFunction &MF) {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
+  // Address pseudos materialize into their own destination. Only other
+  // frame-index users can need a scavenged GPR. Callee-save accesses have
+  // already been inserted; the target's LR save is emitted later.
+  bool HasFrameAccess =
+      MF.getInfo<RISCCMachineFunctionInfo>()->getLRSpillFI() >= 0;
+  if (!HasFrameAccess) {
+    for (const MachineBasicBlock &MBB : MF) {
+      for (const MachineInstr &MI : MBB) {
+        if (MI.isDebugInstr() || MI.getOpcode() == RISCC::FRAMEADDR ||
+            MI.getOpcode() == RISCC::FRAMEADDR32)
+          continue;
+        HasFrameAccess |= llvm::any_of(
+            MI.operands(), [](const MachineOperand &MO) { return MO.isFI(); });
+      }
+    }
+    // Keep the conservative frame reservation for control flow: prologues,
+    // multiple epilogues and literal placement can all lengthen its branches.
+    if (!HasFrameAccess && MF.size() == 1 &&
+        llvm::none_of(MF.front(),
+                      [](const MachineInstr &MI) { return MI.isBranch(); }))
+      return false;
+  }
   // The signed seven-bit displacement is scaled by the native word size.
   int64_t Limit = 64 * MF.getSubtarget<RISCCSubtarget>().getSlotSize();
   int64_t FrameSize = MFI.estimateStackSize(MF);
@@ -264,7 +336,8 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   auto *FuncInfo = MF.getInfo<RISCCMachineFunctionInfo>();
   bool ClobbersLink =
       !STI.isNano() &&
-      !MF.getRegInfo().use_nodbg_empty(FuncInfo->getReturnAddressReg()) &&
+      FuncInfo->getEntryLinkIsLive().value_or(
+          !MF.getRegInfo().use_nodbg_empty(FuncInfo->getReturnAddressReg())) &&
       llvm::any_of(MF, [&](const MachineBasicBlock &MBB) {
         return llvm::any_of(MBB, [&](const MachineInstr &MI) {
           return MI.isCall() && !MI.isReturn() &&
@@ -280,10 +353,16 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
   }
   // RC16 reserves 14 bytes for frame setup/teardown in this estimate.
   int64_t EstimatedSize = MF.estimateFunctionSizeInBytes() + 14;
+  if (!STI.isRC32())
+    for (const MachineBasicBlock &MBB : MF)
+      for (const MachineInstr &MI : MBB)
+        if (MI.getOpcode() == RISCC::FRAMEADDR)
+          // The descriptor covers MOV/ADDI; a large address takes LDI16/ADD.
+          EstimatedSize += 2;
   if (STI.isRC32()) {
     // Allow SP adjustment and two LR instructions at entry and each return.
-    // Medium frames need two immediate adds; larger frames reserve a
-    // scavenger slot regardless of branch range.
+    // Medium frames need two immediate adds. Large stack accesses are
+    // covered separately by needsFrameScavengerSlot.
     unsigned FrameOverhead =
         MF.getFrameInfo().estimateStackSize(MF) > 127 ? 8 : 6;
     EstimatedSize = FrameOverhead;
@@ -303,6 +382,12 @@ void RISCCFrameLowering::processFunctionBeforeFrameFinalized(
         case RISCC::LDPC_BRANCH:
         case RISCC::CALL32_LITERAL:
         case RISCC::TAIL32_LITERAL:
+        case RISCC::LINK_S3_CALL32_LITERAL:
+        case RISCC::LINK_S3_TAIL32_LITERAL:
+        case RISCC::FRAMEADDR32:
+          // A large frame address introduces an LDPC during FI elimination.
+          // Count its potential pool as well, before deciding whether branch
+          // relaxation needs an emergency spill slot.
           EstimatedSize += 8;
           break;
         case RISCC::SEXT16_RC32:

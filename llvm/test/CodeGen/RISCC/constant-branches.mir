@@ -1,0 +1,295 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bLDI\b/LDI32/g' -e 's/\bADDI\b/ADDI32/g' -e 's/\bLD\b/LD32/g' -e 's/\bCALL\b/CALL32/g' %s | llc \
+# RUN:   -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | \
+# RUN:   FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-constant-branches=false -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=full -start-before=riscc-postra-optimize -stop-after=unreachable-mbb-elimination,1 \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=CLEAN
+# RUN: llc -enable-new-pm -mtriple=riscc -mcpu=full -start-before=riscc-postra-optimize \
+# RUN:   -stop-after=unreachable-mbb-elimination,2 -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=CLEAN
+# RUN: llc -mtriple=riscc -mcpu=full -start-before=riscc-postra-optimize -verify-machineinstrs %s -o /dev/null
+# RUN: llc -enable-new-pm -mtriple=riscc -mcpu=full -start-before=riscc-postra-optimize -verify-machineinstrs %s \
+# RUN:   -o /dev/null
+#
+# These conditions become constant only in the machine value tracker. Preserve
+# unknown loads/call clobbers, incompatible joins, backedges and multi-way tails.
+# The full pipeline also exercises a size-layout candidate shrinking below
+# ExtTSP's three-block minimum during chain construction/tail merging.
+# CLEAN-LABEL: name: taken
+# CLEAN: bb.0:
+# CLEAN-NEXT: successors: %bb.1(0x80000000)
+# CLEAN: bb.1:
+# CLEAN: RETS
+# CLEAN-NOT: bb.2:
+# CLEAN: ...
+# OFF-LABEL: name: taken
+# OFF: BEQZ %bb.2
+# CHECK-LABEL: name: taken
+# CHECK: bb.0:
+# CHECK-NEXT: successors: %bb.2(0x80000000)
+# CHECK-NOT: BEQZ
+# CHECK: JMP8 %bb.2
+# CHECK-LABEL: name: fallthrough
+# CHECK: bb.0:
+# CHECK-NEXT: successors: %bb.1(0x80000000)
+# CHECK-NOT: BNEZ
+# CHECK-NOT: JMP8
+# CHECK: bb.1:
+# CHECK-LABEL: name: negative
+# CHECK: bb.0:
+# CHECK-NEXT: successors: %bb.2(0x80000000)
+# CHECK-NOT: BLTZ
+# CHECK: JMP8 %bb.2
+# CHECK-LABEL: name: nonnegative
+# CHECK: bb.0:
+# CHECK-NEXT: successors: %bb.2(0x80000000)
+# CHECK-NOT: BGEZ
+# CHECK: JMP8 %bb.2
+# CHECK-LABEL: name: explicit_false
+# CHECK: bb.0:
+# CHECK-NEXT: successors: %bb.2(0x80000000)
+# CHECK-NOT: BNEZ
+# CHECK: JMP8 %bb.2
+# CHECK-LABEL: name: edge_equality
+# CHECK: BNEZ %bb.2
+# CHECK: bb.1:
+# CHECK-NEXT: successors: %bb.3(0x80000000)
+# CHECK-NOT: BEQZ
+# CHECK: JMP8 %bb.3
+# CHECK-LABEL: name: call_clobber
+# CHECK: CALL
+# CHECK: BEQZ %bb.2
+# CHECK-LABEL: name: load_clobber
+# CHECK: = LD
+# CHECK: BEQZ %bb.2
+# CHECK-LABEL: name: backedge
+# CHECK: bb.1:
+# CHECK: BEQZ %bb.3
+# CHECK-LABEL: name: multiple_conditions
+# CHECK: BEQZ %bb.1
+# CHECK: BGEZ %bb.2
+# CHECK: JMP8 %bb.3
+# CHECK-LABEL: name: join_disagrees
+# CHECK: bb.3:
+# CHECK: BEQZ %bb.5
+--- |
+  target triple = "riscc-none-elf"
+  define void @taken() { ret void }
+  define void @fallthrough() { ret void }
+  define void @negative() { ret void }
+  define void @nonnegative() { ret void }
+  define void @explicit_false() { ret void }
+  define void @edge_equality() optsize { ret void }
+  define void @call_clobber() { ret void }
+  define void @load_clobber() { ret void }
+  define void @backedge() { ret void }
+  define void @multiple_conditions() { ret void }
+  define void @join_disagrees() optsize { ret void }
+...
+---
+name: taken
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI 0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: fallthrough
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI 0
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: negative
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI 0
+    $r0 = ADDI $r0, -1
+    BLTZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: nonnegative
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI 0
+    BGEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: explicit_false
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI 0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: edge_equality
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.2, %bb.3
+    liveins: $r0, $s7
+    BEQZ %bb.3, implicit $r0
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: call_clobber
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r2
+    $r0 = LDI 0
+    CALL $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: load_clobber
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r2, $s7
+    $r0 = LDI 0
+    $r0 = LD $r2, 0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: backedge
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $r2, $s7
+    $r0 = LDI 0
+  bb.1:
+    successors: %bb.2, %bb.3
+    liveins: $r0, $r2, $s7
+    BEQZ %bb.3, implicit $r0
+  bb.2:
+    successors: %bb.1
+    liveins: $r2, $s7
+    $r0 = LD $r2, 0
+    JMP8 %bb.1
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: multiple_conditions
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2, %bb.3
+    liveins: $s7
+    $r0 = LDI 0
+    BEQZ %bb.1, implicit $r0
+    BGEZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: join_disagrees
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.3
+    liveins: $s7
+    $r0 = LDI 0
+    JMP8 %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $s7
+    $r0 = LDI 1
+  bb.3:
+    successors: %bb.4, %bb.5
+    liveins: $r0, $s7
+    BEQZ %bb.5, implicit $r0
+  bb.4:
+    liveins: $s7
+    RETS implicit $s7
+  bb.5:
+    liveins: $s7
+    RETS implicit $s7
+...

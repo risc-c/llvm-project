@@ -1,23 +1,15 @@
 # REQUIRES: riscc-registered-target
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32,+early-branches -run-pass=postmisched -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: sed -e 's/ADD32/ADD/g' -e 's/SUB32/SUB/g' -e 's/CMPI32/CMPI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/MUL32/MUL/g' -e 's/SRLI32/SRLI/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+early-branches -run-pass=postmisched -verify-machineinstrs -o - | FileCheck %s
-
 # RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: sed -e 's/ADD32/ADD/g' -e 's/SUB32/SUB/g' -e 's/CMPI32/CMPI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/MUL32/MUL/g' -e 's/SRLI32/SRLI/g' %s | llc -x mir -mtriple=riscc -mcpu=full -run-pass=postmisched -verify-machineinstrs -o - | FileCheck %s
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32,-early-branches -run-pass=postmisched -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=DISABLED
-# RUN: sed -e 's/ADD32/ADD/g' -e 's/SUB32/SUB/g' -e 's/CMPI32/CMPI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/MUL32/MUL/g' -e 's/SRLI32/SRLI/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=-early-branches -run-pass=postmisched -verify-machineinstrs -o - | FileCheck %s --check-prefix=DISABLED
+# RUN: sed -e 's/ADD32/ADD/g' -e 's/SUB32/SUB/g' -e 's/CMPI32/CMPI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' \
+# RUN:   -e 's/MUL32/MUL/g' -e 's/SRLI32/SRLI/g' %s | llc -x mir -mtriple=riscc -mcpu=full -run-pass=postmisched \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
 
-# DISABLED-LABEL: name: alu
-# DISABLED: $r3 = ADD{{(32)?}}
-# DISABLED-NEXT: CMPI{{(32)?}}
-# DISABLED-NEXT: BEQZ
-
-# The region-ending branch must contribute its saved-flag latency to the
-# scheduling DAG. Fill the gap with useful work, not NOPs. Both widths use
-# the same timing model. Ordinary consumers keep their original latency.
+# Branches consume R0 in Execute: ordinary ALU and shift conditions need no
+# filler, while a load condition leaves one useful instruction-sized gap.
+# Both widths use the same timing model.
 # CHECK-LABEL: name: alu
-# CHECK: CMPI{{(32)?}} $r1, 5, implicit-def $r0
-# CHECK-NEXT: $r3 = ADD{{(32)?}} killed $r1, killed $r2
+# CHECK: $r3 = ADD{{(32)?}}
+# CHECK-NEXT: CMPI{{(32)?}} {{.*}}$r1, 5, implicit-def $r0
 # CHECK-NEXT: BEQZ
 # CHECK-LABEL: name: load
 # CHECK: $r0 = LD{{(32)?}} $r1, 0
@@ -26,7 +18,7 @@
 # CHECK-NEXT: BEQZ
 # CHECK-LABEL: name: dependent
 # CHECK: $r1 = ADD{{(32)?}}
-# CHECK-NEXT: CMPI{{(32)?}} killed $r1, 5, implicit-def $r0
+# CHECK-NEXT: CMPI{{(32)?}} {{.*}}$r1, 5, implicit-def $r0
 # CHECK-NEXT: BEQZ
 
 --- |
@@ -81,11 +73,10 @@ body: |
 ...
 
 # Multiply and shift completion save flags in Execute, just like simple ALU
-# operations. They do not need the load's second intervening instruction.
+# operations. They need no additional branch delay after completion.
 # CHECK-LABEL: name: multiply
-# CHECK: $r0 = MUL{{(32)?}} $r1, $r2
-# CHECK-NEXT: $r3 = ADD{{(32)?}} killed $r1, killed $r2
-# CHECK-NEXT: BLTZ
+# CHECK: $r0 = MUL{{(32)?}}
+# CHECK: BLTZ
 ---
 name: multiply
 tracksRegLiveness: true
@@ -101,9 +92,8 @@ body: |
     RETS implicit $s7
 ...
 # CHECK-LABEL: name: shift
-# CHECK: $r0 = SRLI{{(32)?}} $r1, 3
-# CHECK-NEXT: $r3 = ADD{{(32)?}} killed $r1, killed $r2
-# CHECK-NEXT: BGEZ
+# CHECK: $r0 = SRLI{{(32)?}} {{.*}}$r1, 3
+# CHECK: BGEZ
 ---
 name: shift
 tracksRegLiveness: true

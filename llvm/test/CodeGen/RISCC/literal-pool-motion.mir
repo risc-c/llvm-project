@@ -1,0 +1,158 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/input.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands -riscc-pack-literal-motion \
+# RUN:   -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=ON
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=riscc-constant-islands -verify-machineinstrs \
+# RUN:   %t/input.mir -o - | FileCheck %s --check-prefix=ON
+# RUN: llc -mtriple=riscc -mcpu=sys -mattr=+rc32 -start-before=riscc-constant-islands -verify-machineinstrs \
+# RUN:   %t/input.mir -o - | FileCheck %s --check-prefix=ON
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -riscc-pack-literal-motion=false -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands -riscc-pack-literal-motion \
+# RUN:   -verify-machineinstrs -filetype=obj %t/input.mir -o %t/output.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -stop-after=riscc-constant-islands -riscc-pack-literal-motion -verify-machineinstrs %t/input.mir -o - | \
+# RUN:   FileCheck %s --check-prefix=LIVE
+
+# Independent arithmetic can precede a delayed literal load so its word fits
+# after the return instead of in a dedicated mid-block island.
+# ON-LABEL: sink:
+# ON:       addi r2, 1
+# ON:       ldpc r1,
+# ON-NOT:   jmp8
+# ON:       ret s7
+# ON:       .long 286331153
+# OFF-LABEL: sink:
+# OFF:      ldpc r1,
+# OFF:      jmp8
+# OFF:      .long 286331153
+
+# Real register dependencies cannot move ahead of their defining load.
+# ON-LABEL: dependent:
+# ON:       ldpc r1,
+# ON-NEXT:  addi r1, 1
+# ON:       jmp8
+
+# An ordered memory access stops the local scheduling window.
+# ON-LABEL: ordered:
+# ON:       ldpc r1,
+# ON-NEXT:  ld r3, [r4 + 0]
+# ON:       jmp8
+
+# Both loads constrain the same pool. Delaying either one alone cannot free
+# the pool, but scheduling both together lets it move after the return.
+# ON-LABEL: joint:
+# ON:       addi r3, 1
+# ON:       ldpc r1,
+# ON-NEXT:  ldpc r2,
+# ON-NOT:   jmp8
+# ON:       ret s7
+# ON:       .long 286331153
+# OFF-LABEL: joint:
+# OFF:      ldpc r1,
+# OFF-NEXT: ldpc r2,
+# OFF:      jmp8
+
+# Distinct words in the same island can be delayed together as well. The gain
+# is removal of a dedicated skip, not duplicate-value coalescing.
+# ON-LABEL: joint_distinct:
+# ON:       addi r3, 1
+# ON:       ldpc r1,
+# ON-NEXT:  ldpc r2,
+# ON-NOT:   jmp8
+# ON:       ret s7
+# ON:       .long 286331153
+# ON:       .long 572662306
+# OFF-LABEL: joint_distinct:
+# OFF:      ldpc r1,
+# OFF-NEXT: ldpc r2,
+# OFF:      jmp8
+
+# An ordered memory access also blocks motion of multiple roots.
+# ON-LABEL: joint_ordered:
+# ON:       ldpc r1,
+# ON-NEXT:  ldpc r2,
+# ON-NEXT:  ld r3, [r4 + 0]
+# ON:       jmp8
+
+# No independent instructions can move past both loads. Restore the exact
+# original instruction order when neither individual nor joint sinking helps.
+# ON-LABEL: no_gain:
+# ON:       ldpc r1,
+# ON-NEXT:  ldpc r2,
+# ON-NEXT:  addi r1, 1
+# ON:       jmp8
+
+# Independent arithmetic may move, but an unknown-alias store must not pass
+# the dependent data load. The register address must also remain available.
+# ON-LABEL: aliasing:
+# ON:       addi r2, 1
+# ON:       ldpc r1,
+# ON-NEXT:  ldx r1, [r1 + r4]
+# ON-NEXT:  st r3, [r5 + 0]
+# ON-NOT:   jmp8
+# ON:       ret s7
+
+# A shared input's last use changes when read/read-independent instructions
+# move. Its kill flag must follow the new last use, not the old schedule.
+# ON-LABEL: kills:
+# ON:       mov r2, r4
+# ON:       ldpc r1,
+# ON-NEXT:  add r1, r1, r4
+# ON-NOT:   jmp8
+# LIVE-LABEL: name: kills
+# LIVE:     $r2 = MOV32 $r4
+# LIVE:     $r1 = ADD32 killed $r1, killed $r4
+
+# Static pool/jump costing is not a speed-scheduling policy.
+# ON-LABEL: speed:
+# ON:       ldpc r1,
+# ON-NEXT:  addi r2, 1
+# ON:       jmp8
+
+# ON-LABEL: joint_speed:
+# ON:       ldpc r1,
+# ON-NEXT:  ldpc r2,
+# ON-NEXT:  addi r3, 1
+# ON:       jmp8
+
+#--- input.py
+cases = ["sink", "dependent", "ordered", "joint", "joint_distinct", "joint_ordered", "no_gain", "aliasing", "kills", "speed", "joint_speed"]
+print('--- |')
+print('  target triple = "riscc-none-elf"')
+for name in cases:
+    attrs = "" if name.endswith("speed") else "optsize"
+    print(f'  define i32 @{name}(ptr %p, ptr %q) {attrs} {{ ret i32 0 }}')
+print('...')
+for name in cases:
+    joint = name.startswith("joint") or name == "no_gain"
+    filler = "r1" if name in ("dependent", "no_gain") else "r3" if joint else "r2"
+    print('---')
+    print(f'name: {name}')
+    print('tracksRegLiveness: true')
+    print('constants:')
+    print("  - { id: 0, value: 'i32 286331153', alignment: 4 }")
+    if name == "joint_distinct":
+        print("  - { id: 1, value: 'i32 572662306', alignment: 4 }")
+    print('body: |')
+    print('  bb.0:')
+    print('    liveins: $r2, $r3, $r4, $r5, $s7')
+    print('    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)')
+    if name == "ordered":
+        print('    $r3 = LD32 $r4, 0 :: (volatile load (s32) from %ir.p)')
+    elif joint:
+        constant = 1 if name == "joint_distinct" else 0
+        print(f'    $r2 = LDPC %const.{constant} :: (load (s32) from constant-pool)')
+        if name == "joint_ordered":
+            print('    $r3 = LD32 $r4, 0 :: (volatile load (s32) from %ir.p)')
+    elif name == "aliasing":
+        print('    $r1 = LDX32 $r1, $r4 :: (load (s32) from %ir.p)')
+        print('    ST32 $r3, $r5, 0 :: (store (s32) into %ir.q)')
+    elif name == "kills":
+        print('    $r1 = ADD32 $r1, $r4')
+        print('    $r2 = MOV32 killed $r4')
+    for _ in range(132):
+        print(f'    ${filler} = ADDI32 ${filler}, 1')
+    print('    RETS implicit $s7, implicit $r1' + (', implicit $r2' if joint else ''))
+    print('...')

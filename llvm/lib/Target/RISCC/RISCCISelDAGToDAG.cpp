@@ -8,13 +8,21 @@
 
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
 #include "RISCC.h"
+#include "RISCCMatInt.h"
 #include "RISCCSubtarget.h"
 #include "RISCCTargetMachine.h"
+#include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/CodeGen/FunctionLoweringInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 
 using namespace llvm;
@@ -22,16 +30,47 @@ using namespace llvm;
 #define DEBUG_TYPE "riscc-isel"
 
 namespace {
+static cl::opt<bool> EnableLoopRangeMasks(
+    "riscc-loop-range-masks", cl::Hidden, cl::init(true),
+    cl::desc("Remove masks made redundant by proven loop induction ranges"));
+
 class RISCCDAGToDAGISel final : public SelectionDAGISel {
   const RISCCSubtarget *Subtarget = nullptr;
+  DenseMap<const Value *, unsigned> LoopValueBits;
 
 public:
   explicit RISCCDAGToDAGISel(RISCCTargetMachine &TM, CodeGenOptLevel OL)
       : SelectionDAGISel(TM, OL) {}
   bool runOnMachineFunction(MachineFunction &MF) override {
     Subtarget = &MF.getSubtarget<RISCCSubtarget>();
+    LoopValueBits.clear();
+    Function &F = MF.getFunction();
+    if (EnableLoopRangeMasks && OptLevel != CodeGenOptLevel::None &&
+        !F.hasOptNone()) {
+      DominatorTree DT(F);
+      LoopInfo LI(DT);
+      TargetLibraryInfo LibraryInfo(*LibInfo);
+      ScalarEvolution SE(F, LibraryInfo, *AC, DT, LI);
+      unsigned NativeBits = Subtarget->getXLenVT().getSizeInBits();
+      for (Loop *L : LI.getLoopsInPreorder())
+        for (PHINode &Phi : L->getHeader()->phis()) {
+          if (!Phi.getType()->isIntegerTy(NativeBits))
+            continue;
+          // Start with closed, constant-step induction variables. Unknown or
+          // undef incoming values must not bypass a software shift's safety
+          // mask just because its defined results would have a small range.
+          auto *AR = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(&Phi));
+          if (!AR || !AR->isAffine() || !isa<SCEVConstant>(AR->getStart()) ||
+              !isa<SCEVConstant>(AR->getStepRecurrence(SE)))
+            continue;
+          unsigned Bits = SE.getUnsignedRangeMax(AR).getActiveBits();
+          if (Bits < NativeBits)
+            LoopValueBits[&Phi] = Bits;
+        }
+    }
     return SelectionDAGISel::runOnMachineFunction(MF);
   }
+  void PreprocessISelDAG() override;
   void Select(SDNode *) override;
   bool SelectInlineAsmMemoryOperand(const SDValue &, InlineAsm::ConstraintCode,
                                     std::vector<SDValue> &) override;
@@ -52,9 +91,46 @@ public:
 
 char RISCCDAGToDAGISelLegacy::ID = 0;
 
+void RISCCDAGToDAGISel::PreprocessISelDAG() {
+  if (LoopValueBits.empty())
+    return;
+  // Selection may still export more values in later blocks. Do not populate
+  // FunctionLoweringInfo's frozen reverse map while ValueMap can still grow.
+  DenseMap<Register, unsigned> RegisterBits;
+  for (auto [Value, Bits] : LoopValueBits)
+    if (auto It = FuncInfo->ValueMap.find(Value);
+        It != FuncInfo->ValueMap.end())
+      RegisterBits[It->second] = Bits;
+  bool Changed = false;
+  for (SDNode &N : make_early_inc_range(CurDAG->allnodes())) {
+    if (N.getOpcode() != ISD::AND ||
+        N.getValueType(0) != Subtarget->getXLenVT())
+      continue;
+    SDValue Value = N.getOperand(0);
+    auto *Mask = dyn_cast<ConstantSDNode>(N.getOperand(1));
+    if (!Mask || Value.getOpcode() != ISD::CopyFromReg)
+      continue;
+    Register Reg = cast<RegisterSDNode>(Value.getOperand(1))->getReg();
+    if (!Reg.isVirtual())
+      continue;
+    auto It = RegisterBits.find(Reg);
+    if (It == RegisterBits.end())
+      continue;
+    APInt PossibleBits =
+        APInt::getLowBitsSet(Mask->getAPIntValue().getBitWidth(), It->second);
+    if ((PossibleBits & ~Mask->getAPIntValue()) != 0)
+      continue;
+    CurDAG->ReplaceAllUsesWith(SDValue(&N, 0), Value);
+    Changed = true;
+  }
+  if (Changed)
+    CurDAG->RemoveDeadNodes();
+}
+
 std::pair<SDValue, SDValue>
 RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
   const MVT XLenVT = Subtarget->getXLenVT();
+  const RISCCInstrInfo &TII = *Subtarget->getInstrInfo();
   SDValue Base = Ptr;
   int64_t Displacement = 0;
   if (Ptr.getOpcode() == ISD::ADD) {
@@ -79,10 +155,9 @@ RISCCDAGToDAGISel::selectWordAddress(SDValue Ptr, const SDLoc &DL) {
           continue;
         // New nodes introduced during selection must already be selected.
         Base = Existing ? SDValue(Existing, 0)
-                        : SDValue(CurDAG->getMachineNode(Subtarget->isRC32()
-                                                             ? RISCC::ADD32
-                                                             : RISCC::ADD,
-                                                         DL, XLenVT, A, B),
+                        : SDValue(CurDAG->getMachineNode(
+                                      TII.getNativeOpcode(RISCC::ADD), DL,
+                                      XLenVT, A, B),
                                   0);
         Displacement = C->getSExtValue();
         break;
@@ -106,6 +181,7 @@ bool RISCCDAGToDAGISel::SelectInlineAsmMemoryOperand(
 }
 
 bool RISCCDAGToDAGISel::selectMaskedMerge(SDNode *N) {
+  const RISCCInstrInfo &TII = *Subtarget->getInstrInfo();
   MVT VT = Subtarget->getXLenVT();
   if (N->getValueType(0) != VT)
     return false;
@@ -131,12 +207,12 @@ bool RISCCDAGToDAGISel::selectMaskedMerge(SDNode *N) {
   SDValue Mask = A.getOperand(1);
   uint64_t MaskValue = cast<ConstantSDNode>(Mask)->getZExtValue();
   SDLoc DL(N);
-  unsigned Xor = Subtarget->isRC32() ? RISCC::XOR32 : RISCC::XOR;
+  unsigned Xor = TII.getNativeOpcode(RISCC::XOR);
   SDValue Diff(
       CurDAG->getMachineNode(Xor, DL, VT, A.getOperand(0), B.getOperand(0)), 0);
-  unsigned And = Subtarget->isRC32() ? RISCC::AND32 : RISCC::AND;
+  unsigned And = TII.getNativeOpcode(RISCC::AND);
   if (isUInt<8>(MaskValue)) {
-    And = Subtarget->isRC32() ? RISCC::ANDI32 : RISCC::ANDI;
+    And = TII.getNativeOpcode(RISCC::ANDI);
     Mask = CurDAG->getTargetConstant(MaskValue, DL, VT);
   }
   SDValue Selected(CurDAG->getMachineNode(And, DL, VT, Diff, Mask), 0);
@@ -150,6 +226,7 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     return;
   }
   SDLoc DL(N);
+  const RISCCInstrInfo &TII = *Subtarget->getInstrInfo();
   switch (N->getOpcode()) {
   case ISD::OR:
     if (selectMaskedMerge(N))
@@ -157,40 +234,44 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     break;
   case RISCCISD::DIVU:
     CurDAG->SelectNodeTo(
-        N, Subtarget->isRC32() ? RISCC::DIVU32 : RISCC::DIVU, N->getVTList(),
+        N, TII.getNativeOpcode(RISCC::DIVU), N->getVTList(),
         {N->getOperand(0), N->getOperand(1), N->getOperand(2)});
     return;
   case RISCCISD::MULHU:
-    CurDAG->SelectNodeTo(N, Subtarget->isRC32() ? RISCC::MULHU32 : RISCC::MULHU,
-                         N->getVTList(), {N->getOperand(0), N->getOperand(1)});
+    CurDAG->SelectNodeTo(N, TII.getNativeOpcode(RISCC::MULHU), N->getVTList(),
+                         {N->getOperand(0), N->getOperand(1)});
     return;
   case ISD::SIGN_EXTEND_INREG:
     if (Subtarget->isRC32()) {
       MVT FromVT = cast<VTSDNode>(N->getOperand(1))->getVT().getSimpleVT();
       assert((FromVT == MVT::i8 || FromVT == MVT::i16) &&
              "unexpected RC32 sign extension width");
-      CurDAG->SelectNodeTo(
-          N, FromVT == MVT::i8 ? RISCC::SEXT8_RC32 : RISCC::SEXT16_RC32,
-          MVT::i32, {N->getOperand(0)});
+      unsigned Opcode = RISCC::SEXT16_RC32;
+      if (FromVT == MVT::i8)
+        Opcode = RISCC::SEXT8_RC32;
+      else if (Subtarget->hasWideShift())
+        Opcode = RISCC::SEXT16_SHIFT_RC32;
+      CurDAG->SelectNodeTo(N, Opcode, MVT::i32, {N->getOperand(0)});
       return;
     }
     break;
   case ISD::Constant: {
     if (N->getValueType(0) != Subtarget->getXLenVT())
       break;
-    uint64_t Value = cast<ConstantSDNode>(N)->getZExtValue();
-    if (isUInt<8>(Value)) {
-      CurDAG->SelectNodeTo(
-          N, Subtarget->isRC32() ? RISCC::LDI32 : RISCC::LDI,
-          Subtarget->getXLenVT(),
-          CurDAG->getTargetConstant(Value, DL, Subtarget->getXLenVT()));
+    const APInt &Value = cast<ConstantSDNode>(N)->getAPIntValue();
+    auto Sequence = RISCCMatInt::generate(Value, *Subtarget, 1);
+    if (!Sequence.empty()) {
+      CurDAG->SelectNodeTo(N, TII.getNativeOpcode(Sequence.front().Opcode),
+                           Subtarget->getXLenVT(),
+                           CurDAG->getTargetConstant(Sequence.front().Immediate,
+                                                     DL,
+                                                     Subtarget->getXLenVT()));
       return;
     }
     if (Subtarget->isRC32()) {
       // Keep constants visible until selection so immediates and address
       // displacements fold normally. Only materialized values need a pool.
-      Constant *C =
-          ConstantInt::get(Type::getInt32Ty(*CurDAG->getContext()), Value);
+      Constant *C = ConstantInt::get(*CurDAG->getContext(), Value);
       SDValue Pool = CurDAG->getTargetConstantPool(C, MVT::i32, Align(4));
       auto *Load = CurDAG->getMachineNode(RISCC::LDPC, DL, MVT::i32, MVT::Other,
                                           Pool, CurDAG->getEntryNode());
@@ -202,11 +283,6 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
       ReplaceNode(N, Load);
       return;
     }
-    if (!Subtarget->isRC32() && (Value & 0xff) == 0) {
-      CurDAG->SelectNodeTo(N, RISCC::LUI, MVT::i16,
-                           CurDAG->getTargetConstant(Value >> 8, DL, MVT::i16));
-      return;
-    }
     break;
   }
   case ISD::FrameIndex: {
@@ -214,10 +290,8 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     int FI = cast<FrameIndexSDNode>(N)->getIndex();
     SDValue TFI = CurDAG->getTargetFrameIndex(FI, XLenVT);
     SDValue Zero = CurDAG->getTargetConstant(0, DL, MVT::i16);
-    ReplaceNode(N,
-                CurDAG->getMachineNode(Subtarget->isRC32() ? RISCC::FRAMEADDR32
-                                                           : RISCC::FRAMEADDR,
-                                       DL, XLenVT, TFI, Zero));
+    ReplaceNode(N, CurDAG->getMachineNode(TII.getNativeOpcode(RISCC::FRAMEADDR),
+                                          DL, XLenVT, TFI, Zero));
     return;
   }
   case ISD::LOAD: {
@@ -249,22 +323,17 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
       // Keep a shared address in a register when stores or other accesses
       // also need it; LDX would otherwise keep both inputs live as well.
       if (Base == Ptr && Ptr.getOpcode() == ISD::ADD && Ptr.hasOneUse())
-        SelectLoad(Subtarget->isRC32() ? RISCC::LDX32 : RISCC::LDX,
+        SelectLoad(TII.getNativeOpcode(RISCC::LDX),
                    {Ptr.getOperand(0), Ptr.getOperand(1), Chain});
       else
-        SelectLoad(Subtarget->isRC32()   ? RISCC::LD32
-                   : Subtarget->isNano() ? RISCC::LD_NANO
-                                         : RISCC::LD,
+        SelectLoad(Subtarget->isNano() ? unsigned(RISCC::LD_NANO)
+                                       : TII.getNativeOpcode(RISCC::LD),
                    {Base, Disp, Chain});
       return;
     }
     if (LD->getMemoryVT() == MVT::i8) {
       const bool IsSigned = LD->getExtensionType() == ISD::SEXTLOAD;
-      unsigned Opc;
-      if (Subtarget->isRC32())
-        Opc = IsSigned ? RISCC::LDBS32 : RISCC::LDB32;
-      else
-        Opc = IsSigned ? RISCC::LDBS : RISCC::LDB;
+      unsigned Opc = TII.getNativeOpcode(IsSigned ? RISCC::LDBS : RISCC::LDB);
       SelectLoad(Opc, {Ptr, Chain});
       return;
     }
@@ -287,15 +356,13 @@ void RISCCDAGToDAGISel::Select(SDNode *N) {
     };
     if (ST->getMemoryVT() == Subtarget->getXLenVT()) {
       auto [Base, Disp] = selectWordAddress(Ptr, DL);
-      SelectStore(Subtarget->isRC32()   ? RISCC::ST32
-                  : Subtarget->isNano() ? RISCC::ST_NANO
-                                        : RISCC::ST,
+      SelectStore(Subtarget->isNano() ? unsigned(RISCC::ST_NANO)
+                                      : TII.getNativeOpcode(RISCC::ST),
                   {Val, Base, Disp, Chain});
       return;
     }
     if (ST->getMemoryVT() == MVT::i8) {
-      SelectStore(Subtarget->isRC32() ? RISCC::STB32 : RISCC::STB,
-                  {Val, Ptr, Chain});
+      SelectStore(TII.getNativeOpcode(RISCC::STB), {Val, Ptr, Chain});
       return;
     }
     if (Subtarget->isRC32() && ST->getMemoryVT() == MVT::i16) {

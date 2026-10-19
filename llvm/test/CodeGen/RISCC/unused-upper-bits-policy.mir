@@ -1,0 +1,52 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 16 > %t/rc16.mir
+# RUN: %python %t/generate.py 32 > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -verify-machineinstrs %t/rc16.mir -o - | \
+# RUN:   FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -verify-machineinstrs %t/rc32.mir \
+# RUN:   -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -riscc-unused-upper-bits=false \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -riscc-unused-upper-bits=true \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=ON
+
+# By default this all-users cleanup is a size policy, not an unconditional
+# promise about scheduling or register-allocation profitability.
+# CHECK-LABEL: name: size
+# CHECK: %1:{{gpr(32)?}} = COPY %0
+# CHECK-LABEL: name: minsize
+# CHECK: %1:{{gpr(32)?}} = COPY %0
+# CHECK-LABEL: name: speed
+# CHECK: %1:{{gpr(32)?}} = ANDI{{(32)?}} %0, 255
+# OFF-LABEL: name: size
+# OFF: ANDI32 %0, 255
+# OFF-LABEL: name: minsize
+# OFF: ANDI32 %0, 255
+# ON-LABEL: name: speed
+# ON: %1:gpr32 = COPY %0
+
+#--- generate.py
+import sys
+
+width = int(sys.argv[1])
+suffix = '32' if width == 32 else ''
+rc = 'gpr' + suffix
+print('--- |')
+for name, attrs in [('size', 'optsize'), ('minsize', 'optsize minsize'),
+                    ('speed', '')]:
+    print(f'  define void @{name}() {attrs} {{ ret void }}')
+print('...')
+for name in ['size', 'minsize', 'speed']:
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:{rc} = COPY $r1
+    %1:{rc} = ANDI{suffix} %0, 255
+    %2:{rc} = COPY $r2
+    STB{suffix} %1, %2
+    RETS implicit $s7
+...''')

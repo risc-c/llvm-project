@@ -1,0 +1,113 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands -verify-machineinstrs \
+# RUN:   %t/input.mir -o - | FileCheck %s --check-prefix=ON
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -riscc-pack-literal-hoisting=false -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -riscc-pack-literal-hoisting=true -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=ON
+# RUN: llc -mtriple=riscc -mcpu=sys -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -riscc-pack-literal-hoisting=true -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=ON
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -riscc-pack-literal-hoisting=true -verify-machineinstrs -filetype=obj %t/input.mir -o %t/on.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands \
+# RUN:   -riscc-pack-literal-hoisting=false -verify-machineinstrs -filetype=obj %t/input.mir -o %t/off.o
+# RUN: llvm-nm -S %t/on.o | FileCheck %s --check-prefix=SIZE-ON
+# RUN: llvm-nm -S %t/off.o | FileCheck %s --check-prefix=SIZE-OFF
+# RUN: %python %t/generate.py minsize > %t/minsize.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=riscc-constant-islands -verify-machineinstrs \
+# RUN:   %t/minsize.mir -o - | FileCheck %s --check-prefix=ON
+
+# A forward load cannot be delayed: all following instructions use its value.
+# Moving it earlier over independent instructions instead lets its word join
+# the preceding pool. Remove its dedicated forward skip and alignment fill.
+# ON-LABEL: hoist:
+# ON:       [[LEFT:.Ltmp[0-9]+]]:
+# ON-NEXT:  .long 286331153
+# ON-NEXT:  [[RIGHT:.Ltmp[0-9]+]]:
+# ON-NEXT:  .long 572662306
+# ON:       ldpc r1, [[RIGHT]]
+# ON-NOT:   jmp8
+# ON:       ret s7
+# OFF-LABEL: hoist:
+# OFF:       .long 286331153
+# OFF:       ldpc r1,
+# OFF:       jmp8
+# OFF:       .long 572662306
+# SIZE-ON:  00000214 T hoist
+# SIZE-OFF: 00000218 T hoist
+
+# A read of the old destination, ordered memory, or a frame boundary blocks
+# hoisting. Do not turn those cases into a changed schedule or packed pool.
+# ON-LABEL: dependent:
+# ON:       add r2, r2, r1
+# ON-NEXT:  ldpc r1,
+# ON:       jmp8
+# ON:       .long 572662306
+# ON-LABEL: ordered:
+# ON:       st r2, [r3 + 0]
+# ON-NEXT:  ldpc r1,
+# ON:       jmp8
+# ON:       .long 572662306
+# ON-LABEL: frame:
+# ON:       addi r2, 7
+# ON-NEXT:  ldpc r1,
+# ON:       jmp8
+# ON:       .long 572662306
+
+# A small safe motion that does not open a cheaper pool layout must roll back.
+# ON-LABEL: no_gain:
+# ON:       add r2, r2, r1
+# ON-NEXT:  addi r2, 1
+# ON-NEXT:  ldpc r1,
+# ON:       jmp8
+# ON:       .long 572662306
+
+# The same opportunity is deliberately left alone in speed-optimized code.
+# ON-LABEL: speed:
+# ON:       .long 286331153
+# ON:       ldpc r1,
+# ON:       jmp8
+# ON:       .long 572662306
+
+#--- generate.py
+import sys
+
+cases = ('hoist', 'dependent', 'ordered', 'frame', 'no_gain', 'speed')
+print('--- |')
+for name in cases:
+    attr = sys.argv[1] if len(sys.argv) > 1 else 'optsize'
+    if name == 'speed':
+        attr = ''
+    print(f'  define i64 @{name}(i32 %unused, i32 %seed, ptr %p) {attr} {{ ret i64 0 }}')
+print('...')
+for name in cases:
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+constants:
+  - {{ id: 0, value: 'i32 286331153', alignment: 4 }}
+  - {{ id: 1, value: 'i32 572662306', alignment: 4 }}
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $r2, $r3, $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $r2, $r3, $s7''')
+    for _ in range(128):
+        print('    $r2 = ADDI32 $r2, 1')
+    if name in ('dependent', 'no_gain'):
+        print('    $r2 = ADD32 $r2, $r1')
+    if name == 'no_gain':
+        print('    $r2 = ADDI32 $r2, 1')
+    if name == 'ordered':
+        print('    ST32 $r2, $r3, 0 :: (volatile store (s32) into %ir.p)')
+    if name == 'frame':
+        print('    $r2 = frame-setup ADDI32 $r2, 7')
+    print('    $r1 = LDPC %const.1 :: (load (s32) from constant-pool)')
+    for _ in range(130):
+        print('    $r1 = ADDI32 $r1, 1')
+    print('    RETS implicit $s7, implicit $r1, implicit $r2\n...')

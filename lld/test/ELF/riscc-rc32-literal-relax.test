@@ -1,0 +1,276 @@
+# REQUIRES: riscc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/basic.s -o %t/basic.o
+# RUN: ld.lld --threads=1 --emit-relocs -Ttext=0 %t/basic.o -o %t/basic
+# RUN: llvm-readobj --symbols --relocations %t/basic | FileCheck %s --check-prefix=BASIC
+# RUN: llvm-objdump -d %t/basic | FileCheck %s --check-prefix=BRANCH
+# RUN: ld.lld --threads=1 --no-relax -Ttext=0 %t/basic.o -o %t/no-relax
+# RUN: llvm-nm -S %t/no-relax | FileCheck %s --check-prefix=UNCHANGED
+# RUN: ld.lld -r %t/basic.o -o %t/partial.o
+# RUN: llvm-nm -S %t/partial.o | FileCheck %s --check-prefix=UNCHANGED
+# RUN: llvm-readobj --relocations %t/partial.o | FileCheck %s --check-prefix=PARTIAL
+# RUN: llvm-mc -triple=riscc -mcpu=full -mattr=+rc32 -filetype=obj %t/swap.s -o %t/swap.o
+# RUN: ld.lld --threads=1 --emit-relocs -Ttext=0x100 %t/swap.o -o %t/swap
+# RUN: llvm-readobj --symbols --relocations %t/swap | FileCheck %s --check-prefix=SWAP
+# RUN: llvm-objdump -d --start-address=0x100 --stop-address=0x110 %t/swap | FileCheck %s --check-prefix=SWAP-LOAD
+# RUN: llvm-objdump -s --section=.text %t/swap | FileCheck %s --check-prefix=SWAP-WORD
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/guarded.s -o %t/guarded.o
+# RUN: ld.lld --threads=1 -Ttext=0 %t/guarded.o -o %t/guarded
+# RUN: llvm-nm -S %t/guarded | FileCheck %s --check-prefix=GUARDED
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/debug.s -o %t/debug.o
+# RUN: ld.lld --threads=1 -Ttext=0 %t/basic.o %t/debug.o -o %t/debug
+# RUN: llvm-nm -S %t/debug | FileCheck %s --check-prefix=UNCHANGED
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/cross.s -o %t/cross.o
+# RUN: ld.lld --threads=1 -Ttext=0 %t/basic.o %t/cross.o -o %t/cross
+# RUN: llvm-nm -S %t/cross | FileCheck %s --check-prefix=UNCHANGED
+# RUN: llvm-mc -triple=riscc -mcpu=min -mattr=+rc32 -filetype=obj %t/invalid.s -o %t/invalid.o
+# RUN: not ld.lld --threads=1 -Ttext=0 %t/invalid.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID
+
+# Both loads share one word, and Min's compact branch remains relocatable
+# across deletion of the other word. A partial/no-relax/debug link preserves it.
+# BASIC:      0x0 R_RISCC_PCREL8_WORD .La 0x0
+# BASIC:      0x2 R_RISCC_PCREL8_WORD .Lb 0x0
+# BASIC:      Name: .La
+# BASIC-NEXT: Value: 0x8
+# BASIC:      Name: .Lb
+# BASIC-NEXT: Value: 0x8
+# BASIC:      Name: _start
+# BASIC:      Size: 14
+# BRANCH:     beqz .+8
+# UNCHANGED:  00000000 00000012 T _start
+# PARTIAL-COUNT-2: R_RISCC_RELAX_LITERAL
+
+# These loads are initially 520 bytes apart. Deleting three call-target words
+# makes a shared slot possible, but neither duplicate's original slot is in
+# reach of both users. Move the pointer word out of the way and use its slot.
+# The pointer's ABS32 relocation must follow it; the two numeric labels alias.
+# SWAP:      0x1FC R_RISCC_NONE .Lmiddle 0x0
+# SWAP:      0x200 R_RISCC_PCREL8_WORD .Lmiddle 0x0
+# SWAP:      0x2F8 R_RISCC_PCREL8_WORD .Lsecond 0x0
+# SWAP:      0x300 R_RISCC_ABS32 payload 0x0
+# SWAP:      Name: .Lfirst
+# SWAP-NEXT: Value: 0x1FC
+# SWAP:      Name: .Lmiddle
+# SWAP-NEXT: Value: 0x300
+# SWAP:      Name: .Lsecond
+# SWAP-NEXT: Value: 0x1FC
+# SWAP:      Name: _start
+# SWAP:      Size: 516
+# SWAP-LOAD: ldpc r1, .+252
+# SWAP-WORD: 01f0 00000000 00000000 00000000 78563412
+
+# Do not merge different relocations, address-taken/interior/global words,
+# stronger alignment, or duplicates whose combined range cannot fit.
+# GUARDED-DAG: 00000010 T address_taken
+# GUARDED-DAG: 00000010 T interior
+# GUARDED-DAG: 00000010 T exported
+# GUARDED-DAG: 00000010 T distinct
+# GUARDED-DAG: 00000010 T aligned
+# GUARDED-DAG: 00000210 T distant
+# Equal relocated values, including three copies, still merge.
+# GUARDED-DAG: 0000000c T pointers
+# GUARDED-DAG: 0000000c T tls
+# INVALID: RISC-C literal marker must name its own aligned word
+
+#--- basic.s
+.text
+.p2align 2
+.globl _start
+.type _start,@function
+_start:
+  ldpc r1, .La
+  ldpc r2, .Lb
+  beqz .Ldone
+  ret s7
+.La:
+  .long 0x12345678
+.Lb:
+  .long 0x12345678
+.Ldone:
+  ret s7
+.size _start, .-_start
+.reloc .La, R_RISCC_RELAX_LITERAL, .La
+.reloc .Lb, R_RISCC_RELAX_LITERAL, .Lb
+
+#--- swap.s
+.section .text.swap,"ax",@progbits
+.p2align 2
+.globl _start
+.type _start,@function
+_start:
+  ldpc r1, .Lfirst
+.Lcall0:
+  ldpc r0, .Ltarget0
+  jalr s7, r0
+.Lcall1:
+  ldpc r0, .Ltarget1
+  jalr s7, r0
+.Lcall2:
+  ldpc r0, .Ltarget2
+  jalr s7, r0
+  ret s7
+  .space 84
+.Lfirst:
+  .long 0x12345678
+.Ltarget0:
+  .long call_target(callee)
+.Ltarget1:
+  .long call_target(callee)
+.Ltarget2:
+  .long call_target(callee)
+  .space 152
+.Lmiddle:
+  .long payload
+  ldpc r2, .Lmiddle
+  ret s7
+  .space 244
+  ldpc r3, .Lsecond
+  ret s7
+  .space 4
+.Lsecond:
+  .long 0x12345678
+.size _start, .-_start
+.reloc .Lcall0, R_RISCC_RELAX_CALL, .Ltarget0
+.reloc .Lcall1, R_RISCC_RELAX_CALL, .Ltarget1
+.reloc .Lcall2, R_RISCC_RELAX_CALL, .Ltarget2
+.reloc .Lfirst, R_RISCC_RELAX_LITERAL, .Lfirst
+.reloc .Lmiddle, R_RISCC_RELAX_LITERAL, .Lmiddle
+.reloc .Lsecond, R_RISCC_RELAX_LITERAL, .Lsecond
+.section .text.callee,"ax",@progbits
+.p2align 2
+.globl callee
+callee:
+  ret s7
+.data
+.globl payload
+payload:
+  .long 42
+
+#--- guarded.s
+.macro pair name, value
+.section .text.\name,"ax",@progbits
+.p2align 2
+.globl \name
+.type \name,@function
+\name:
+  ldpc r1, .La\name
+  ldpc r2, .Lb\name
+  ret s7
+  .p2align 2
+.La\name:
+  .long \value
+.Lb\name:
+  .long \value
+.size \name, .-\name
+.reloc .La\name, R_RISCC_RELAX_LITERAL, .La\name
+.reloc .Lb\name, R_RISCC_RELAX_LITERAL, .Lb\name
+.endm
+pair address_taken, 0x12345678
+.data
+  .long .Laaddress_taken
+pair interior, 0x98765432
+.data
+  .long .Lainterior+2
+pair exported, 0xaabbccdd
+.globl exported_word
+exported_word = .Laexported
+pair aligned, 0x11223344
+.p2align 3
+
+.section .text.distinct,"ax",@progbits
+.p2align 2
+.globl distinct
+.type distinct,@function
+distinct:
+  ldpc r1, .Ld0
+  ldpc r2, .Ld1
+  ret s7
+  .p2align 2
+.Ld0:
+  .long first
+.Ld1:
+  .long second+4
+.size distinct, .-distinct
+.reloc .Ld0, R_RISCC_RELAX_LITERAL, .Ld0
+.reloc .Ld1, R_RISCC_RELAX_LITERAL, .Ld1
+
+.section .text.pointers,"ax",@progbits
+.p2align 2
+.globl pointers
+.type pointers,@function
+pointers:
+  ldpc r1, .Lp0
+  ldpc r2, .Lp1
+  ldpc r3, .Lp2
+  ret s7
+.Lp0:
+  .long first+4
+.Lp1:
+  .long first+4
+.Lp2:
+  .long first+4
+.size pointers, .-pointers
+.reloc .Lp0, R_RISCC_RELAX_LITERAL, .Lp0
+.reloc .Lp1, R_RISCC_RELAX_LITERAL, .Lp1
+.reloc .Lp2, R_RISCC_RELAX_LITERAL, .Lp2
+
+.section .text.distant,"ax",@progbits
+.p2align 2
+.globl distant
+.type distant,@function
+distant:
+  ldpc r1, .Lfar0
+  ret s7
+.Lfar0:
+  .long 0x12345678
+  .space 512
+  ldpc r2, .Lfar1
+  ret s7
+.Lfar1:
+  .long 0x12345678
+.size distant, .-distant
+.reloc .Lfar0, R_RISCC_RELAX_LITERAL, .Lfar0
+.reloc .Lfar1, R_RISCC_RELAX_LITERAL, .Lfar1
+
+.section .text.tls,"ax",@progbits
+.p2align 2
+.globl tls
+.type tls,@function
+tls:
+  ldpc r1, .Ltls0
+  ldpc r2, .Ltls1
+  ret s7
+  .p2align 2
+.Ltls0:
+  .long tpoff(tls_data)
+.Ltls1:
+  .long tpoff(tls_data)
+.size tls, .-tls
+.reloc .Ltls0, R_RISCC_RELAX_LITERAL, .Ltls0
+.reloc .Ltls1, R_RISCC_RELAX_LITERAL, .Ltls1
+.section .tdata,"awT",@progbits
+.type tls_data,@tls_object
+tls_data:
+  .long 3
+
+.data
+first:
+  .long 1
+second:
+  .long 2
+
+#--- debug.s
+.section .debug_info,"",@progbits
+  .long 0
+
+#--- cross.s
+.section .text.cross,"ax",@progbits
+  jmp8 _start
+
+#--- invalid.s
+.text
+.p2align 2
+.globl _start
+_start:
+  .long 0
+.reloc _start+2, R_RISCC_RELAX_LITERAL, _start+2

@@ -8,6 +8,7 @@
 
 #include "RISCCRegisterInfo.h"
 #include "MCTargetDesc/RISCCMCTargetDesc.h"
+#include "RISCC.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCSubtarget.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -83,19 +84,53 @@ static Register scavengeFrameAddressRegister(const MachineInstr &MI,
 }
 
 const MCPhysReg *
-RISCCRegisterInfo::getCalleeSavedRegs(const MachineFunction *) const {
+RISCCRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
+  unsigned Count =
+      MF ? getRISCCArgumentRegisterCount(MF->getFunction(), STI) : 3;
+  static const MCPhysReg Private4[] = {RISCC::R5, RISCC::R6, RISCC::S5,
+                                       RISCC::S6, 0};
+  static const MCPhysReg Private5[] = {RISCC::R6, RISCC::S5, RISCC::S6, 0};
+  static const MCPhysReg Private6[] = {RISCC::S5, RISCC::S6, 0};
+  static const MCPhysReg Nano4[] = {RISCC::R5, 0};
+  static const MCPhysReg Nano5[] = {0};
+  if (Count > 3) {
+    if (STI.isNano())
+      return Count == 4 ? Nano4 : Nano5;
+    return Count == 4 ? Private4 : Count == 5 ? Private5 : Private6;
+  }
   return STI.isNano() ? CSR_RISCC_Nano_SaveList : CSR_RISCC_SaveList;
 }
 
 const uint32_t *RISCCRegisterInfo::getCallPreservedMask(const MachineFunction &,
                                                         CallingConv::ID) const {
+  // This query describes a callee's public convention, not the caller's
+  // private attributes. LowerCall adjusts the mask for a known private callee.
   return STI.isNano() ? CSR_RISCC_Nano_CallPreserved_RegMask
                       : CSR_RISCC_CallPreserved_RegMask;
+}
+
+bool RISCCRegisterInfo::isCalleeSavedPhysReg(MCRegister Reg,
+                                             const MachineFunction &MF) const {
+  // Unlike a call-site mask, this query describes the current function.
+  // Keep spill-weight hints and debug entry-value tracking consistent with
+  // the registers its prologue and epilogue actually preserve.
+  unsigned Count = getRISCCArgumentRegisterCount(MF.getFunction(), STI);
+  if ((Reg == RISCC::R4 && Count >= 4) || (Reg == RISCC::R5 && Count >= 5) ||
+      (Reg == RISCC::R6 && Count >= 6))
+    return false;
+  return TargetRegisterInfo::isCalleeSavedPhysReg(Reg, MF);
 }
 
 const uint32_t *RISCCRegisterInfo::getSRegPreservingCallMask() const {
   assert(!STI.isNano() && "Nano has no S-register cache");
   return CSR_RISCC_SRegPreservingCall_RegMask;
+}
+
+bool RISCCRegisterInfo::isNonallocatableRegisterCalleeSave(
+    MCRegister Reg) const {
+  // Shrink wrapping must see both possible incoming links. The actual save
+  // is planned by RISCCSRegAllocator, not the ordinary callee-save list.
+  return !STI.isNano() && (Reg == RISCC::S7 || Reg == RISCC::S3);
 }
 
 BitVector RISCCRegisterInfo::getReservedRegs(const MachineFunction &) const {
@@ -112,24 +147,33 @@ RISCCRegisterInfo::getPointerRegClass(unsigned) const {
   return STI.getGPRClass();
 }
 
-static void materializeRC32FrameAddress(MachineBasicBlock &MBB,
-                                        MachineBasicBlock::iterator I,
-                                        const DebugLoc &DL,
-                                        const RISCCInstrInfo &TII, Register Dst,
-                                        int64_t Offset) {
-  // A copy and at most two immediate adds are smaller than a new literal.
-  // Larger offsets take one literal load and one add, regardless of frame size.
-  if (Offset < -256 || Offset > 254) {
+static void materializeFrameAddress(MachineBasicBlock &MBB,
+                                    MachineBasicBlock::iterator I,
+                                    const DebugLoc &DL,
+                                    const RISCCSubtarget &STI, Register Dst,
+                                    int64_t Offset) {
+  const RISCCInstrInfo &TII = *STI.getInstrInfo();
+  assert(Dst != RISCC::R7 &&
+         "frame address must not overwrite the stack pointer");
+  // A copy plus one immediate add is cheaper than a general constant. RC32
+  // also benefits from two adds instead of introducing a four-byte literal.
+  unsigned MaxAdds = STI.isRC32() ? 2 : 1;
+  if (Offset < -128 * int64_t(MaxAdds) || Offset > 127 * int64_t(MaxAdds)) {
+    // The destination is available until this instruction defines it. Use it
+    // for the offset as well, avoiding a scavenged register and an SP copy.
     TII.materializeImmediate(MBB, I, DL, Dst, Offset);
-    BuildMI(MBB, I, DL, TII.get(RISCC::ADD32), Dst)
+    BuildMI(MBB, I, DL, TII.get(TII.getNativeOpcode(RISCC::ADD)), Dst)
         .addReg(RISCC::R7)
         .addReg(Dst, RegState::Kill);
     return;
   }
-  BuildMI(MBB, I, DL, TII.get(RISCC::MOV32), Dst).addReg(RISCC::R7);
+  BuildMI(MBB, I, DL, TII.get(TII.getNativeOpcode(RISCC::MOV)), Dst)
+      .addReg(RISCC::R7);
   while (Offset) {
     int64_t Step = std::clamp<int64_t>(Offset, -128, 127);
-    BuildMI(MBB, I, DL, TII.get(RISCC::ADDI32), Dst).addReg(Dst).addImm(Step);
+    BuildMI(MBB, I, DL, TII.get(TII.getNativeOpcode(RISCC::ADDI)), Dst)
+        .addReg(Dst)
+        .addImm(Step);
     Offset -= Step;
   }
 }
@@ -148,28 +192,8 @@ bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   if (MI.getOpcode() == RISCC::FRAMEADDR ||
       MI.getOpcode() == RISCC::FRAMEADDR32) {
     Register Dst = MI.getOperand(0).getReg();
-    const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
     DebugLoc DL = MI.getDebugLoc();
-    if (IsRC32) {
-      materializeRC32FrameAddress(*MI.getParent(), II, DL, TII, Dst, Offset);
-      MI.eraseFromParent();
-      return false;
-    }
-    BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::MOV), Dst)
-        .addReg(RISCC::R7);
-    if (Offset) {
-      if (isInt<8>(Offset))
-        BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADDI), Dst)
-            .addReg(Dst)
-            .addImm(Offset);
-      else {
-        Register Scratch = scavengeFrameAddressRegister(MI, II, RS, STI, SPAdj);
-        TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
-        BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Dst)
-            .addReg(Dst)
-            .addReg(Scratch, RegState::Kill);
-      }
-    }
+    materializeFrameAddress(*MI.getParent(), II, DL, STI, Dst, Offset);
     MI.eraseFromParent();
     return false;
   }
@@ -184,7 +208,7 @@ bool RISCCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   const auto &TII = *MF.getSubtarget<RISCCSubtarget>().getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
   if (IsRC32) {
-    materializeRC32FrameAddress(*MI.getParent(), II, DL, TII, Scratch, Offset);
+    materializeFrameAddress(*MI.getParent(), II, DL, STI, Scratch, Offset);
   } else {
     TII.materializeImmediate(*MI.getParent(), II, DL, Scratch, Offset);
     BuildMI(*MI.getParent(), II, DL, TII.get(RISCC::ADD), Scratch)

@@ -19,15 +19,15 @@
 using namespace llvm;
 
 namespace {
-// Fill branch gaps with work from a common successor. Only move operations
-// needed on both paths, with no intervening use or change of their operands.
+// Fill a load-to-branch gap with work from a common successor. Only move
+// operations needed on both paths, with no intervening operand use or change.
 // This includes private register restores and independent immediate updates.
 // No instruction is duplicated or speculated.
 static void hoistCommonWork(MachineBasicBlock &MBB) {
   auto &MF = *MBB.getParent();
   const auto &STI = MF.getSubtarget<RISCCSubtarget>();
   const auto &TRI = *STI.getRegisterInfo();
-  if (!STI.hasEarlyBranches() || MBB.succ_size() != 2)
+  if (MBB.succ_size() != 2)
     return;
   auto Branch = MBB.getFirstTerminator();
   if (Branch == MBB.end() || !Branch->isConditionalBranch() ||
@@ -39,10 +39,13 @@ static void hoistCommonWork(MachineBasicBlock &MBB) {
     if (MI.isDebugInstr())
       continue;
     if (MI.modifiesRegister(RISCC::R0, &TRI)) {
-      Needed = MI.mayLoad() ? 2 : 1;
+      // Branches consume saved R0 flags in Execute, just like ordinary
+      // register operands. Only a load needs an intervening instruction;
+      // ALU/shift/multiply flags are available at Execute completion.
+      Needed = MI.mayLoad() ? 1 : 0;
       break;
     }
-    if (++Gap == 2)
+    if (++Gap == 1)
       return;
   }
   if (Gap >= Needed)
@@ -180,9 +183,9 @@ static void reassociateLoadedSubtracts(MachineBasicBlock &MBB,
       break;
     MachineInstr &LoadA = *Seq[0], &LoadB = *Seq[1];
     MachineInstr &Sub = *Seq[2], &Add = *Seq[3];
-    unsigned SubOp = STI.isRC32() ? RISCC::SUB32 : RISCC::SUB;
-    unsigned AddOp = STI.isRC32() ? RISCC::ADDI32 : RISCC::ADDI;
-    unsigned LoadOp = STI.isRC32() ? RISCC::LD32 : RISCC::LD;
+    unsigned SubOp = TII.getNativeOpcode(RISCC::SUB);
+    unsigned AddOp = TII.getNativeOpcode(RISCC::ADDI);
+    unsigned LoadOp = TII.getNativeOpcode(RISCC::LD);
     if (LoadA.getOpcode() != LoadOp || LoadB.getOpcode() != LoadOp ||
         Sub.getOpcode() != SubOp || Add.getOpcode() != AddOp ||
         !Sub.getOperand(1).isKill() || !Add.getOperand(2).isImm())

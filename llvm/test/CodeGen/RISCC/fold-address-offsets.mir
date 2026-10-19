@@ -1,0 +1,152 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 16 > %t/rc16.mir
+# RUN: %python %t/generate.py 32 > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -riscc-fold-address-offsets \
+# RUN:   -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -riscc-fold-address-offsets \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -run-pass=riscc-machine-optimize -riscc-fold-address-offsets \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -verify-machineinstrs %t/rc32.mir \
+# RUN:   -o - | FileCheck %s --check-prefix=OFF
+
+# Fold the contribution of an address adjustment, not the full arithmetic
+# expression. Native loads and stores retain their order and actual address.
+# CHECK-LABEL: name: direct
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %2, 12
+# OFF-LABEL: name: direct
+# OFF: ADDI32 %0, 4
+# OFF: LD32 %2, 8
+# CHECK-LABEL: name: add_chain
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-NOT: nuw
+# CHECK-NOT: nsw
+# CHECK: %3:{{gpr(32)?}} = ADD{{(32)?}} %2, %1
+# CHECK: LD{{(32)?}} %3, 12
+# CHECK-LABEL: name: shifted_index
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: SLLI{{(32)?}} %2, 2
+# CHECK: LD{{(32)?}} %4, 12
+# CHECK-LABEL: name: reconverge
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %5, 24
+# CHECK-LABEL: name: subtract
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %3, -4
+# CHECK-LABEL: name: multi_memory
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %2, 4
+# CHECK: ST{{(32)?}} %3, %2, 8
+# CHECK-LABEL: name: negative_offset
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %2, 0
+# CHECK-LABEL: name: cancelling_paths
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %6, 0
+# CHECK-LABEL: name: discarded_offset
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: LD{{(32)?}} %3, 0
+# CHECK-LABEL: name: captured_physical_input
+# CHECK: %2:{{gpr(32)?}} = COPY $r1
+# CHECK: $r1 = LDI{{(32)?}} 9
+# CHECK: LD{{(32)?}} %2, 4
+# CHECK-LABEL: name: mixed_ranges
+# CHECK: %2:{{gpr(32)?}} = ADDI{{(32)?}} %0, 4
+# CHECK: LD{{(32)?}} %2, 0
+# CHECK-LABEL: name: changed_data
+# CHECK: ADDI{{(32)?}} %0, 4
+# CHECK: ST{{(32)?}} %2, %2, 0
+# CHECK-LABEL: name: byte_address
+# CHECK: ADDI{{(32)?}} %0, 4
+# CHECK: LDB{{(32)?}} %2
+# CHECK-LABEL: name: mixed_return
+# CHECK: ADDI{{(32)?}} %0, 4
+# CHECK: LD{{(32)?}} %2, 0
+# CHECK: $r1 = COPY %2
+# CHECK-LABEL: name: out_of_range
+# CHECK: ADDI{{(32)?}} %0, 4
+# CHECK-LABEL: name: misaligned
+# CHECK: ADDI{{(32)?}} %0, 1
+# CHECK-LABEL: name: right_shift
+# CHECK: ADDI{{(32)?}} %0, 4
+# CHECK-LABEL: name: undef_input
+# CHECK: ADDI{{(32)?}} undef %0, 4
+# CHECK-LABEL: name: undef_user
+# CHECK: ADDI{{(32)?}} %0, 4
+# CHECK: ADD{{(32)?}} undef %2, %1
+# CHECK-LABEL: name: phi_cycle
+# CHECK: ADDI{{(32)?}} %0, 4
+
+#--- generate.py
+import sys
+
+width = int(sys.argv[1])
+suffix = '32' if width == 32 else ''
+rc = 'gpr' + suffix
+
+def emit(name, lines):
+    print('---\nname: ' + name + '\ntracksRegLiveness: true\nbody: |')
+    for line in lines:
+        print('  ' + line.replace(':RC', ':' + rc).replace('SUFFIX', suffix))
+    print('...')
+
+head = ['bb.0:', '  liveins: $r1, $r2, $s7',
+        '  %0:RC = COPY $r1', '  %1:RC = COPY $r2']
+root = '  %2:RC = ADDISUFFIX %0, 4'
+ret = ['  $r1 = COPY %3', '  RETS implicit $s7, implicit $r1']
+emit('direct', head + [root, '  %3:RC = LDSUFFIX %2, 8'] + ret)
+emit('add_chain', head + [root, '  %3:RC = nuw nsw ADDSUFFIX %2, %1',
+     '  %4:RC = LDSUFFIX %3, 8', '  $r1 = COPY %4',
+     '  RETS implicit $s7, implicit $r1'])
+emit('shifted_index', head + [root, '  %3:RC = SLLISUFFIX %2, 2',
+     '  %4:RC = ADDSUFFIX %3, %1', '  %5:RC = LDSUFFIX %4, -4',
+     '  $r1 = COPY %5', '  RETS implicit $s7, implicit $r1'])
+emit('reconverge', head + [root, '  %3:RC = ADDSUFFIX %2, %1',
+     '  %4:RC = SLLISUFFIX %2, 2', '  %5:RC = ADDSUFFIX %3, %4',
+     '  %6:RC = LDSUFFIX %5, 4', '  $r1 = COPY %6',
+     '  RETS implicit $s7, implicit $r1'])
+emit('subtract', head + [root, '  %3:RC = SUBSUFFIX %1, %2',
+     '  %4:RC = LDSUFFIX %3, 0', '  $r1 = COPY %4',
+     '  RETS implicit $s7, implicit $r1'])
+emit('multi_memory', head + [root, '  %3:RC = LDSUFFIX %2, 0',
+     '  STSUFFIX %3, %2, 4'] + ret)
+emit('negative_offset', head + ['  %2:RC = ADDISUFFIX %0, -4',
+     '  %3:RC = LDSUFFIX %2, 4'] + ret)
+emit('cancelling_paths', head + [root, '  %3:RC = ADDSUFFIX %2, %1',
+     '  %4:RC = SLLISUFFIX %2, 1', '  %5:RC = SUBSUFFIX %4, %2',
+     '  %6:RC = SUBSUFFIX %3, %5', '  %7:RC = LDSUFFIX %6, 0',
+     '  $r1 = COPY %7', '  RETS implicit $s7, implicit $r1'])
+emit('discarded_offset', head + [root,
+     f'  %3:RC = SLLISUFFIX %2, {width}', '  %4:RC = LDSUFFIX %3, 0',
+     '  $r1 = COPY %4', '  RETS implicit $s7, implicit $r1'])
+emit('captured_physical_input', head + ['  %2:RC = ADDISUFFIX $r1, 4',
+     '  $r1 = LDISUFFIX 9', '  %3:RC = LDSUFFIX %2, 0'] + ret)
+emit('mixed_ranges', head + [root, '  %3:RC = LDSUFFIX %2, 0',
+     f'  %4:RC = LDSUFFIX %2, {63 * (width // 8)}',
+     '  %5:RC = ADDSUFFIX %3, %4', '  $r1 = COPY %5',
+     '  RETS implicit $s7, implicit $r1'])
+emit('changed_data', head + [root, '  STSUFFIX %2, %2, 0',
+     '  RETS implicit $s7'])
+emit('byte_address', head + [root, '  %3:RC = LDBSUFFIX %2'] + ret)
+emit('mixed_return', head + [root, '  %3:RC = LDSUFFIX %2, 0',
+     '  $r1 = COPY %2', '  RETS implicit $s7, implicit $r1'])
+emit('out_of_range', head + [root,
+     f'  %3:RC = LDSUFFIX %2, {63 * (width // 8)}'] + ret)
+emit('misaligned', head + ['  %2:RC = ADDISUFFIX %0, 1',
+     '  %3:RC = LDSUFFIX %2, 0'] + ret)
+emit('right_shift', head + [root, '  %3:RC = SRLISUFFIX %2, 1',
+     '  %4:RC = LDSUFFIX %3, 0', '  $r1 = COPY %4',
+     '  RETS implicit $s7, implicit $r1'])
+emit('undef_input', head + ['  %2:RC = ADDISUFFIX undef %0, 4',
+     '  %3:RC = LDSUFFIX %2, 0'] + ret)
+emit('undef_user', head + [root, '  %3:RC = ADDSUFFIX undef %2, %1',
+     '  %4:RC = LDSUFFIX %3, 0', '  $r1 = COPY %4',
+     '  RETS implicit $s7, implicit $r1'])
+emit('phi_cycle', head[:1] + ['  successors: %bb.1'] + head[1:] + [root,
+     '  JMP8 %bb.1', 'bb.1:', '  successors: %bb.1, %bb.2',
+     '  liveins: $s7', '  %3:RC = PHI %2, %bb.0, %4, %bb.1',
+     '  %4:RC = ADDISUFFIX %3, 4', '  %5:RC = LDSUFFIX %3, 0',
+     '  $r0 = COPY %5', '  BNEZ %bb.1, implicit $r0', 'bb.2:',
+     '  liveins: $s7', '  RETS implicit $s7'])

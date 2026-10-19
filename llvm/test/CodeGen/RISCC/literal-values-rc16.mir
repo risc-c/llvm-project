@@ -1,0 +1,55 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | FileCheck %s
+
+# CHECK-LABEL: name: literal_immediates
+# CHECK: $r1 = LUI 255
+# CHECK-NEXT: $r2 = MOV {{(killed )?}}renamable $r1
+# CHECK: RETS
+# CHECK-LABEL: name: literal_wrap
+# CHECK: $r1 = LDI16 65535
+# CHECK: $r1 = ADDI {{(killed )?}}$r1, 1
+# CHECK-NOT: LDI
+# CHECK: RETS
+# CHECK-LABEL: name: different_immediates
+# CHECK: $r1 = LUI 255
+# CHECK-NEXT: $r2 = LDI16 255
+# CHECK: RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @literal_immediates() { ret void }
+  define void @literal_wrap() { ret void }
+  define void @different_immediates() { ret void }
+...
+---
+name: literal_immediates
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LUI 255
+    $r2 = LDI16 65280
+    $r1 = LDI16 65280
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: literal_wrap
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDI16 65535
+    $r1 = ADDI $r1, 1
+    $r1 = LDI16 0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: different_immediates
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LUI 255
+    $r2 = LDI16 255
+    RETS implicit $s7, implicit $r1, implicit $r2
+...

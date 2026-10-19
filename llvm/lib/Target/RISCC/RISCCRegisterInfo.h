@@ -24,6 +24,8 @@ public:
   const MCPhysReg *getCalleeSavedRegs(const MachineFunction *) const override;
   const uint32_t *getCallPreservedMask(const MachineFunction &,
                                        CallingConv::ID) const override;
+  bool isCalleeSavedPhysReg(MCRegister, const MachineFunction &) const override;
+  bool isNonallocatableRegisterCalleeSave(MCRegister Reg) const override;
   const uint32_t *getSRegPreservingCallMask() const;
   ArrayRef<MCPhysReg>
   getIntraCallClobberedRegs(const MachineFunction *) const override;

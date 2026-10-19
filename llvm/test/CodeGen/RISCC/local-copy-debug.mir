@@ -1,0 +1,60 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-return-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bMOV\b/MOV32/g' -e 's/\bLD\b/LD32/g' -e 's/(s16)/(s32)/g' %s | \
+# RUN:   llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-return-optimize \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+
+# A value observed only by a debug location must still remain available there.
+# CHECK-LABEL: name: debug_location
+# CHECK:       $r3 = MOV{{(32)?}} renamable $r1
+# CHECK:       $r1 = LD{{(32)?}} renamable $r4, 0
+# CHECK:       $r2 = MOV{{(32)?}} renamable $r3
+# CHECK-NEXT:  DBG_VALUE $r3,
+# CHECK-NEXT:  RETS
+
+# Do not erase or clone a definition referenced by instruction-based debug info.
+# CHECK-LABEL: name: debug_definition
+# CHECK:       $r3 = MOV{{(32)?}} renamable $r1, debug-instr-number 1
+# CHECK:       $r1 = LD{{(32)?}} renamable $r4, 0
+# CHECK:       $r2 = MOV{{(32)?}} renamable $r3
+# CHECK-NEXT:  RETS
+
+--- |
+  define void @debug_location() optsize !dbg !4 { ret void }
+  define void @debug_definition() optsize { ret void }
+  !llvm.dbg.cu = !{!0}
+  !llvm.module.flags = !{!3}
+  !0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "test", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug)
+  !1 = !DIFile(filename: "copy.c", directory: "/")
+  !2 = !DISubroutineType(types: !{})
+  !3 = !{i32 2, !"Debug Info Version", i32 3}
+  !4 = distinct !DISubprogram(name: "debug_location", scope: !1, file: !1, line: 1, type: !2, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0)
+  !5 = !DILocalVariable(name: "v", scope: !4, file: !1, line: 1, type: !6)
+  !6 = !DIBasicType(name: "short", size: 16, encoding: DW_ATE_signed)
+  !7 = !DILocation(line: 1, column: 1, scope: !4)
+...
+---
+name: debug_location
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    DBG_VALUE $r3, $noreg, !5, !DIExpression(), debug-location !7
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: debug_definition
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1, debug-instr-number 1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...

@@ -1,0 +1,438 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-affine-values -run-pass=riscc-postra-optimize -verify-machineinstrs %s \
+# RUN:   -o - | FileCheck %s
+# RUN: sed -e 's/\bMOV\b/MOV32/g' -e 's/\bADDI\b/ADDI32/g' -e 's/\bLDI\b/LDI32/g' -e 's/\bST\b/ST32/g' \
+# RUN:   -e 's/\bCALL\b/CALL32/g' -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 \
+# RUN:   -riscc-affine-values -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# Affine physical-register updates can be merged when the intermediate value
+# is not observed.  The copy rewrite below preserves an existing destination
+# value by changing the following update to the native-width delta.
+
+# CHECK-LABEL: name: addi_pair
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 12
+# CHECK-NOT:   $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, {{(7|5)}}
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_zero
+# CHECK-NOT:   $r2 = ADDI{{(32)?}}
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_unrelated_work
+# CHECK:       $s2 = MTS {{(killed )?}}$r4
+# CHECK:       ST{{(32)?}} {{(killed )?}}$r3, {{(killed )?}}$r5, 0
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 12
+# CHECK:       RETS
+
+# A debug or CFI instruction is an observation boundary even though it does
+# not read or define the register in the ordinary data-flow sense.
+# CHECK-LABEL: name: addi_debug_boundary
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       DBG_VALUE $r2
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_cfi_boundary
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       CFI_INSTRUCTION remember_state
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_call_boundary
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       CALL{{(32)?}} $r3, csr_riscc
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_terminator_boundary
+# CHECK:       bb.0:
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       JMP8
+# CHECK:       bb.1:
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_frame_boundary
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       $s2 = frame-setup MTS {{(killed )?}}$r4
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# A store of the destination, a new destination definition, and an
+# out-of-range sum all prevent the chain fold.
+# CHECK-LABEL: name: addi_source_read
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       ST{{(32)?}} {{(killed )?}}$r2, {{(killed )?}}$r4, 0
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_destination_def
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 1
+# CHECK:       $r2 = LDI{{(32)?}} 9
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 2
+# CHECK:       RETS
+
+# CHECK-LABEL: name: addi_stack_pointer
+# CHECK-COUNT-2: $r7 = ADDI{{(32)?}} $r7, 0
+# CHECK:         RETS
+
+# CHECK-LABEL: name: addi_sum_out_of_range
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 100
+# CHECK:       $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 50
+# CHECK:       RETS
+
+# The destination starts at source+30.  Rebuilding it from source and then
+# adding 28 is equivalent to retaining the old destination and adding -2.
+# CHECK-LABEL: name: affine_rewrite
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK-NOT:     $r2 = MOV{{(32)?}}
+# CHECK:         $r4 = LDI{{(32)?}} 7
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, -2
+# CHECK:         RETS
+
+# Negative offsets are tracked modulo the native register width.  Here the
+# copied destination is source-127 and rebuilding it with -128 needs only -1.
+# CHECK-LABEL: name: affine_modulo
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, -127
+# CHECK-NOT:     $r2 = MOV{{(32)?}}
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, -1
+# CHECK:         RETS
+
+# The source can change after the copy: the copied value was captured at the
+# copy itself, so the rewrite remains valid.
+# CHECK-LABEL: name: affine_changed_source
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK-NOT:     $r2 = MOV{{(32)?}}
+# CHECK:         $r1 = ADDI{{(32)?}} {{(killed )?}}$r1, 1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, -2
+# CHECK:         RETS
+
+# A destination read or clobber after the copy makes the intermediate copy
+# observable and must preserve the original MOV.
+# CHECK-LABEL: name: observed_copy
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         ST{{(32)?}} {{(killed )?}}$r2, {{(killed )?}}$r4, 0
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 28
+# CHECK:         RETS
+
+# CHECK-LABEL: name: clobber
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = LDI{{(32)?}} 9
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 28
+# CHECK:         RETS
+
+# A different opaque source base cannot be substituted for the existing one.
+# CHECK-LABEL: name: distinctbase
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r3
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 28
+# CHECK:         RETS
+
+# CHECK-LABEL: name: frame
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $s2 = frame-setup MTS {{(killed )?}}$r4
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 28
+# CHECK:         RETS
+
+# CHECK-LABEL: name: calls
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 30
+# CHECK:         $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK:         CALL{{(32)?}} $r3, csr_riscc
+# CHECK:         $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 28
+# CHECK:         RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @addi_pair() { ret i32 0 }
+  define i32 @addi_zero() { ret i32 0 }
+  define i32 @addi_unrelated_work() { ret i32 0 }
+  define i32 @addi_debug_boundary() { ret i32 0 }
+  define i32 @addi_cfi_boundary() { ret i32 0 }
+  define i32 @addi_call_boundary() { ret i32 0 }
+  define i32 @addi_terminator_boundary() { ret i32 0 }
+  define i32 @addi_frame_boundary() { ret i32 0 }
+  define i32 @addi_source_read() { ret i32 0 }
+  define i32 @addi_destination_def() { ret i32 0 }
+  define i32 @addi_stack_pointer() { ret i32 0 }
+  define i32 @addi_sum_out_of_range() { ret i32 0 }
+  define i32 @affine_rewrite() { ret i32 0 }
+  define i32 @affine_modulo() { ret i32 0 }
+  define i32 @affine_changed_source() { ret i32 0 }
+  define i32 @observed_copy() { ret i32 0 }
+  define i32 @clobber() { ret i32 0 }
+  define i32 @distinctbase() { ret i32 0 }
+  define i32 @frame() { ret i32 0 }
+  define i32 @calls() { ret i32 0 }
+  !0 = !DILocalVariable(name: "value", scope: !1, file: !2, line: 1, type: !3)
+  !1 = distinct !DISubprogram(name: "addi_debug_boundary", scope: !2, file: !2, line: 1, type: !4, spFlags: DISPFlagDefinition)
+  !2 = !DIFile(filename: "physical-affine-values.c", directory: "/")
+  !3 = !DIBasicType(name: "int", size: 16, encoding: DW_ATE_signed)
+  !4 = !DISubroutineType(types: !5)
+  !5 = !{null}
+  !6 = !DILocation(line: 1, scope: !1)
+...
+---
+name: addi_pair
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 7
+    $r2 = ADDI $r2, 5
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_zero
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 7
+    $r2 = ADDI $r2, -7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_unrelated_work
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r3, $r4, $r5, $s2, $s7
+    $r2 = ADDI $r2, 7
+    $s2 = MTS $r4
+    ST $r3, $r5, 0 :: (store (s16))
+    $r2 = ADDI $r2, 5
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_debug_boundary
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 1
+    DBG_VALUE $r2, $noreg, !0, !DIExpression(), debug-location !6
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_cfi_boundary
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 1
+    CFI_INSTRUCTION remember_state
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_call_boundary
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r3, $s7
+    $r2 = ADDI $r2, 1
+    CALL $r3, csr_riscc, implicit-def $s7, implicit-def $r0, implicit-def $r2
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_terminator_boundary
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    successors: %bb.1
+    $r2 = ADDI $r2, 1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_frame_boundary
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r4, $s2, $s7
+    $r2 = ADDI $r2, 1
+    $s2 = frame-setup MTS $r4
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_source_read
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r4, $s7
+    $r2 = ADDI $r2, 1
+    ST $r2, $r4, 0 :: (store (s16))
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_destination_def
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 1
+    $r2 = LDI 9
+    $r2 = ADDI $r2, 2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: addi_stack_pointer
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r7, $s7
+    $r7 = ADDI $r7, 0
+    $r7 = ADDI $r7, 0
+    RETS implicit $s7, implicit $r7
+...
+---
+name: addi_sum_out_of_range
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    $r2 = ADDI $r2, 100
+    $r2 = ADDI $r2, 50
+    RETS implicit $s7, implicit $r2
+...
+---
+name: affine_rewrite
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r1
+    $r4 = LDI 7
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r2
+...
+---
+name: affine_modulo
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, -127
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, -128
+    RETS implicit $s7, implicit $r2
+...
+---
+name: affine_changed_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r1
+    $r1 = ADDI $r1, 1
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: observed_copy
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r1
+    ST $r2, $r4, 0 :: (store (s16))
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r2
+...
+---
+name: clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r1
+    $r2 = LDI 9
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r2
+...
+---
+name: distinctbase
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r3
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r2
+...
+---
+name: frame
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s2, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r1
+    $s2 = frame-setup MTS $r4
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r2
+...
+---
+name: calls
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    $r2 = MOV $r1
+    $r2 = ADDI $r2, 30
+    $r2 = MOV $r1
+    CALL $r3, csr_riscc, implicit-def $s7, implicit-def $r0, implicit-def $r2
+    $r2 = ADDI $r2, 28
+    RETS implicit $s7, implicit $r2
+...

@@ -1,0 +1,103 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postrapseudos -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s --check-prefix=EXPAND
+# RUN: sed -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/(s32)/(s16)/g' %s | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -run-pass=postrapseudos -verify-machineinstrs -o - | FileCheck %s --check-prefix=EXPAND
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postrapseudos,machine-cp -mcp-use-is-copy-instr \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=CP
+# RUN: sed -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/(s32)/(s16)/g' %s | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -run-pass=postrapseudos,machine-cp -mcp-use-is-copy-instr -verify-machineinstrs -o - | FileCheck %s \
+# RUN:   --check-prefix=CP
+
+# postrapseudos must preserve destination and source renamability independently
+# when copyPhysReg expands a physical COPY.  R0 remains a fixed destination.
+# EXPAND-LABEL: name: copy_flags
+# EXPAND:       renamable $r1 = MOV{{(32)?}} renamable $r2
+# EXPAND:       $r3 = MOV{{(32)?}} renamable $r4
+# EXPAND:       renamable $r5 = MOV{{(32)?}} $r6
+# EXPAND:       $r0 = MOV{{(32)?}} renamable $r1
+
+# A renamable load feeding a killed R0 copy is retargeted to R0.
+# CP-LABEL: name: propagate_load
+# CP-NOT:   COPY
+# CP-NOT:   MOV{{(32)?}}
+# CP:       $r0 = LD{{(32)?}} {{(killed )?}}$r2, 0
+# CP-NEXT:  BNEZ
+
+# The source remains live after the branch, so the copy cannot be removed.
+# CP-LABEL: name: source_live_after_branch
+# CP:       {{(renamable )?}}$r1 = LD{{(32)?}} {{(killed )?}}$r2, 0
+# CP:       $r0 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CP:       BNEZ
+
+# A fixed, non-renamable load destination cannot be retargeted to R0.
+# CP-LABEL: name: fixed_source_def
+# CP:       $r1 = LD{{(32)?}} {{(killed )?}}$r2, 0
+# CP:       $r0 = MOV{{(32)?}} killed $r1
+# CP:       BNEZ
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @copy_flags() { ret i32 0 }
+  define i32 @propagate_load() { ret i32 0 }
+  define i32 @source_live_after_branch() { ret i32 0 }
+  define i32 @fixed_source_def() { ret i32 0 }
+...
+---
+name: copy_flags
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r6, $s7
+    renamable $r1 = COPY renamable $r2
+    $r3 = COPY renamable $r4
+    renamable $r5 = COPY $r6
+    $r0 = COPY renamable $r1
+    RETS implicit $s7, implicit $r0, implicit $r1, implicit $r3, implicit $r5
+...
+---
+name: propagate_load
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    successors: %bb.1
+    renamable $r1 = LD32 $r2, 0 :: (load (s32))
+    $r0 = COPY killed renamable $r1
+    BNEZ %bb.1, implicit killed $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: source_live_after_branch
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    successors: %bb.1
+    renamable $r1 = LD32 $r2, 0 :: (load (s32))
+    $r0 = COPY renamable $r1
+    BNEZ %bb.1, implicit killed $r0
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: fixed_source_def
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s7
+    successors: %bb.1
+    $r1 = LD32 $r2, 0 :: (load (s32))
+    $r0 = COPY killed $r1
+    BNEZ %bb.1, implicit killed $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+...

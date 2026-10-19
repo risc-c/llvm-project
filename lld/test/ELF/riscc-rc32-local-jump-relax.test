@@ -1,0 +1,149 @@
+# REQUIRES: riscc
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/jump.mir -o %t/jump.o
+# RUN: llvm-readobj -r %t/jump.o | FileCheck %s --check-prefix=OBJ
+# RUN: ld.lld -m elf32lriscc -e local_far_jump -Ttext=0 %t/jump.o -o %t/low
+# RUN: llvm-objdump -d %t/low | FileCheck %s --check-prefix=LOW
+# RUN: ld.lld -m elf32lriscc -e local_far_jump --no-relax -Ttext=0 %t/jump.o -o %t/no-relax
+# RUN: llvm-objdump -d %t/no-relax | FileCheck %s --check-prefix=INDIRECT
+# RUN: ld.lld -m elf32lriscc -e local_far_jump -Ttext=0x200000 %t/jump.o -o %t/high
+# RUN: llvm-objdump -d %t/high | FileCheck %s --check-prefix=INDIRECT
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/jump.mir -o %t/min.o
+# RUN: llvm-readobj -r %t/min.o | FileCheck %s --check-prefix=MIN
+
+# OBJ: R_RISCC_RELAX_TAIL
+# OBJ: R_RISCC_CALL_TARGET
+# LOW-LABEL: <local_far_jump>:
+# LOW-NOT: ldpc
+# LOW: jall s0,
+# LOW-NOT: jalr
+# LOW-LABEL: <local_far_jump_live_r0>:
+# LOW-NOT: ldpc
+# LOW: jall s0,
+# LOW-NOT: jalr
+# LOW-LABEL: <shared_local_far_jump>:
+# LOW-NOT: ldpc
+# LOW: jall s0,
+# LOW-NOT: ldpc
+# LOW: jall s0,
+# LOW-NOT: jalr
+# LOW-LABEL: <shared_local_data_target>:
+# LOW: ldpc r2,
+# LOW: ldpc r0,
+# LOW-NEXT: jalr s0, r0
+# LOW-LABEL: <local_jump_live_scratch>:
+# LOW: jall s0,
+# LOW: ldpc r2,
+# LOW-NEXT: jalr s0, r2
+# INDIRECT-LABEL: <local_far_jump>:
+# INDIRECT: ldpc r0,
+# INDIRECT-NEXT: jalr s0, r0
+# INDIRECT-LABEL: <local_far_jump_live_r0>:
+# INDIRECT: ldpc r1,
+# INDIRECT-NEXT: jalr s0, r1
+# INDIRECT-LABEL: <shared_local_far_jump>:
+# INDIRECT: ldpc r0,
+# INDIRECT-NEXT: jalr s0, r0
+# INDIRECT: ldpc r0,
+# INDIRECT-NEXT: jalr s0, r0
+# MIN-NOT: R_RISCC_RELAX_TAIL
+# MIN-NOT: R_RISCC_CALL_TARGET
+
+#--- jump.mir
+---
+name: local_far_jump
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    INLINEASM &".zero 512", 1
+    RETS implicit $s7
+  bb.2:
+    RETS implicit $s7
+...
+---
+name: local_far_jump_live_r0
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r0, $s7
+    INLINEASM &".zero 512", 1
+    RETS implicit $s7, implicit $r0
+  bb.2:
+    liveins: $r0, $s7
+    RETS implicit $s7, implicit $r0
+...
+---
+name: shared_local_far_jump
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1, %bb.3
+    BNEZ %bb.3, implicit $r0
+  bb.1:
+    liveins: $r1, $s7
+    successors: %bb.2, %bb.3
+    $r0 = OR32 $r1, $r1
+    BNEZ %bb.3, implicit $r0
+  bb.2:
+    liveins: $s7
+    INLINEASM &".zero 512", 1
+    RETS implicit $s7
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: shared_local_data_target
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    successors: %bb.2
+    $r2 = LDPC %bb.2
+    JMP8 %bb.2
+  bb.1:
+    liveins: $s7
+    INLINEASM &".zero 512", 1
+    RETS implicit $s7
+  bb.2:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: local_jump_live_scratch
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0, $r2, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $s7
+    successors: %bb.4
+    $r0 = LDPC %bb.4
+    $s0 = JALR killed $r0
+  bb.2:
+    liveins: $s7
+    successors: %bb.4
+    $r2 = LDPC %bb.4
+    $s0 = JALR $r2
+  bb.3:
+    liveins: $s7
+    INLINEASM &".zero 512", 1
+    RETS implicit $s7
+  bb.4:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...

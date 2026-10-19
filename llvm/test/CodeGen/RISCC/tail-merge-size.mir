@@ -1,0 +1,81 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 16 > %t/rc16.mir
+# RUN: %python %t/generate.py 32 > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=nano -run-pass=branch-folder -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -run-pass=branch-folder -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=branch-folder -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -run-pass=branch-folder -verify-machineinstrs %t/rc32.mir -o - | \
+# RUN:   FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=branch-folder -verify-machineinstrs %t/rc32.mir -o - | \
+# RUN:   FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=branch-folder -tail-merge-size=3 -verify-machineinstrs %t/rc16.mir \
+# RUN:   -o - | FileCheck %s --check-prefix=OVERRIDE
+
+# In size functions two compact tail instructions can share one copy, at the
+# cost of a compact branch. Neither entire source block can be merged.
+# CHECK-LABEL: name: size_tail
+# CHECK:       $r2 = LDI{{(32)?}} 1
+# CHECK:       $r1 = ADD{{(32)?}} $r1, killed $r2
+# CHECK-NEXT:  RETS implicit $s7, implicit $r1
+# CHECK:       $r2 = LDI{{(32)?}} 2
+# CHECK-NEXT:  JMP8
+# CHECK-NOT:   ADD
+# CHECK:       ...
+# CHECK-LABEL: name: minsize_tail
+# CHECK:       $r2 = LDI{{(32)?}} 1
+# CHECK:       $r1 = ADD{{(32)?}} $r1, killed $r2
+# CHECK-NEXT:  RETS implicit $s7, implicit $r1
+# CHECK:       $r2 = LDI{{(32)?}} 2
+# CHECK-NEXT:  JMP8
+# CHECK-NOT:   ADD
+# CHECK:       ...
+
+# Speed policy stays unchanged: no new branch for a two-instruction suffix.
+# CHECK-LABEL: name: speed_tail
+# CHECK:       $r2 = LDI{{(32)?}} 1
+# CHECK-NEXT:  $r1 = ADD{{(32)?}} $r1, killed $r2
+# CHECK-NEXT:  RETS implicit $s7, implicit $r1
+# CHECK:       $r2 = LDI{{(32)?}} 2
+# CHECK-NEXT:  $r1 = ADD{{(32)?}} $r1, killed $r2
+# CHECK-NEXT:  RETS implicit $s7, implicit $r1
+
+# The generic command-line override must still take precedence.
+# OVERRIDE-LABEL: name: size_tail
+# OVERRIDE:       $r1 = ADD $r1, killed $r2
+# OVERRIDE:       $r1 = ADD $r1, killed $r2
+# OVERRIDE-LABEL: name: minsize_tail
+# OVERRIDE:       $r1 = ADD $r1, killed $r2
+# OVERRIDE:       $r1 = ADD $r1, killed $r2
+
+#--- generate.py
+import sys
+
+width = int(sys.argv[1])
+suffix = '32' if width == 32 else ''
+functions = [('size_tail', 'optsize'), ('minsize_tail', 'minsize'),
+             ('speed_tail', '')]
+print('--- |')
+for name, attribute in functions:
+    print(f'  define i{width} @{name}() {attribute} {{ ret i{width} 0 }}')
+print('...')
+for name, _ in functions:
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $r1, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $s7
+    $r2 = LDI{suffix} 1
+    $r1 = ADD{suffix} $r1, killed $r2
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $r1, $s7
+    $r2 = LDI{suffix} 2
+    $r1 = ADD{suffix} $r1, killed $r2
+    RETS implicit $s7, implicit $r1
+...''')

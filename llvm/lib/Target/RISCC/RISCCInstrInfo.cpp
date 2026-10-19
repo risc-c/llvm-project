@@ -9,18 +9,32 @@
 #include "RISCCInstrInfo.h"
 #include "RISCC.h"
 #include "RISCCMachineFunctionInfo.h"
+#include "RISCCMatInt.h"
 #include "RISCCSubtarget.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
+#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineLoopInfo.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
+static cl::opt<bool> EnableSizeLayout(
+    "riscc-size-layout", cl::Hidden, cl::init(true),
+    cl::desc("Refine size-optimized RISC-C block layout when it saves bytes"));
+static cl::opt<bool> EnableSelectiveRemat(
+    "riscc-selective-remat", cl::Hidden, cl::init(true),
+    cl::desc("Reconstruct cheap RISC-C values with local uses across calls"));
+
 #define GET_INSTRINFO_CTOR_DTOR
+#define GET_INSTRMAP_INFO
 #include "RISCCGenInstrInfo.inc"
 
 void RISCCInstrInfo::anchor() {}
@@ -29,6 +43,160 @@ RISCCInstrInfo::RISCCInstrInfo(const RISCCSubtarget &STI)
     : RISCCGenInstrInfo(STI, RI, RISCC::ADJCALLSTACKDOWN,
                         RISCC::ADJCALLSTACKUP),
       RI(STI), STI(STI) {}
+
+unsigned RISCCInstrInfo::getNativeOpcode(unsigned RC16Opcode) const {
+  if (!STI.isRC32())
+    return RC16Opcode;
+  int32_t Opcode = RISCC::getRC32Opcode(RC16Opcode);
+  assert(Opcode >= 0 && "instruction has no native-width pair");
+  return Opcode;
+}
+
+unsigned RISCCInstrInfo::getTailMergeSize(const MachineFunction &MF) const {
+  // Two compact instructions can repay a compact branch. Keep the generic
+  // threshold for speed builds, where sharing may add a frequently taken edge.
+  return MF.getFunction().hasOptSize() ? 2
+                                       : TargetInstrInfo::getTailMergeSize(MF);
+}
+
+bool RISCCInstrInfo::enableSizeAwareBlockPlacement(
+    const MachineFunction &MF) const {
+  return EnableSizeLayout && MF.getFunction().hasOptSize();
+}
+
+bool RISCCInstrInfo::isReMaterializableImpl(const MachineInstr &MI) const {
+  unsigned Opcode = MI.getOpcode();
+  if (Opcode != RISCC::LDI16 && Opcode != RISCC::FRAMEADDR &&
+      Opcode != RISCC::FRAMEADDR32)
+    return TargetInstrInfo::isReMaterializableImpl(MI);
+  if (!EnableSelectiveRemat || !TargetInstrInfo::isReMaterializableImpl(MI))
+    return false;
+  const MachineFunction &MF = *MI.getMF();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  Register Dst = MI.getOperand(0).getReg();
+  if (MF.getFunction().hasOptNone() || !Dst.isVirtual())
+    return false;
+  if (Opcode != RISCC::LDI16) {
+    const MachineFrameInfo &MFI = MF.getFrameInfo();
+    if (!MI.getOperand(1).isFI() || !MI.getOperand(2).isImm() ||
+        MFI.hasVarSizedObjects() || MFI.getMaxAlign() > STI.getStackAlignment())
+      return false;
+    int FI = MI.getOperand(1).getIndex();
+    int64_t Offset = MI.getOperand(2).getImm();
+    if (FI < 0)
+      Offset += MFI.getObjectOffset(FI);
+    // Estimate MOV plus one ADDI, allowing for GPR/S-register saves, the
+    // return link and scavenger slots. Later spills can exceed this budget;
+    // final frame-index lowering still handles a larger address correctly.
+    uint64_t FrameBound = MFI.estimateStackSize(MF) + 16 * STI.getSlotSize();
+    if (Offset < 0 || Offset > 127 || FrameBound > uint64_t(127 - Offset))
+      return false;
+  }
+  // A single same-block use has the definition's execution frequency. Moving
+  // its reconstruction past a call never duplicates a two-instruction value
+  // into a hot inner loop. Cheap S-register caching wins for repeated uses.
+  SmallVector<const MachineInstr *, 1> Uses;
+  for (const MachineInstr &Use : MRI.use_nodbg_instructions(Dst)) {
+    if (Use.getParent() != MI.getParent() || !Uses.empty())
+      return false;
+    Uses.push_back(&Use);
+  }
+  bool CrossedCall = false;
+  for (auto I = std::next(MI.getIterator()); I != MI.getParent()->end(); ++I) {
+    if (CrossedCall && llvm::is_contained(Uses, &*I))
+      return true;
+    CrossedCall |= I->isCall() && !I->isReturn();
+  }
+  return false;
+}
+
+bool RISCCInstrInfo::isFunctionSafeToOutlineFrom(
+    MachineFunction &MF, bool OutlineFromLinkOnceODRs) const {
+  const Function &F = MF.getFunction();
+  // Outlined helpers use the existing private S3 link and no frame. IPRA runs
+  // before outlining and would otherwise publish masks missing this clobber.
+  return !STI.isNano() && F.hasOptSize() && !F.hasOptNone() &&
+         !MF.getTarget().Options.EnableIPRA && !F.hasSection() &&
+         !F.hasFnAttribute("interrupt") && !F.hasPersonalityFn() &&
+         !F.hasFnAttribute(Attribute::UWTable) &&
+         (OutlineFromLinkOnceODRs || !F.hasLinkOnceODRLinkage());
+}
+
+bool RISCCInstrInfo::shouldOutlineFromFunctionByDefault(
+    MachineFunction &MF) const {
+  return MF.getFunction().hasOptSize();
+}
+
+bool RISCCInstrInfo::isMBBSafeToOutlineFrom(MachineBasicBlock &MBB,
+                                            unsigned &Flags) const {
+  if (!TargetInstrInfo::isMBBSafeToOutlineFrom(MBB, Flags))
+    return false;
+  // Calls in tight loops can cost more than the code saving is worth. Leave
+  // loop bodies inline even for size builds.
+  MachineDominatorTree MDT(*MBB.getParent());
+  MachineLoopInfo MLI(MDT);
+  return !MLI.getLoopFor(&MBB);
+}
+
+outliner::InstrType RISCCInstrInfo::getOutliningTypeImpl(
+    const MachineModuleInfo &, MachineBasicBlock::iterator &I, unsigned) const {
+  const MachineInstr &MI = *I;
+  if (MI.isCall() || MI.isTerminator() || MI.isCFIInstruction() ||
+      MI.hasUnmodeledSideEffects() || MI.isBundled() || MI.isNotDuplicable() ||
+      MI.getFlag(MachineInstr::FrameSetup) ||
+      MI.getFlag(MachineInstr::FrameDestroy) || MI.getOpcode() == RISCC::LDPC ||
+      MI.modifiesRegister(RISCC::R7, &RI))
+    return outliner::InstrType::Illegal;
+  // Literal calls use R0 as their target and S3 as the link. Neither may be
+  // part of the shared sequence; liveness across it is checked separately.
+  for (MCRegister Reg : {RISCC::R0, RISCC::S3})
+    if (MI.readsRegister(Reg, &RI) || MI.modifiesRegister(Reg, &RI))
+      return outliner::InstrType::Illegal;
+  return outliner::InstrType::Legal;
+}
+
+std::optional<std::unique_ptr<outliner::OutlinedFunction>>
+RISCCInstrInfo::getOutliningCandidateInfo(
+    const MachineModuleInfo &, std::vector<outliner::Candidate> &Candidates,
+    unsigned MinRepeats) const {
+  llvm::erase_if(Candidates, [&](auto &C) {
+    return C.isAnyUnavailableAcrossOrOutOfSeq({RISCC::R0, RISCC::S3}, RI);
+  });
+  if (Candidates.size() < MinRepeats)
+    return std::nullopt;
+  for (auto &C : Candidates) {
+    const auto &ST = C.getMF()->getSubtarget<RISCCSubtarget>();
+    // RC32 pays for LDPC/JALR, a word, alignment and a dedicated skip. Sharing
+    // a literal or linker relaxation may improve this conservative bound.
+    unsigned Cost = ST.isRC32() ? 12 : (ST.hasLongJall() ? 4 : 6);
+    C.setCallInfo(0, Cost);
+  }
+  unsigned Bytes = 0;
+  for (const MachineInstr &MI : Candidates.front())
+    Bytes += getInstSizeInBytes(MI);
+  // RET plus potential alignment at the new function boundary.
+  return std::make_unique<outliner::OutlinedFunction>(Candidates, Bytes, 4, 0);
+}
+
+void RISCCInstrInfo::buildOutlinedFrame(
+    MachineBasicBlock &MBB, MachineFunction &MF,
+    const outliner::OutlinedFunction &) const {
+  MF.getInfo<RISCCMachineFunctionInfo>()->setReturnAddressReg(RISCC::S3);
+  MBB.addLiveIn(RISCC::S3);
+  BuildMI(MBB, MBB.end(), DebugLoc(), get(RISCC::RET)).addReg(RISCC::S3);
+}
+
+MachineBasicBlock::iterator RISCCInstrInfo::insertOutlinedCall(
+    Module &M, MachineBasicBlock &MBB, MachineBasicBlock::iterator &I,
+    MachineFunction &MF, outliner::Candidate &) const {
+  const auto &ST = MBB.getParent()->getSubtarget<RISCCSubtarget>();
+  unsigned Opcode = ST.isRC32()        ? RISCC::LINK_S3_CALL32_LITERAL
+                    : ST.hasLongJall() ? RISCC::LINK_S3_CALL16
+                                       : RISCC::LINK_S3_CALL_MIN;
+  I = MBB.insert(I, BuildMI(MF, DebugLoc(), get(Opcode))
+                        .addGlobalAddress(M.getNamedValue(MF.getName())));
+  return I;
+}
 
 static Register getStackAccess(const MachineInstr &MI, int &FrameIndex,
                                TypeSize &Bytes) {
@@ -143,35 +311,26 @@ void RISCCInstrInfo::materializeImmediate(MachineBasicBlock &MBB,
                                           const DebugLoc &DL,
                                           Register Destination, int64_t Value,
                                           MachineInstr::MIFlag Flag) const {
-  if (STI.isRC32()) {
-    if (isUInt<8>(Value))
-      BuildMI(MBB, I, DL, get(RISCC::LDI32), Destination)
-          .addImm(Value)
-          .setMIFlag(Flag);
-    else {
-      MachineFunction &MF = *MBB.getParent();
-      auto *C = ConstantInt::get(
-          Type::getInt32Ty(MF.getFunction().getContext()), Value);
-      unsigned CPI = MF.getConstantPool()->getConstantPoolIndex(C, Align(4));
-      BuildMI(MBB, I, DL, get(RISCC::LDPC), Destination)
-          .addConstantPoolIndex(CPI)
-          .addMemOperand(
-              MF.getMachineMemOperand(MachinePointerInfo::getConstantPool(MF),
-                                      MachineMemOperand::MOLoad, 4, Align(4)))
-          .setMIFlag(Flag);
-    }
-    return;
-  }
-  uint64_t Encoded = static_cast<uint16_t>(Value);
-  if (isUInt<8>(Encoded)) {
-    BuildMI(MBB, I, DL, get(RISCC::LDI), Destination)
-        .addImm(Encoded)
+  auto Sequence = RISCCMatInt::generate(
+      APInt(64, static_cast<uint64_t>(Value)).trunc(STI.isRC32() ? 32 : 16),
+      STI, 1);
+  if (!Sequence.empty()) {
+    BuildMI(MBB, I, DL, get(getNativeOpcode(Sequence.front().Opcode)),
+            Destination)
+        .addImm(Sequence.front().Immediate)
         .setMIFlag(Flag);
     return;
   }
-  if ((Encoded & 0xff) == 0) {
-    BuildMI(MBB, I, DL, get(RISCC::LUI), Destination)
-        .addImm(Encoded >> 8)
+  if (STI.isRC32()) {
+    MachineFunction &MF = *MBB.getParent();
+    auto *C = ConstantInt::get(Type::getInt32Ty(MF.getFunction().getContext()),
+                               Value);
+    unsigned CPI = MF.getConstantPool()->getConstantPoolIndex(C, Align(4));
+    BuildMI(MBB, I, DL, get(RISCC::LDPC), Destination)
+        .addConstantPoolIndex(CPI)
+        .addMemOperand(
+            MF.getMachineMemOperand(MachinePointerInfo::getConstantPool(MF),
+                                    MachineMemOperand::MOLoad, 4, Align(4)))
         .setMIFlag(Flag);
     return;
   }
@@ -220,13 +379,22 @@ static bool foldByteExtensionBias(MachineInstr &Extend,
 bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   unsigned Opcode = MI.getOpcode();
   if (Opcode != RISCC::SEXT8_RC16 && Opcode != RISCC::SEXT8_RC32 &&
-      Opcode != RISCC::SEXT16_RC32)
+      Opcode != RISCC::SEXT16_RC32 && Opcode != RISCC::SEXT16_SHIFT_RC32)
     return false;
 
   MachineBasicBlock &MBB = *MI.getParent();
   Register Dst = MI.getOperand(0).getReg();
   Register Src = MI.getOperand(1).getReg();
   const DebugLoc &DL = MI.getDebugLoc();
+  if (Opcode == RISCC::SEXT16_SHIFT_RC32) {
+    for (unsigned Shift :
+         {RISCC::SLLI32, RISCC::SLLI32, RISCC::SRAI32, RISCC::SRAI32}) {
+      BuildMI(MBB, MI, DL, get(Shift), Dst).addReg(Src).addImm(8);
+      Src = Dst;
+    }
+    MI.eraseFromParent();
+    return true;
+  }
   if (Opcode == RISCC::SEXT16_RC32) {
     materializeImmediate(MBB, MI, DL, RISCC::R0, 0xffff);
     BuildMI(MBB, MI, DL, get(RISCC::AND32), Dst).addReg(Src).addReg(RISCC::R0);
@@ -237,30 +405,28 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     return true;
   }
 
-  bool IsRC32 = Opcode == RISCC::SEXT8_RC32;
   bool Biased = foldByteExtensionBias(MI, RI);
   bool SourceIsByteLoad = false;
-  if (!IsRC32)
-    for (auto I = MI.getIterator(); I != MBB.begin();) {
-      --I;
-      if (!I->modifiesRegister(Src, &RI))
-        continue;
-      SourceIsByteLoad =
-          I->getOpcode() == RISCC::LDB && I->getOperand(0).getReg() == Src;
-      break;
-    }
+  for (auto I = MI.getIterator(); I != MBB.begin();) {
+    --I;
+    if (!I->modifiesRegister(Src, &RI))
+      continue;
+    SourceIsByteLoad = I->getOpcode() == getNativeOpcode(RISCC::LDB) &&
+                       I->getOperand(0).getReg() == Src;
+    break;
+  }
   Register Extended = Src;
   if (!SourceIsByteLoad) {
-    BuildMI(MBB, MI, DL, get(IsRC32 ? RISCC::ANDI32 : RISCC::ANDI), Dst)
+    BuildMI(MBB, MI, DL, get(getNativeOpcode(RISCC::ANDI)), Dst)
         .addReg(Src)
         .addImm(0xff);
     Extended = Dst;
   }
   if (!Biased)
-    BuildMI(MBB, MI, DL, get(IsRC32 ? RISCC::XORI32 : RISCC::XORI), Dst)
+    BuildMI(MBB, MI, DL, get(getNativeOpcode(RISCC::XORI)), Dst)
         .addReg(Extended)
         .addImm(0x80);
-  BuildMI(MBB, MI, DL, get(IsRC32 ? RISCC::ADDI32 : RISCC::ADDI), Dst)
+  BuildMI(MBB, MI, DL, get(getNativeOpcode(RISCC::ADDI)), Dst)
       .addReg(Dst)
       .addImm(-128);
   MI.eraseFromParent();
@@ -270,19 +436,22 @@ bool RISCCInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
 void RISCCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  const DebugLoc &DL, Register Dst, Register Src,
-                                 bool Kill, bool, bool) const {
+                                 bool Kill, bool RenamableDst,
+                                 bool RenamableSrc) const {
   const TargetRegisterClass *GPR = STI.getGPRClass();
   const TargetRegisterClass *SReg = STI.getSRegClass();
   unsigned Opcode;
   if (GPR->contains(Dst, Src))
-    Opcode = STI.isRC32() ? RISCC::MOV32 : RISCC::MOV;
+    Opcode = getNativeOpcode(RISCC::MOV);
   else if (GPR->contains(Dst) && SReg->contains(Src))
     Opcode = RISCC::MFS;
   else if (SReg->contains(Dst) && GPR->contains(Src))
     Opcode = RISCC::MTS;
   else
     llvm_unreachable("unsupported RISC-C physical-register copy");
-  BuildMI(MBB, I, DL, get(Opcode), Dst).addReg(Src, getKillRegState(Kill));
+  BuildMI(MBB, I, DL, get(Opcode))
+      .addReg(Dst, RegState::Define | getRenamableRegState(RenamableDst))
+      .addReg(Src, getKillRegState(Kill) | getRenamableRegState(RenamableSrc));
 }
 
 std::optional<DestSourcePair>
@@ -290,6 +459,37 @@ RISCCInstrInfo::isCopyInstrImpl(const MachineInstr &MI) const {
   if (MI.isMoveReg())
     return DestSourcePair{MI.getOperand(0), MI.getOperand(1)};
   return std::nullopt;
+}
+
+bool RISCCInstrInfo::simplifyInstruction(MachineInstr &MI) const {
+  unsigned Opcode = MI.getOpcode();
+  bool Changed = false;
+  if ((Opcode == RISCC::OR || Opcode == RISCC::OR32 || Opcode == RISCC::AND ||
+       Opcode == RISCC::AND32) &&
+      MI.getNumOperands() == 3 &&
+      MI.getOperand(1).getReg() == MI.getOperand(2).getReg() &&
+      MI.getOperand(1).getSubReg() == MI.getOperand(2).getSubReg() &&
+      !MI.getOperand(1).isUndef() && !MI.getOperand(2).isUndef()) {
+    // Copy propagation can make the two inputs identical after allocation.
+    // Normalize to an actual move before the copy tracker observes it.
+    Opcode = Opcode == RISCC::OR32 || Opcode == RISCC::AND32 ? RISCC::MOV32
+                                                             : RISCC::MOV;
+    MI.removeOperand(2);
+    MI.getOperand(1).setIsKill(false);
+    MI.setDesc(get(Opcode));
+    Changed = true;
+  }
+  if ((Opcode == RISCC::MOV || Opcode == RISCC::MOV32) &&
+      MI.getNumOperands() == 2 &&
+      MI.getOperand(0).getReg() == MI.getOperand(1).getReg() &&
+      MI.getOperand(0).getSubReg() == MI.getOperand(1).getSubReg()) {
+    // Preserve liveness bookkeeping without emitting a self move. The
+    // generic post-RA expander uses the same representation for identity
+    // subregister copies, and branch relaxation accounts for its zero size.
+    MI.setDesc(get(TargetOpcode::KILL));
+    return true;
+  }
+  return Changed;
 }
 
 void RISCCInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
@@ -312,9 +512,8 @@ void RISCCInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
     Src = RISCC::R0;
     Kill = false;
   }
-  unsigned Opcode = STI.isRC32()            ? RISCC::ST32
-                    : STI.isNano() && !SReg ? RISCC::ST_NANO
-                                            : RISCC::ST;
+  unsigned Opcode = STI.isNano() && !SReg ? unsigned(RISCC::ST_NANO)
+                                          : getNativeOpcode(RISCC::ST);
   BuildMI(MBB, I, DebugLoc(), get(Opcode))
       .addReg(Src, getKillRegState(Kill))
       .addFrameIndex(FI)
@@ -337,9 +536,8 @@ void RISCCInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOLoad,
       MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
-  unsigned Opcode = STI.isRC32()            ? RISCC::LD32
-                    : STI.isNano() && !SReg ? RISCC::LD_NANO
-                                            : RISCC::LD;
+  unsigned Opcode = STI.isNano() && !SReg ? unsigned(RISCC::LD_NANO)
+                                          : getNativeOpcode(RISCC::LD);
   BuildMI(MBB, I, DebugLoc(), get(Opcode), SReg ? Register(RISCC::R0) : Dst)
       .addFrameIndex(FI)
       .addImm(0)
@@ -507,21 +705,44 @@ void RISCCInstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
     RS->setRegUsed(Scratch);
   } else {
     Scratch = RISCC::R0;
-    int FI =
-        MF.getInfo<RISCCMachineFunctionInfo>()->getBranchRelaxationSpillFI();
-    if (FI < 0)
-      report_fatal_error("RISC-C function size was underestimated");
-
-    storeRegToStackSlot(MBB, Address.getIterator(), Scratch, true, FI,
-                        STI.getGPRClass(), Register(), MachineInstr::NoFlags);
-    STI.getRegisterInfo()->eliminateFrameIndex(std::prev(Address.getIterator()),
-                                               0, 1, RS);
-
     Address.getOperand(1).setMBB(&RestoreBB);
-    loadRegFromStackSlot(RestoreBB, RestoreBB.end(), Scratch, FI,
-                         STI.getGPRClass(), Register(), 0,
-                         MachineInstr::NoFlags);
-    STI.getRegisterInfo()->eliminateFrameIndex(RestoreBB.back(), 0, 1, RS);
+    if (!MF.getFrameInfo().getSavePoints().empty()) {
+      // A shrink-wrapped path may not have a function frame yet. Preserve
+      // the scratch in a balanced temporary slot below the current SP,
+      // independent of whether the path has executed the prologue. The
+      // restore block immediately undoes the adjustment before the target.
+      int Slot = STI.getSlotSize();
+      BuildMI(MBB, Address, DL, get(getNativeOpcode(RISCC::ADDI)), RISCC::R7)
+          .addReg(RISCC::R7)
+          .addImm(-Slot);
+      BuildMI(MBB, Address, DL, get(getNativeOpcode(RISCC::ST)))
+          .addReg(Scratch, RegState::Kill)
+          .addReg(RISCC::R7)
+          .addImm(0);
+      BuildMI(RestoreBB, RestoreBB.end(), DL, get(getNativeOpcode(RISCC::LD)),
+              Scratch)
+          .addReg(RISCC::R7)
+          .addImm(0);
+      BuildMI(RestoreBB, RestoreBB.end(), DL, get(getNativeOpcode(RISCC::ADDI)),
+              RISCC::R7)
+          .addReg(RISCC::R7)
+          .addImm(Slot);
+    } else {
+      int FI =
+          MF.getInfo<RISCCMachineFunctionInfo>()->getBranchRelaxationSpillFI();
+      if (FI < 0)
+        report_fatal_error("RISC-C function size was underestimated");
+
+      storeRegToStackSlot(MBB, Address.getIterator(), Scratch, true, FI,
+                          STI.getGPRClass(), Register(), MachineInstr::NoFlags);
+      STI.getRegisterInfo()->eliminateFrameIndex(
+          std::prev(Address.getIterator()), 0, 1, RS);
+
+      loadRegFromStackSlot(RestoreBB, RestoreBB.end(), Scratch, FI,
+                           STI.getGPRClass(), Register(), 0,
+                           MachineInstr::NoFlags);
+      STI.getRegisterInfo()->eliminateFrameIndex(RestoreBB.back(), 0, 1, RS);
+    }
   }
 
   MRI.replaceRegWith(VirtualScratch, Scratch);

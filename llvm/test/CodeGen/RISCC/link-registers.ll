@@ -1,6 +1,16 @@
 ; REQUIRES: riscc-registered-target
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,FULL
-; RUN: llc -mtriple=riscc-none-elf -mcpu=min -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=CHECK,MIN
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefixes=CHECK,RC16,FULL
+; RUN: llc -mtriple=riscc-none-elf -mcpu=min -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefixes=CHECK,RC16,MIN
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefixes=CHECK,RC32
+; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefixes=CHECK,RC32
+; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefixes=CHECK,RC32
+; RUN: llc -enable-new-pm -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -O2 -verify-machineinstrs < %s | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,RC32
 
 target triple = "riscc-none-elf"
 
@@ -20,6 +30,8 @@ define i16 @call_private(i16 %value) {
 ; FULL:        jall s3, private_leaf
 ; MIN:         ldi16 r0, private_leaf
 ; MIN-NEXT:    jalr s3, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s3, r0
 ; CHECK-NEXT:  ret s7
   %result = call i16 @private_leaf(i16 %value)
   ret i16 %result
@@ -32,6 +44,8 @@ define i16 @musttail_private(i16 %value) {
 ; FULL-NEXT:   jall s0, private_leaf
 ; MIN-NEXT:    ldi16 r0, private_leaf
 ; MIN-NEXT:    jalr s0, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s0, r0
 ; CHECK-NOT:   ret
   %result = musttail call i16 @private_leaf(i16 %value)
   ret i16 %result
@@ -43,10 +57,14 @@ define internal void @private_nonleaf() {
 ; CHECK:       st r0,
 ; FULL:        jall s7, external
 ; MIN:         jalr s7,
-; CHECK:       ld r0,
-; CHECK-NEXT:  addi r7, 2
-; CHECK-NEXT:  mts s3, r0
-; CHECK:       ret s3
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s7, r0
+; RC16:        ld r0,
+; RC16-NEXT:   addi r7, 2
+; RC16-NEXT:   jalr s0, r0
+; RC32:        ld r0,
+; RC32-NEXT:   addi r7, 4
+; RC32-NEXT:   jalr s0, r0
   call void @external()
   ret void
 }
@@ -56,6 +74,8 @@ define void @call_private_nonleaf() {
 ; FULL:        jall s3, private_nonleaf
 ; MIN:         ldi16 r0, private_nonleaf
 ; MIN-NEXT:    jalr s3, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s3, r0
   call void @private_nonleaf()
   ret void
 }
@@ -72,6 +92,8 @@ define internal i16 @private_tail_caller(i16 %value) {
 ; FULL:        jall s0, private_tail_target
 ; MIN:         ldi16 r0, private_tail_target
 ; MIN-NEXT:    jalr s0, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s0, r0
 ; CHECK-NOT:   ret
   %result = tail call i16 @private_tail_target(i16 %value)
   ret i16 %result
@@ -83,6 +105,8 @@ define i16 @call_private_tail(i16 %value) {
 ; FULL:        jall s3, private_tail_caller
 ; MIN:         ldi16 r0, private_tail_caller
 ; MIN-NEXT:    jalr s3, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s3, r0
   %result = call i16 @private_tail_caller(i16 %value)
   ret i16 %result
 }
@@ -114,11 +138,17 @@ define i16 @public_call_private_tail(i16 %value) {
 ; CHECK-NEXT:  mts s2, r0
 ; FULL:        jall s7, public_leaf
 ; MIN:         jalr s7, r0
-; CHECK-NEXT:  mfs r0, s2
-; CHECK-NEXT:  mts s3, r0
+; RC32:        ldpc r0,
+; RC32:        jalr s7, r0
+; RC16:        mfs r0, s2
+; RC16:        mts s3, r0
 ; FULL-NEXT:   jall s0, private_leaf
 ; MIN-NEXT:    ldi16 r0, private_leaf
 ; MIN-NEXT:    jalr s0, r0
+; RC32-NEXT:   mfs r0, s2
+; RC32-NEXT:   mts s3, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s0, r0
   %called = call i16 @public_leaf(i16 %value)
   %result = tail call i16 @private_leaf(i16 %called)
   ret i16 %result
@@ -130,12 +160,20 @@ define i16 @public_stack_private_tail() {
 ; CHECK-NEXT:  st r0, [r7 + 0]
 ; FULL:        jall s7, external
 ; MIN:         jalr s7, r0
-; CHECK:       ld r0, [r7 + 0]
-; CHECK:       mts s3, r0
-; CHECK-NEXT:  addi r7, 2
+; RC16:        ld r0, [r7 + 0]
+; RC16:        mts s3, r0
+; RC16-NEXT:   addi r7, 2
 ; FULL-NEXT:   jall s0, private_leaf
 ; MIN-NEXT:    ldi16 r0, private_leaf
 ; MIN-NEXT:    jalr s0, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s7, r0
+; RC32:        ld r0, [r7 + 0]
+; RC32-NEXT:   ldi r1, 4
+; RC32-NEXT:   mts s3, r0
+; RC32-NEXT:   addi r7, 4
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s0, r0
   call void @external()
   %result = tail call i16 @private_leaf(i16 4)
   ret i16 %result
@@ -147,11 +185,17 @@ define internal i16 @private_call_public_tail(i16 %value) {
 ; CHECK-NEXT:  mts s2, r0
 ; FULL:        jall s3, private_leaf
 ; MIN:         jalr s3, r0
-; CHECK-NEXT:  mfs r0, s2
-; CHECK-NEXT:  mts s7, r0
+; RC32:        ldpc r0,
+; RC32:        jalr s3, r0
+; RC16:        mfs r0, s2
+; RC16:        mts s7, r0
 ; FULL-NEXT:   jall s0, public_leaf
 ; MIN-NEXT:    ldi16 r0, public_leaf
 ; MIN-NEXT:    jalr s0, r0
+; RC32-NEXT:   mfs r0, s2
+; RC32-NEXT:   mts s7, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s0, r0
   %called = call i16 @private_leaf(i16 %value)
   %result = tail call i16 @public_leaf(i16 %called)
   ret i16 %result
@@ -163,12 +207,20 @@ define internal i16 @private_stack_public_tail() {
 ; CHECK-NEXT:  st r0, [r7 + 0]
 ; FULL:        jall s7, external
 ; MIN:         jalr s7, r0
-; CHECK:       ld r0, [r7 + 0]
-; CHECK:       mts s7, r0
-; CHECK-NEXT:  addi r7, 2
+; RC16:        ld r0, [r7 + 0]
+; RC16:        mts s7, r0
+; RC16-NEXT:   addi r7, 2
 ; FULL-NEXT:   jall s0, public_leaf
 ; MIN-NEXT:    ldi16 r0, public_leaf
 ; MIN-NEXT:    jalr s0, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s7, r0
+; RC32:        ld r0, [r7 + 0]
+; RC32-NEXT:   ldi r1, 4
+; RC32-NEXT:   mts s7, r0
+; RC32-NEXT:   addi r7, 4
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s0, r0
   call void @external()
   %result = tail call i16 @public_leaf(i16 4)
   ret i16 %result
@@ -192,6 +244,8 @@ define void @call_forever() noreturn {
 ; CHECK-NOT:   st
 ; FULL:        jall s7, external
 ; MIN:         jalr s7, r0
+; RC32:        ldpc r0,
+; RC32-NEXT:   jalr s7, r0
 entry:
   br label %loop
 loop:

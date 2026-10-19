@@ -1,0 +1,67 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=nano -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=nano -riscc-branch-equality=false -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+
+# Nano has no CMPI or S-register spill cache, but the same edge inference
+# applies to R0 and its available GPR copies. Never assume the nonzero edge
+# carries a particular nonzero constant.
+# CHECK-LABEL: name: taken_zero
+# CHECK: bb.2:
+# CHECK-NOT: LDI
+# CHECK: RET_NANO
+# CHECK-LABEL: name: fallthrough_zero
+# CHECK: bb.1:
+# CHECK-NOT: LDI
+# CHECK: RET_NANO
+# CHECK: bb.2:
+# CHECK: $r1 = LDI 0
+# CHECK: RET_NANO
+# OFF-LABEL: name: taken_zero
+# OFF: bb.2:
+# OFF: $r3 = LDI 0
+# OFF-LABEL: name: fallthrough_zero
+# OFF: bb.1:
+# OFF: $r1 = LDI 0
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @taken_zero() optsize { ret void }
+  define void @fallthrough_zero() optsize { ret void }
+...
+---
+name: taken_zero
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $r6
+    $r0 = MOV $r3
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r6
+    RET_NANO $r6
+  bb.2:
+    liveins: $r6
+    $r3 = LDI 0
+    $r0 = LDI 0
+    RET_NANO $r6, implicit $r3, implicit $r0
+...
+---
+name: fallthrough_zero
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r1, $r6
+    $r0 = MOV $r1
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r6
+    $r1 = LDI 0
+    RET_NANO $r6, implicit $r1
+  bb.2:
+    liveins: $r6
+    $r1 = LDI 0
+    RET_NANO $r6, implicit $r1
+...

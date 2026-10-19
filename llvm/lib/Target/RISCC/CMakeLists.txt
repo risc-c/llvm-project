@@ -16,13 +16,16 @@ add_public_tablegen_target(RISCCCommonTableGen)
 
 add_llvm_target(RISCCCodeGen
   RISCCAsmPrinter.cpp
+  RISCCCallPolicy.cpp
   RISCCCodeGenPassBuilder.cpp
   RISCCConstantIslandPass.cpp
   RISCCConstantPoolValue.cpp
+  RISCCCopyOptimize.cpp
   RISCCFrameLowering.cpp
   RISCCISelDAGToDAG.cpp
   RISCCISelLowering.cpp
   RISCCInstrInfo.cpp
+  RISCCMatInt.cpp
   RISCCMCInstLower.cpp
   RISCCMachineFunctionInfo.cpp
   RISCCMachineScheduler.cpp

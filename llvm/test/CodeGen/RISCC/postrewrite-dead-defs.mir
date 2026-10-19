@@ -1,0 +1,106 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-after=virtregrewriter -stop-before=riscc-sreg-allocator \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -enable-new-pm -mtriple=riscc -mcpu=full -mattr=+rc32 -start-after=virt-reg-rewriter \
+# RUN:   -stop-after=dead-mi-elimination,3 -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/LDI32/LDI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' -e 's/ADDI32/ADDI/g' -e 's/i32 305419896/i16 22136/g' \
+# RUN:   -e 's/(s32)/(s16)/g' %s > %t.rc16.mir
+# RUN: llc -mtriple=riscc -mcpu=full -start-after=virtregrewriter -stop-before=riscc-sreg-allocator \
+# RUN:   -verify-machineinstrs %t.rc16.mir -o - | FileCheck %s
+# RUN: llc -enable-new-pm -mtriple=riscc -mcpu=full -start-after=virt-reg-rewriter -stop-after=dead-mi-elimination,3 \
+# RUN:   -verify-machineinstrs %t.rc16.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-early-cleanup=false -start-after=virtregrewriter \
+# RUN:   -stop-before=riscc-sreg-allocator -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+#
+# Resume immediately after allocation, stopping before target frame planning.
+# The new PM names the two earlier SSA DCE passes as well: the third is here.
+# This checks the actual pipeline insertion, not just a standalone DCE pass.
+# Unused rematerialized definitions disappear, while live successor values,
+# volatile accesses, stores and reserved-register writes remain.
+#
+# OFF-LABEL: name: dead_literal
+# OFF: dead $r0 = LDPC %const.0
+# OFF-LABEL: name: preserved_effects
+# OFF: $r4 = LDI32 99
+#
+# CHECK-LABEL: name: dead_literal
+# CHECK: bb.0:
+# CHECK-NOT: LDPC
+# CHECK: $r1 = LDI{{(32)?}} 7
+# CHECK-NEXT: RETS
+# CHECK-LABEL: name: live_literal
+# CHECK: $r1 = LDPC %const.0
+# CHECK-NEXT: RETS
+# CHECK-LABEL: name: preserved_effects
+# CHECK-NOT: $r4 =
+# CHECK: $r0 = LD{{(32)?}} $r1, 0 :: (volatile load
+# CHECK: ST{{(32)?}} $r2, $r1, 0
+# CHECK: $s2 = MTS $r3
+# CHECK: $r7 = ADDI{{(32)?}} $r7, 4
+# CHECK: RETS
+# CHECK-LABEL: name: successor_live
+# CHECK: $r1 = LDPC %const.0
+# CHECK: bb.1:
+# CHECK: RETS implicit $s7, implicit $r1
+--- |
+  target triple = "riscc-none-elf"
+  define void @dead_literal() { ret void }
+  define void @live_literal() { ret void }
+  define void @preserved_effects() { ret void }
+  define void @successor_live() { ret void }
+...
+---
+name: dead_literal
+tracksRegLiveness: true
+noVRegs: true
+constants:
+  - { id: 0, value: 'i32 305419896', alignment: 4 }
+body: |
+  bb.0:
+    liveins: $s7
+    dead $r0 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = LDI32 7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: live_literal
+tracksRegLiveness: true
+noVRegs: true
+constants:
+  - { id: 0, value: 'i32 305419896', alignment: 4 }
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: preserved_effects
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r7, $s7
+    $r4 = LDI32 99
+    $r0 = LD32 $r1, 0 :: (volatile load (s32))
+    ST32 $r2, $r1, 0 :: (store (s32))
+    $s2 = MTS $r3
+    $r7 = ADDI32 $r7, 4
+    RETS implicit $s7
+...
+---
+name: successor_live
+tracksRegLiveness: true
+noVRegs: true
+constants:
+  - { id: 0, value: 'i32 305419896', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...

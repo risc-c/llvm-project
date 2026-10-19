@@ -1,0 +1,151 @@
+# REQUIRES: riscc
+# RUN: split-file %s %t
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 %t/shared.s -o %t/shared.o
+# RUN: ld.lld -m elf32lriscc --emit-relocs -T %t/low.ld %t/shared.o -o %t/low
+# RUN: llvm-readobj -S -r %t/low | FileCheck %s --check-prefix=LOW-SIZE
+# RUN: llvm-objdump -d %t/low | FileCheck %s --check-prefix=LOW
+# RUN: ld.lld -m elf32lriscc -T %t/high.ld %t/shared.o -o %t/high
+# RUN: llvm-readobj -S %t/high | FileCheck %s --check-prefix=FULL-SIZE
+# RUN: llvm-objdump -d %t/high | FileCheck %s --check-prefix=FULL
+# RUN: ld.lld -m elf32lriscc --no-relax -T %t/low.ld %t/shared.o -o %t/no-relax
+# RUN: llvm-readobj -S %t/no-relax | FileCheck %s --check-prefix=FULL-SIZE
+# RUN: llvm-objdump -d %t/no-relax | FileCheck %s --check-prefix=FULL
+# RUN: ld.lld -m elf32lriscc -r %t/shared.o -o %t/partial.o
+# RUN: llvm-readobj -r %t/partial.o | FileCheck %s --check-prefix=PARTIAL
+# RUN: ld.lld -m elf32lriscc -T %t/low.ld %t/partial.o -o %t/relinked
+# RUN: llvm-objdump -d %t/relinked | FileCheck %s --check-prefix=LOW
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 --defsym=SEPARATE=1 %t/shared.s -o %t/separate.o
+# RUN: ld.lld -m elf32lriscc -T %t/low.ld %t/separate.o -o %t/separate
+# RUN: llvm-objdump -d %t/separate | FileCheck %s --check-prefix=LOW
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 --defsym=DEBUG=1 %t/shared.s -o %t/debug.o
+# RUN: ld.lld -m elf32lriscc -T %t/low.ld %t/debug.o -o %t/debug
+# RUN: llvm-readobj -S %t/debug | FileCheck %s --check-prefix=FULL-SIZE
+# RUN: llvm-objdump -d %t/debug | FileCheck %s --check-prefix=LOW
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 %t/mismatch.s -o %t/mismatch.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t/mismatch.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=BAD-TAIL
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 %t/sp.s -o %t/sp.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t/sp.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=BAD-TAIL
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 %t/call-r1.s -o %t/call-r1.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t/call-r1.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=BAD-CALL
+# RUN: llvm-mc -filetype=obj -triple=riscc -mcpu=full -mattr=+rc32 %t/duplicate.s -o %t/duplicate.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 %t/duplicate.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=BAD-OWNER
+
+## Three transfers, one owned word. Remove it exactly once, preserving the
+## private call link and allowing different non-SP local-jump scratches.
+# LOW-SIZE: Name: .transfers
+# LOW-SIZE: Size: 16
+# LOW-SIZE-NOT: R_RISCC_CALL_TARGET
+# LOW-SIZE: R_RISCC_JALL21 target
+# LOW-SIZE: R_RISCC_JALL21 target
+# LOW-SIZE: R_RISCC_JALL21 target
+# LOW-LABEL: <_start>:
+# LOW-NEXT: 0: {{.*}} jall s0, 4096
+# LOW-NEXT: 4: {{.*}} jall s0, 4096
+# LOW-NEXT: 8: {{.*}} jall s3, 4096
+# LOW-NEXT: c: {{.*}} ret s7
+
+# FULL-SIZE: Name: .transfers
+# FULL-SIZE: Size: 20
+# FULL-LABEL: <_start>:
+# FULL-NEXT: 0: {{.*}} ldpc r1,
+# FULL-NEXT: 2: {{.*}} jalr s0, r1
+# FULL-NEXT: 4: {{.*}} ldpc r6,
+# FULL-NEXT: 6: {{.*}} jalr s0, r6
+# FULL-NEXT: 8: {{.*}} ldpc r0,
+# FULL-NEXT: a: {{.*}} jalr s3, r0
+# FULL-NEXT: c: {{.*}} ret s7
+
+# PARTIAL-COUNT-2: R_RISCC_RELAX_TAIL
+# PARTIAL: R_RISCC_RELAX_CALL
+# PARTIAL: R_RISCC_CALL_TARGET
+# BAD-TAIL: error: {{.*}}RISC-C relaxation marker is not attached to the LDPC rN/JALR s0,rN (r0..r6) instruction pair
+# BAD-CALL: error: {{.*}}RISC-C relaxation marker is not attached to the LDPC r0/JALR s1..s7,r0 instruction pair
+# BAD-OWNER: error: {{.*}}relaxable RISC-C call literal has unexpected references
+
+#--- shared.s
+.section .text.transfers,"ax",@progbits
+.global _start
+.type _start,@function
+_start:
+.reloc ., R_RISCC_RELAX_TAIL, .Ltarget
+ldpc r1, .Ltarget
+jalr s0, r1
+.reloc ., R_RISCC_RELAX_TAIL, .Ltarget
+ldpc r6, .Ltarget
+jalr s0, r6
+.reloc ., R_RISCC_RELAX_CALL, .Ltarget
+ldpc r0, .Ltarget
+jalr s3, r0
+ret s7
+.p2align 2
+.ifdef SEPARATE
+.section .text.pool,"ax",@progbits
+.p2align 2
+.endif
+.Ltarget:
+.long call_target(target)
+.ifndef SEPARATE
+.size _start, .-_start
+.endif
+.section .text.target,"ax",@progbits
+.global target
+target:
+ret s7
+.ifdef DEBUG
+.section .debug_info,"",@progbits
+.long _start
+.long target
+.endif
+
+#--- low.ld
+SECTIONS {
+  .transfers 0 : { *(.text.transfers) }
+  .pool 0x40 : { *(.text.pool) }
+  .target 0x1000 : { *(.text.target) }
+}
+#--- high.ld
+SECTIONS {
+  .transfers 0 : { *(.text.transfers) }
+  .target 0x200000 : { *(.text.target) }
+}
+
+#--- mismatch.s
+.global _start
+_start:
+.reloc ., R_RISCC_RELAX_TAIL, .Ltarget
+ldpc r1, .Ltarget
+jalr s0, r2
+.p2align 2
+.Ltarget:
+.long call_target(_start)
+
+#--- sp.s
+.global _start
+_start:
+.reloc ., R_RISCC_RELAX_TAIL, .Ltarget
+ldpc r7, .Ltarget
+jalr s0, r7
+.p2align 2
+.Ltarget:
+.long call_target(_start)
+
+#--- call-r1.s
+.global _start
+_start:
+.reloc ., R_RISCC_RELAX_CALL, .Ltarget
+ldpc r1, .Ltarget
+jalr s7, r1
+.p2align 2
+.Ltarget:
+.long call_target(_start)
+
+#--- duplicate.s
+.global _start
+_start:
+.reloc ., R_RISCC_RELAX_TAIL, .Ltarget
+.reloc ., R_RISCC_RELAX_TAIL, .Ltarget
+ldpc r0, .Ltarget
+jalr s0, r0
+.p2align 2
+.Ltarget:
+.long call_target(_start)

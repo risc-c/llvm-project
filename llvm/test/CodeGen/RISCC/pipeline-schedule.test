@@ -1,0 +1,30 @@
+# REQUIRES: asserts, riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=postmisched -verify-machineinstrs \
+# RUN:   -debug-only=machine-scheduler %S/early-branch-schedule.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: sed -e 's/ADD32/ADD/g' -e 's/SUB32/SUB/g' -e 's/CMPI32/CMPI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' \
+# RUN:   -e 's/MUL32/MUL/g' -e 's/SRLI32/SRLI/g' %S/early-branch-schedule.mir | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -run-pass=postmisched -verify-machineinstrs -debug-only=machine-scheduler -o /dev/null 2>&1 | FileCheck %s
+
+# Branches use ordinary Execute-stage operand latencies. In particular, do
+# not add another cycle for a supposed Decode-stage read of R0.
+# CHECK-LABEL: alu:%bb.0
+# CHECK: SU(1): {{.*}}CMPI{{(32)?}}
+# CHECK: ExitSU: Data Latency=1 Reg=$r0
+# CHECK-LABEL: load:%bb.0
+# CHECK: SU(2): {{.*}}$r0 = LD{{(32)?}}
+# CHECK: ExitSU: Data Latency=2 Reg=$r0
+
+# MUL occupies Execute for three clocks. An independent ADD cannot issue
+# in either intervening clock; this is not merely a result-latency model.
+# CHECK-LABEL: multiply:%bb.0
+# CHECK: SU(1): {{.*}}$r0 = MUL{{(32)?}}
+# CHECK: ExitSU: Data Latency=3 Reg=$r0
+# CHECK: Scheduling SU(1) $r0 = MUL{{(32)?}}
+# CHECK-NEXT: Ready @0c
+# CHECK-NEXT: RISCCPipe +3x1u
+# CHECK: Scheduling SU(0) $r3 = ADD{{(32)?}}
+# CHECK-NEXT: Ready @3c
+
+# CHECK-LABEL: shift:%bb.0
+# CHECK: SU(1): {{.*}}$r0 = SRLI{{(32)?}}
+# CHECK: ExitSU: Data Latency=1 Reg=$r0

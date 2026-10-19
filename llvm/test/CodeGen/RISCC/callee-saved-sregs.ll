@@ -87,7 +87,7 @@ define void @ordinary_call_clobber_r5_r6() {
 ; CHECK:       st r6,
 ; CHECK:       ld r6,
 ; CHECK:       ld r5,
-; CHECK:       ret s7
+; CHECK:       jalr s0, r0
   call void asm sideeffect "", "~{r5},~{r6}"()
   call void @external()
   ret void

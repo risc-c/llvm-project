@@ -13,11 +13,13 @@
 # RUN: llvm-readobj --sections cross | FileCheck %s --check-prefix=CROSS-SECTION
 # RUN: llvm-objdump --full-contents --section=.cross cross | FileCheck %s --check-prefix=CROSS-BYTES
 # RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=min -mattr=+rc32 invalid-profile.s -o invalid-profile.o
-# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-profile.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-PROFILE
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-profile.o -o /dev/null 2>&1 | FileCheck %s \
+# RUN:   --check-prefix=INVALID-PROFILE
 # RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 invalid-pair.s -o invalid-pair.o
 # RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-pair.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-PAIR
 # RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 invalid-shared.s -o invalid-shared.o
-# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-shared.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-SHARED
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-shared.o -o /dev/null 2>&1 | FileCheck %s \
+# RUN:   --check-prefix=INVALID-SHARED
 # RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 oscillate.s -o oscillate.o
 # RUN: ld.lld -m elf32lriscc -T oscillate.ld oscillate.o -o oscillate
 # RUN: llvm-readobj --sections oscillate | FileCheck %s --check-prefix=OSCILLATE
@@ -25,7 +27,8 @@
 # RUN: ld.lld -m elf32lriscc --emit-relocs -Ttext=0 debug-layout.o -o debug-layout
 # RUN: llvm-readobj --sections --relocations debug-layout | FileCheck %s --check-prefix=DEBUG-LAYOUT
 # RUN: llvm-objdump -d debug-layout | FileCheck %s --check-prefix=DEBUG-BYTES
-# RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -enable-ipra=false -filetype=obj inline-pool.ll -o inline-pool.o
+# RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -enable-ipra=false -filetype=obj inline-pool.ll \
+# RUN:   -o inline-pool.o
 # RUN: ld.lld -m elf32lriscc -Ttext=0 inline-pool.o -o inline-pool
 # RUN: llvm-objdump -d inline-pool | FileCheck %s --check-prefix=INLINE-POOL
 
@@ -69,8 +72,8 @@
 # CROSS-BYTES-NEXT: 0000 06a728c0 44332211 fb893438 0001f8c7
 
 # INVALID-PROFILE: error: {{.*}}RISC-C call relaxation requires RC32 Sys or Full
-# INVALID-PAIR: error: {{.*}}RISC-C relaxation marker is not attached to the LDPC r0/JALR s7,r0 instruction pair
-# INVALID-SHARED: error: {{.*}}relaxable RISC-C call literal is shared or has unexpected references
+# INVALID-PAIR: error: {{.*}}RISC-C relaxation marker is not attached to the LDPC r0/JALR s1..s7,r0 instruction pair
+# INVALID-SHARED: error: {{.*}}relaxable RISC-C call literal has unexpected references
 
 # OSCILLATE:      Name: .calls
 # OSCILLATE:      Size: 8
@@ -86,7 +89,7 @@
 
 # Keep IR function order for this forward-call layout test by disabling IPRA.
 # INLINE-POOL-LABEL: <late_call>:
-# INLINE-POOL:       jall s7, 320
+# INLINE-POOL:       jall s7, 316
 
 #--- calls.s
         .section .text.calls,"ax",@progbits

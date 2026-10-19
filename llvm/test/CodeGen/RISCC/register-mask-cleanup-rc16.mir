@@ -1,0 +1,68 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s
+
+---
+name: byte_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr = COPY $r1
+    %1:gpr = LDB %0
+    %2:gpr = LDI16 255
+    %3:gpr = AND %1, %2
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: byte_mask
+# CHECK: %3:gpr = COPY %1
+# CHECK-NOT: AND
+
+---
+name: commuted_byte_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr = COPY $r1
+    %1:gpr = LDB %0
+    %2:gpr = LDI16 255
+    %3:gpr = AND %2, %1
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: commuted_byte_mask
+# CHECK: %3:gpr = COPY %1
+# CHECK-NOT: AND
+
+---
+name: retain_narrower_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr = COPY $r1
+    %1:gpr = LDB %0
+    %2:gpr = LDI 127
+    %3:gpr = AND %1, %2
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: retain_narrower_mask
+# CHECK: %3:gpr = AND %1, %2
+
+---
+name: retain_signed_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr = COPY $r1
+    %1:gpr = LDBS %0
+    %2:gpr = LDI16 255
+    %3:gpr = AND %1, %2
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: retain_signed_mask
+# CHECK: %3:gpr = AND %1, %2

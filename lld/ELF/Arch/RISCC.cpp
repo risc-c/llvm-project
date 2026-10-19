@@ -13,16 +13,20 @@
 
 #include "InputFiles.h"
 #include "InputSection.h"
+#include "LinkerScript.h"
 #include "OutputSections.h"
 #include "RelocScan.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Target.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <cstring>
+#include <numeric>
 
 using namespace llvm;
 using namespace llvm::object;
@@ -68,15 +72,54 @@ private:
   mutable SmallVector<CallRelaxation, 0> callRelaxations;
   mutable bool relaxationInitialized = false;
 
+  struct LiteralWord {
+    uint64_t offset; // Original offset in the input section.
+    // marker, valueReloc and users index the input section's relocation list.
+    size_t marker;
+    size_t valueReloc = SIZE_MAX;
+    uint32_t data;
+    bool valid = true;
+    SmallVector<size_t, 2> users;
+    SmallVector<Defined *, 1> symbols;
+  };
+  struct LiteralRef {
+    unsigned section, word;
+    bool operator==(const LiteralRef &other) const {
+      return section == other.section && word == other.word;
+    }
+  };
+  struct LiteralSection {
+    InputSection *sec;
+    SmallVector<LiteralWord, 0> words;
+    // (Relocation index, original target offset) for range checks.
+    SmallVector<std::pair<size_t, uint64_t>, 0> edges;
+    // Canonical word within this section, then its cross-section owner.
+    SmallVector<unsigned, 0> representative;
+    SmallVector<LiteralRef, 0> targets;
+    // Slot positions use original offsets until finalizeRelax remaps them.
+    SmallVector<uint64_t, 0> slots;
+    // Original offsets of discarded words.
+    SmallVector<uint64_t, 0> removed;
+  };
+  mutable SmallVector<LiteralSection, 0> literalSections;
+
   bool checkCodeAddress(uint8_t *loc, const Relocation &rel,
                         uint64_t val) const;
   uint32_t droppedBefore(const InputSection &sec, uint64_t offset) const;
   bool hasAddressMetadata() const;
   bool isInsideFunction(const InputSection &sec, uint64_t offset) const;
   void initRelaxation() const;
+  void initLiteralRelaxation() const;
+  void relaxLiterals() const;
+  void shareLiteralsAcrossSections() const;
+  void finalizeLiterals() const;
   bool relaxSection(InputSection &sec) const;
 };
 } // namespace
+
+static bool isLDPC(uint16_t instruction) {
+  return (instruction & 0xc700) == 0x8100;
+}
 
 static bool getInputSectionOffset(const Relocation &rel, InputSection *&sec,
                                   uint64_t &offset) {
@@ -215,6 +258,7 @@ RelExpr RISCC::getRelExpr(RelType type, const Symbol &s,
     return R_PC;
   case R_RISCC_RELAX_CALL:
   case R_RISCC_RELAX_TAIL:
+  case R_RISCC_RELAX_LITERAL:
     return R_RELAX_HINT;
   default:
     Err(ctx) << getErrorLoc(ctx, loc) << "unknown relocation (" << type.v
@@ -376,13 +420,19 @@ void RISCC::initRelaxation() const {
         ArrayRef<uint8_t> content = sec->content();
         uint16_t load = read16le(content.data() + call.offset);
         uint16_t transfer = read16le(content.data() + call.offset + 2);
-        uint16_t expectedTransfer =
-            call.type == R_RISCC_RELAX_TAIL ? 0xc0f9 : 0xf8f9;
-        if ((load & 0xff00) != 0x8100 || transfer != expectedTransfer) {
+        // Calls may use an object-private S link. Local far jumps may use
+        // any non-SP scratch, but the load and transfer must agree on it.
+        bool isTail = (transfer & 0x3800) == 0;
+        unsigned scratch = (load >> 11) & 7;
+        if (!isLDPC(load) || (transfer & ~0x3f00) != 0xc0f9 ||
+            ((transfer >> 8) & 7) != scratch || scratch == 7 ||
+            (!isTail && scratch != 0) ||
+            isTail != (call.type == R_RISCC_RELAX_TAIL)) {
           Err(ctx) << sec->getLocation(call.offset)
                    << ": RISC-C relaxation marker is not attached to the "
-                   << (call.type == R_RISCC_RELAX_TAIL ? "LDPC r0/JALR s0,r0"
-                                                       : "LDPC r0/JALR s7,r0")
+                   << (call.type == R_RISCC_RELAX_TAIL
+                           ? "LDPC rN/JALR s0,rN (r0..r6)"
+                           : "LDPC r0/JALR s1..s7,r0")
                    << " instruction pair";
           continue;
         }
@@ -458,11 +508,18 @@ void RISCC::initRelaxation() const {
     }
   }
 
-  // A deletable call literal is owned by exactly one marker and its paired
-  // LDPC relocation. Reject shared literals or any other live reference so
-  // relaxation cannot remove data that is still in use.
-  for (CallRelaxation &call : callRelaxations) {
+  // A literal may be owned by several marked transfers. Every live reference
+  // must be one owner's marker or paired LDPC, at the start of the word; an
+  // unmarked load or data reference prevents us from owning/deleting it.
+  DenseMap<std::pair<InputSection *, size_t>, SmallVector<CallRelaxation *, 2>>
+      owners;
+  for (CallRelaxation &call : callRelaxations)
+    owners[{call.literalSec, call.literalRelocIndex}].push_back(&call);
+  for (auto &[key, group] : owners) {
+    auto [literalSec, literalIndex] = key;
+    uint64_t literalOffset = literalSec->relocs()[literalIndex].offset;
     unsigned references = 0;
+    bool valid = true;
     for (InputSectionBase *base : ctx.inputSections) {
       auto *sec = dyn_cast<InputSection>(base);
       if (!sec || !sec->isLive())
@@ -470,24 +527,29 @@ void RISCC::initRelaxation() const {
       for (auto [i, rel] : llvm::enumerate(sec->relocs())) {
         InputSection *targetSec;
         uint64_t targetOffset;
-        uint64_t literalOffset =
-            call.literalSec->relocs()[call.literalRelocIndex].offset;
         if (!getInputSectionOffset(rel, targetSec, targetOffset) ||
-            targetSec != call.literalSec || targetOffset < literalOffset ||
+            targetSec != literalSec || targetOffset < literalOffset ||
             targetOffset >= literalOffset + 4)
           continue;
-        bool paired = sec == call.callSec &&
-                      (i == call.callRelocIndex || i == call.loadRelocIndex);
-        if (!paired || ++references > 2)
-          call.valid = false;
+        bool paired =
+            targetOffset == literalOffset &&
+            llvm::any_of(group, [&](const CallRelaxation *call) {
+              return sec == call->callSec &&
+                     (i == call->callRelocIndex || i == call->loadRelocIndex);
+            });
+        valid &= paired;
+        ++references;
       }
     }
-    if (!call.valid || references != 2)
-      Err(ctx) << call.callSec->getLocation(
-                      call.callSec->relocs()[call.callRelocIndex].offset)
-               << ": relaxable RISC-C call literal is shared or has "
-                  "unexpected references";
+    for (CallRelaxation *call : group) {
+      call->valid = valid && references == 2 * group.size();
+      if (!call->valid)
+        Err(ctx) << call->callSec->getLocation(
+                        call->callSec->relocs()[call->callRelocIndex].offset)
+                 << ": relaxable RISC-C call literal has unexpected references";
+    }
   }
+  initLiteralRelaxation();
 }
 
 bool RISCC::hasAddressMetadata() const {
@@ -500,6 +562,505 @@ bool RISCC::hasAddressMetadata() const {
       return true;
   }
   return false;
+}
+
+void RISCC::initLiteralRelaxation() const {
+  if (!(calcEFlags() & EF_RISCC_RC32) || hasAddressMetadata())
+    return;
+
+  DenseMap<InputSection *, unsigned> sections;
+  DenseMap<std::pair<InputSection *, uint64_t>, std::pair<unsigned, unsigned>>
+      words;
+  for (InputSectionBase *base : ctx.inputSections) {
+    auto *sec = dyn_cast<InputSection>(base);
+    if (!sec || !sec->isLive() || !sec->relaxAux || sec->addralign != 4)
+      continue;
+    LiteralSection pool{sec};
+    for (auto [index, rel] : llvm::enumerate(sec->relocs())) {
+      if (rel.type != R_RISCC_RELAX_LITERAL)
+        continue;
+      InputSection *targetSec;
+      uint64_t targetOffset;
+      if ((rel.offset & 3) || sec->size < 4 || rel.offset > sec->size - 4 ||
+          !getInputSectionOffset(rel, targetSec, targetOffset) ||
+          targetSec != sec || targetOffset != rel.offset) {
+        Err(ctx) << sec->getLocation(rel.offset)
+                 << ": RISC-C literal marker must name its own aligned word";
+        continue;
+      }
+      auto [it, inserted] =
+          words.try_emplace(std::make_pair(sec, rel.offset),
+                            literalSections.size(), pool.words.size());
+      if (!inserted) {
+        Err(ctx) << sec->getLocation(rel.offset)
+                 << ": duplicate RISC-C literal marker";
+        continue;
+      }
+      LiteralWord word{rel.offset, index, SIZE_MAX,
+                       read32le(sec->content().data() + rel.offset)};
+      for (auto [i, field] : llvm::enumerate(sec->relocs())) {
+        if (i == index || field.type == R_RISCC_NONE)
+          continue;
+        if (field.offset >= rel.offset && field.offset < rel.offset + 4) {
+          if (field.offset != rel.offset || word.valueReloc != SIZE_MAX ||
+              (field.type != R_RISCC_ABS32 && field.type != R_RISCC_TPOFF32))
+            word.valid = false;
+          else
+            word.valueReloc = i;
+        }
+      }
+      if (hasOverlappingRelocation(sec->relocs(), rel.offset, &rel,
+                                   word.valueReloc == SIZE_MAX
+                                       ? nullptr
+                                       : &sec->relocs()[word.valueReloc]))
+        word.valid = false;
+      pool.words.push_back(std::move(word));
+    }
+    if (!pool.words.empty()) {
+      sections[sec] = literalSections.size();
+      literalSections.push_back(std::move(pool));
+    }
+  }
+
+  if (literalSections.empty())
+    return;
+
+  // A word is private only when every reference is a same-section LDPC to
+  // its beginning. No address escapes, partial-word references, or branches
+  // into data may be redirected. Cross-section short references also make
+  // shrinkage depend on output-section alignment/script decisions; leave
+  // those layouts alone rather than predicting them here.
+  bool crossSectionPCRel = false;
+  for (InputSectionBase *base : ctx.inputSections) {
+    auto *sec = dyn_cast<InputSection>(base);
+    if (!sec || !sec->isLive())
+      continue;
+    for (auto [index, rel] : llvm::enumerate(sec->relocs())) {
+      // A private label used as the base of address arithmetic is not just
+      // a reference to that word's value. Keep its section/identity stable,
+      // including when another word's marker is written as label + addend.
+      if (auto *def = dyn_cast_or_null<Defined>(rel.sym);
+          def && !def->isSection() && rel.addend != 0) {
+        auto *baseSec = dyn_cast_or_null<InputSection>(def->section);
+        if (auto it = words.find({baseSec, def->value & ~uint64_t(3)});
+            it != words.end()) {
+          auto [pool, word] = it->second;
+          literalSections[pool].words[word].valid = false;
+        }
+      }
+      InputSection *targetSec = nullptr;
+      uint64_t targetOffset = 0;
+      bool known = getInputSectionOffset(rel, targetSec, targetOffset);
+      if (rel.type == R_RISCC_PCREL8_WORD) {
+        if (!known || targetSec != sec)
+          crossSectionPCRel = true;
+        else if (auto it = sections.find(sec); it != sections.end())
+          literalSections[it->second].edges.emplace_back(index, targetOffset);
+      }
+      auto it = words.find({targetSec, targetOffset & ~uint64_t(3)});
+      if (!known || it == words.end())
+        continue;
+      auto [sectionIndex, wordIndex] = it->second;
+      LiteralWord &word = literalSections[sectionIndex].words[wordIndex];
+      if (sec == targetSec && index == word.marker)
+        continue;
+      if (sec != targetSec || targetOffset != word.offset ||
+          rel.type != R_RISCC_PCREL8_WORD || sec->size < 2 ||
+          rel.offset > sec->size - 2 || (rel.offset & 1) ||
+          !isLDPC(read16le(sec->content().data() + rel.offset)))
+        word.valid = false;
+      else
+        word.users.push_back(index);
+    }
+  }
+  if (crossSectionPCRel) {
+    literalSections.clear();
+    return;
+  }
+  for (InputFile *file : ctx.objectFiles)
+    for (Symbol *sym : file->getSymbols()) {
+      auto *def = dyn_cast<Defined>(sym);
+      if (!def || def->isSection())
+        continue;
+      auto *sec = dyn_cast_or_null<InputSection>(def->section);
+      auto it = words.find({sec, def->value & ~uint64_t(3)});
+      if (it == words.end())
+        continue;
+      auto [sectionIndex, wordIndex] = it->second;
+      LiteralWord &word = literalSections[sectionIndex].words[wordIndex];
+      if (!def->isLocal() || def->isFunc() || def->size ||
+          def->value != word.offset)
+        word.valid = false;
+      else
+        word.symbols.push_back(def);
+    }
+  for (LiteralSection &pool : literalSections)
+    llvm::erase_if(pool.words, [](const LiteralWord &word) {
+      return !word.valid || word.users.empty();
+    });
+}
+
+void RISCC::relaxLiterals() const {
+  for (LiteralSection &pool : literalSections) {
+    ArrayRef<Relocation> rels = pool.sec->relocs();
+    const unsigned count = pool.words.size();
+    // Rebuild from the original coordinates on every pass: linker-script
+    // address changes may undo a call relaxation and restore its target word.
+    pool.representative.resize(count);
+    std::iota(pool.representative.begin(), pool.representative.end(), 0);
+    pool.slots.clear();
+    pool.removed.clear();
+    DenseMap<uint64_t, unsigned> wordAt;
+    for (auto [i, word] : llvm::enumerate(pool.words)) {
+      pool.slots.push_back(word.offset);
+      wordAt[word.offset] = i;
+    }
+    SmallVector<uint64_t, 0> removed;
+    SmallDenseSet<size_t, 8> relaxedLoads;
+    for (const CallRelaxation &call : callRelaxations) {
+      if (!call.valid || !call.relaxed)
+        continue;
+      if (call.callSec == pool.sec)
+        relaxedLoads.insert(call.loadRelocIndex);
+      if (call.literalSec == pool.sec && !call.preserveLayout &&
+          llvm::none_of(callRelaxations, [&](const CallRelaxation &other) {
+            return other.valid && other.literalSec == call.literalSec &&
+                   other.literalRelocIndex == call.literalRelocIndex &&
+                   (!other.relaxed || other.preserveLayout);
+          }))
+        removed.push_back(rels[call.literalRelocIndex].offset);
+    }
+    llvm::sort(removed);
+    removed.erase(std::unique(removed.begin(), removed.end()), removed.end());
+    auto sameValue = [&](unsigned a, unsigned b) {
+      const LiteralWord &lhs = pool.words[a], &rhs = pool.words[b];
+      if (lhs.valueReloc == SIZE_MAX || rhs.valueReloc == SIZE_MAX)
+        return lhs.valueReloc == rhs.valueReloc && lhs.data == rhs.data;
+      const Relocation &x = rels[lhs.valueReloc], &y = rels[rhs.valueReloc];
+      return x.type == y.type && x.expr == y.expr && x.sym == y.sym &&
+             x.addend == y.addend;
+    };
+    while (true) {
+      bool accepted = false;
+      for (unsigned victim = 0; victim != count && !accepted; ++victim) {
+        if (pool.representative[victim] != victim)
+          continue;
+        for (unsigned keep = 0; keep != count; ++keep) {
+          if (keep == victim || pool.representative[keep] != keep ||
+              !sameValue(victim, keep))
+            continue;
+          auto representatives = pool.representative;
+          for (unsigned &r : representatives)
+            if (r == victim)
+              r = keep;
+          auto deletions = removed;
+          deletions.push_back(pool.slots[victim]);
+          llvm::sort(deletions);
+          auto position = [&](uint64_t offset) -> int64_t {
+            return int64_t(offset) - 4 * (llvm::lower_bound(deletions, offset) -
+                                          deletions.begin());
+          };
+          SmallVector<std::pair<int64_t, int64_t>, 0> intervals(
+              count, {INT64_MIN, INT64_MAX});
+          // Each surviving value needs a slot in the intersection of all
+          // its users' LDPC ranges, including users of the deleted copy.
+          for (unsigned i = 0; i != count; ++i)
+            for (size_t user : pool.words[i].users) {
+              int64_t offset = position(rels[user].offset);
+              auto &range = intervals[representatives[i]];
+              range.first = std::max(range.first, offset - 254);
+              range.second = std::min(range.second, offset + 256);
+            }
+          if (intervals[keep].first > intervals[keep].second)
+            continue;
+          SmallVector<uint64_t, 0> available;
+          SmallVector<unsigned, 0> pending;
+          for (unsigned i = 0; i != count; ++i)
+            if (representatives[i] == i) {
+              available.push_back(pool.slots[i]);
+              pending.push_back(i);
+            }
+          llvm::sort(available);
+          auto slots = pool.slots;
+          // Assign existing slots from left to right, taking the reachable
+          // value whose range ends first. This also permits exchanges when
+          // neither duplicate's original slot can serve all of its users.
+          // No new pool, alignment padding, or skip branch is introduced.
+          for (uint64_t slot : available) {
+            int64_t at = position(slot);
+            auto best = pending.end();
+            for (auto it = pending.begin(); it != pending.end(); ++it)
+              if (intervals[*it].first <= at &&
+                  (best == pending.end() ||
+                   intervals[*it].second < intervals[*best].second ||
+                   (intervals[*it].second == intervals[*best].second &&
+                    pool.slots[*it] == slot)))
+                best = it;
+            if (best == pending.end() || intervals[*best].second < at)
+              break;
+            slots[*best] = slot;
+            pending.erase(best);
+          }
+          if (!pending.empty())
+            continue;
+          bool fits = llvm::all_of(pool.edges, [&](auto edge) {
+            auto [index, target] = edge;
+            if (relaxedLoads.contains(index))
+              return true;
+            if (pool.sec->size < 2 || rels[index].offset > pool.sec->size - 2 ||
+                (rels[index].offset & 1))
+              return false;
+            auto it = wordAt.find(target);
+            int64_t to = position(it == wordAt.end()
+                                      ? target
+                                      : slots[representatives[it->second]]);
+            int64_t distance = to - position(rels[index].offset) - 2;
+            bool load = isLDPC(
+                read16le(pool.sec->content().data() + rels[index].offset));
+            return !(distance & 1) && isInt<8>(distance / 2) &&
+                   (!load || !(to & 3));
+          });
+          if (!fits)
+            continue;
+          pool.removed.push_back(pool.slots[victim]);
+          pool.representative = std::move(representatives);
+          pool.slots = std::move(slots);
+          removed = std::move(deletions);
+          accepted = true;
+          break;
+        }
+      }
+      if (!accepted)
+        break;
+    }
+  }
+  shareLiteralsAcrossSections();
+}
+
+void RISCC::shareLiteralsAcrossSections() const {
+  DenseMap<InputSection *, unsigned> poolFor;
+  for (auto [i, pool] : llvm::enumerate(literalSections)) {
+    pool.targets.clear();
+    for (unsigned representative : pool.representative)
+      pool.targets.push_back({unsigned(i), representative});
+    if (!pool.words.empty())
+      poolFor[pool.sec] = i;
+  }
+  if (poolFor.size() < 2)
+    return;
+
+  DenseMap<InputSection *, SmallVector<uint64_t, 0>> callDeletions;
+  DenseSet<std::pair<InputSection *, size_t>> relaxedLoads;
+  for (const CallRelaxation &call : callRelaxations) {
+    if (!call.valid || !call.relaxed)
+      continue;
+    relaxedLoads.insert({call.callSec, call.loadRelocIndex});
+    if (!call.preserveLayout &&
+        llvm::none_of(callRelaxations, [&](const CallRelaxation &other) {
+          return other.valid && other.literalSec == call.literalSec &&
+                 other.literalRelocIndex == call.literalRelocIndex &&
+                 (!other.relaxed || other.preserveLayout);
+        }))
+      callDeletions[call.literalSec].push_back(
+          call.literalSec->relocs()[call.literalRelocIndex].offset);
+  }
+
+  // A region starts at a word-aligned pool section and contains only regular
+  // sections with alignment <= 4 in one input-section description. Deleting
+  // whole words preserves all padding within it, so relative positions can
+  // be calculated exactly without guessing future VAs. Do not span script
+  // commands, synthetic sections, or stronger alignment. Rebuild membership
+  // every pass because memory-region spilling can move input sections.
+  auto shareRegion = [&](ArrayRef<InputSection *> sections) {
+    DenseMap<InputSection *, uint64_t> starts;
+    SmallVector<unsigned, 0> pools;
+    SmallVector<LiteralRef, 0> candidates;
+    DenseMap<std::pair<InputSection *, uint64_t>, LiteralRef> wordAt;
+    SmallVector<uint64_t, 0> removed;
+    uint64_t end = 0;
+    for (InputSection *sec : sections) {
+      uint64_t start = alignTo(end, sec->addralign);
+      starts[sec] = start;
+      end = start + sec->size;
+      if (auto it = callDeletions.find(sec); it != callDeletions.end())
+        for (uint64_t offset : it->second)
+          removed.push_back(start + offset);
+      auto it = poolFor.find(sec);
+      if (it == poolFor.end())
+        continue;
+      unsigned index = it->second;
+      pools.push_back(index);
+      const LiteralSection &pool = literalSections[index];
+      for (uint64_t offset : pool.removed)
+        removed.push_back(start + offset);
+      for (auto [i, word] : llvm::enumerate(pool.words)) {
+        LiteralRef ref{index, unsigned(i)};
+        wordAt[{sec, word.offset}] = ref;
+        if (pool.targets[i] == ref)
+          candidates.push_back(ref);
+      }
+    }
+    if (pools.size() < 2)
+      return;
+    llvm::sort(removed);
+    removed.erase(std::unique(removed.begin(), removed.end()), removed.end());
+    auto slotOf = [&](LiteralRef ref) {
+      const LiteralSection &pool = literalSections[ref.section];
+      return starts.lookup(pool.sec) + pool.slots[ref.word];
+    };
+    llvm::sort(candidates, [&](LiteralRef a, LiteralRef b) {
+      return slotOf(a) < slotOf(b);
+    });
+    auto sameValue = [&](LiteralRef a, LiteralRef b) {
+      const LiteralSection &x = literalSections[a.section];
+      const LiteralSection &y = literalSections[b.section];
+      const LiteralWord &lhs = x.words[a.word], &rhs = y.words[b.word];
+      if (lhs.valueReloc == SIZE_MAX || rhs.valueReloc == SIZE_MAX)
+        return lhs.valueReloc == rhs.valueReloc && lhs.data == rhs.data;
+      const Relocation &r = x.sec->relocs()[lhs.valueReloc];
+      const Relocation &s = y.sec->relocs()[rhs.valueReloc];
+      return r.type == s.type && r.expr == s.expr && r.sym == s.sym &&
+             r.addend == s.addend;
+    };
+    auto position = [](ArrayRef<uint64_t> deletions, uint64_t offset) {
+      return int64_t(offset) -
+             4 * (llvm::lower_bound(deletions, offset) - deletions.begin());
+    };
+    while (true) {
+      bool accepted = false;
+      for (LiteralRef victim : candidates) {
+        LiteralSection &victimPool = literalSections[victim.section];
+        if (!(victimPool.targets[victim.word] == victim))
+          continue;
+        int64_t at = position(removed, slotOf(victim));
+        // Both old and replacement words must reach a common user. The
+        // extra four bytes allow for the proposed deletion. Limit the search
+        // to this neighborhood even for very large output sections.
+        auto first = llvm::lower_bound(
+            candidates, at - 516, [&](LiteralRef ref, int64_t bound) {
+              return position(removed, slotOf(ref)) < bound;
+            });
+        for (LiteralRef keep : make_range(first, candidates.end())) {
+          if (position(removed, slotOf(keep)) > at + 516)
+            break;
+          const LiteralSection &keepPool = literalSections[keep.section];
+          if (keep.section == victim.section ||
+              !(keepPool.targets[keep.word] == keep) ||
+              !sameValue(victim, keep))
+            continue;
+          auto deletions = removed;
+          deletions.insert(llvm::lower_bound(deletions, slotOf(victim)),
+                           slotOf(victim));
+          bool fits = llvm::all_of(pools, [&](unsigned index) {
+            const LiteralSection &pool = literalSections[index];
+            ArrayRef<Relocation> rels = pool.sec->relocs();
+            uint64_t start = starts.lookup(pool.sec);
+            return llvm::all_of(pool.edges, [&](auto edge) {
+              auto [i, target] = edge;
+              if (relaxedLoads.contains({pool.sec, i}))
+                return true;
+              if (pool.sec->size < 2 || rels[i].offset > pool.sec->size - 2 ||
+                  (rels[i].offset & 1))
+                return false;
+              uint64_t destination = start + target;
+              if (auto it = wordAt.find({pool.sec, target});
+                  it != wordAt.end()) {
+                LiteralRef ref = pool.targets[it->second.word];
+                destination = slotOf(ref == victim ? keep : ref);
+              }
+              int64_t to = position(deletions, destination);
+              int64_t distance =
+                  to - position(deletions, start + rels[i].offset) - 2;
+              bool load =
+                  isLDPC(read16le(pool.sec->content().data() + rels[i].offset));
+              return !(distance & 1) && isInt<8>(distance / 2) &&
+                     (!load || !(to & 3));
+            });
+          });
+          if (!fits)
+            continue;
+          victimPool.removed.push_back(victimPool.slots[victim.word]);
+          for (unsigned index : pools)
+            for (LiteralRef &ref : literalSections[index].targets)
+              if (ref == victim)
+                ref = keep;
+          removed = std::move(deletions);
+          accepted = true;
+          break;
+        }
+        if (accepted)
+          break;
+      }
+      if (!accepted)
+        break;
+    }
+  };
+
+  for (OutputSection *osec : ctx.outputSections) {
+    if (!(osec->flags & SHF_EXECINSTR))
+      continue;
+    for (SectionCommand *command : osec->commands) {
+      auto *description = dyn_cast<InputSectionDescription>(command);
+      if (!description)
+        continue;
+      SmallVector<InputSection *, 0> region;
+      for (InputSection *sec : description->sections) {
+        if (sec->kind() != SectionBase::Regular || sec->addralign > 4) {
+          shareRegion(region);
+          region.clear();
+        } else if (!region.empty() || poolFor.contains(sec)) {
+          region.push_back(sec);
+        }
+      }
+      shareRegion(region);
+    }
+  }
+}
+
+void RISCC::finalizeLiterals() const {
+  // Move private aliases before rewriting any loads: a canonical word may
+  // belong to a later input section, and its marker may use a local label.
+  for (const LiteralSection &pool : literalSections)
+    for (auto [i, word] : llvm::enumerate(pool.words)) {
+      LiteralRef target = pool.targets[i];
+      const LiteralSection &owner = literalSections[target.section];
+      for (Defined *symbol : word.symbols) {
+        symbol->section = owner.sec;
+        symbol->value = owner.slots[target.word];
+      }
+    }
+  for (const LiteralSection &pool : literalSections) {
+    auto rels = pool.sec->relocs();
+    auto *buf = const_cast<uint8_t *>(pool.sec->content().data());
+    for (auto [i, word] : llvm::enumerate(pool.words)) {
+      LiteralRef target = pool.targets[i];
+      const LiteralSection &owner = literalSections[target.section];
+      uint64_t slot = owner.slots[target.word];
+      Relocation &marker = rels[word.marker];
+      for (size_t user : word.users) {
+        Relocation &load = rels[user];
+        // Preserve same-section relocation spellings, but a cross-section
+        // reference must use a symbol belonging to the surviving word.
+        load.sym =
+            owner.sec == pool.sec
+                ? marker.sym
+                : owner.sec->relocs()[owner.words[target.word].marker].sym;
+        load.addend = int64_t(slot) - cast<Defined>(load.sym)->value;
+      }
+      marker.type = R_RISCC_NONE;
+      marker.addend = 0;
+      if (owner.sec == pool.sec && target.word == i) {
+        write32le(buf + slot, word.data);
+        if (word.valueReloc != SIZE_MAX)
+          rels[word.valueReloc].offset = slot;
+      } else if (word.valueReloc != SIZE_MAX) {
+        Relocation &value = rels[word.valueReloc];
+        value.type = R_RISCC_NONE;
+        value.expr = R_RELAX_HINT;
+        value.addend = 0;
+      }
+    }
+  }
 }
 
 bool RISCC::isInsideFunction(const InputSection &sec, uint64_t offset) const {
@@ -527,6 +1088,12 @@ bool RISCC::relaxSection(InputSection &sec) const {
       aux.relocTypes[call.callRelocIndex] = R_RISCC_JALL21;
 
   auto deleteLiteral = [&](size_t index) {
+    for (const LiteralSection &pool : literalSections)
+      if (pool.sec == &sec)
+        for (const LiteralWord &word : pool.words)
+          if (word.marker == index &&
+              llvm::is_contained(pool.removed, word.offset))
+            return true;
     bool referenced = false;
     for (const CallRelaxation &call : callRelaxations) {
       if (!call.valid)
@@ -608,6 +1175,7 @@ bool RISCC::relaxOnce(int pass) const {
     if (pass < 4 || call.relaxed)
       call.relaxed = candidate;
   }
+  relaxLiterals();
 
   SmallVector<InputSection *, 0> storage;
   bool changed = false;
@@ -626,6 +1194,12 @@ void RISCC::finalizeRelax(int passes) const {
     return;
   llvm::TimeTraceScope timeScope("Finalize RISC-C relaxation");
   Log(ctx) << "RISC-C relaxation passes: " << passes;
+
+  // Convert original word-slot coordinates while relocation offsets still
+  // describe the input section. Later copying mutates those offsets in place.
+  for (LiteralSection &pool : literalSections)
+    for (uint64_t &slot : pool.slots)
+      slot -= droppedBefore(*pool.sec, slot);
 
   SmallVector<int64_t, 0> finalTargetAddends;
   finalTargetAddends.reserve(callRelaxations.size());
@@ -690,8 +1264,8 @@ void RISCC::finalizeRelax(int passes) const {
 
         uint32_t keep = 0;
         if (rewrite) {
-          write32le(p,
-                    rel.type == R_RISCC_RELAX_TAIL ? 0x00000034 : 0x00003834);
+          uint16_t link = read16le(old.data() + rel.offset + 2) & 0x3800;
+          write32le(p, 0x00000034 | link);
           keep = 4;
           p += keep;
         }
@@ -737,6 +1311,7 @@ void RISCC::finalizeRelax(int passes) const {
     literal.type = R_RISCC_NONE;
     literal.addend = 0;
   }
+  finalizeLiterals();
 
   // A nearby tail transfer needs no link write. Keep its unused second
   // halfword: shrinking by two would disturb RC32 literal alignment and
@@ -775,6 +1350,15 @@ void RISCC::finalizeRelax(int passes) const {
       }
     }
   }
+
+  // Slot exchanges move value relocations in either direction. Restore their
+  // ordering for --emit-relocs after all relaxation indices have been consumed.
+  for (const LiteralSection &pool : literalSections)
+    if (!pool.removed.empty())
+      llvm::stable_sort(pool.sec->relocs(),
+                        [](const Relocation &a, const Relocation &b) {
+                          return a.offset < b.offset;
+                        });
 }
 
 bool RISCC::checkCodeAddress(uint8_t *loc, const Relocation &rel,
@@ -842,7 +1426,7 @@ void RISCC::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     break;
   }
   case R_RISCC_PCREL8_WORD: {
-    if ((ctx.arg.eflags & EF_RISCC_RC32) && (read16le(loc) & 0xc700) == 0x8100)
+    if ((ctx.arg.eflags & EF_RISCC_RC32) && isLDPC(read16le(loc)))
       checkAlignment(ctx, loc, rel.sym->getVA(ctx, rel.addend), 4, rel);
     checkAlignment(ctx, loc, val, 2, rel);
     int64_t wordOffset = (static_cast<int64_t>(val) - 2) / 2;
@@ -853,6 +1437,7 @@ void RISCC::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   }
   case R_RISCC_RELAX_CALL:
   case R_RISCC_RELAX_TAIL:
+  case R_RISCC_RELAX_LITERAL:
     break;
   default:
     llvm_unreachable("unknown RISC-C relocation");

@@ -1,0 +1,180 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-pack-literals=false -run-pass=riscc-constant-islands \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-pack-literals=false -riscc-share-literals=false \
+# RUN:   -run-pass=riscc-constant-islands -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-constant-islands -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s --check-prefix=PACK
+
+# Packing additionally removes the jump over the first island, placing the
+# combined pool after the return. Speed builds retain their existing layout.
+# Empty inline asm remains in place and does not block exact layout.
+# PACK-LABEL: name: share_across_gaps
+# PACK:       BNEZ
+# PACK-NOT:   JMP8
+# PACK:       RETS
+# PACK:       CONSTPOOL_ENTRY
+# PACK-NOT:   CONSTPOOL_ENTRY
+# PACK-LABEL: name: speed
+# PACK:       CONSTPOOL_ENTRY
+# PACK:       CONSTPOOL_ENTRY
+# PACK-LABEL: name: empty_inline_asm
+# PACK:       BNEZ
+# PACK-NOT:   JMP8
+# PACK:       INLINEASM &"", sideeffect mayload maystore
+# PACK:       RETS
+# PACK:       CONSTPOOL_ENTRY
+# PACK-NOT:   CONSTPOOL_ENTRY
+# PACK-LABEL: name: opaque_layout
+# PACK:       CONSTPOOL_ENTRY
+# PACK:       CONSTPOOL_ENTRY
+# PACK-LABEL: name: distant_aligned_block
+# PACK:       CONSTPOOL_ENTRY
+# PACK:       CONSTPOOL_ENTRY
+
+# An empty intervening natural gap must not force a second reachable copy.
+# CHECK-LABEL: name: share_across_gaps
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK-NOT:   CONSTPOOL_ENTRY
+# CHECK-LABEL: name: speed
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK-LABEL: name: empty_inline_asm
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK-NOT:   CONSTPOOL_ENTRY
+# CHECK:       INLINEASM &"", sideeffect mayload maystore
+# CHECK-NOT:   CONSTPOOL_ENTRY
+# CHECK-LABEL: name: opaque_layout
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK-LABEL: name: distant_aligned_block
+# CHECK:       CONSTPOOL_ENTRY
+# CHECK:       CONSTPOOL_ENTRY
+# OFF-LABEL: name: share_across_gaps
+# OFF:       CONSTPOOL_ENTRY
+# OFF:       CONSTPOOL_ENTRY
+# OFF-LABEL: name: empty_inline_asm
+# OFF:       CONSTPOOL_ENTRY
+# OFF:       CONSTPOOL_ENTRY
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @share_across_gaps() optsize { ret i32 0 }
+  define i32 @speed() { ret i32 0 }
+  define i32 @empty_inline_asm() optsize { ret i32 0 }
+  define i32 @opaque_layout() optsize { ret i32 0 }
+  define i32 @distant_aligned_block() optsize { ret i32 0 }
+...
+---
+name: share_across_gaps
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 2139062143'
+    alignment: 4
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $s7
+    $r1 = LDPC %const.0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: speed
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 2139062143'
+    alignment: 4
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $s7
+    $r1 = LDPC %const.0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: empty_inline_asm
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 2139062143'
+    alignment: 4
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    INLINEASM &"", 25
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $s7
+    $r1 = LDPC %const.0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: opaque_layout
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 2139062143'
+    alignment: 4
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    INLINEASM &".space 0", 1
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $s7
+    $r1 = LDPC %const.0
+    RETS implicit $s7, implicit $r1
+...
+---
+name: distant_aligned_block
+alignment: 4096
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 2139062143'
+    alignment: 4
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+  bb.2 (align 4096):
+    liveins: $s7
+    $r1 = LDPC %const.0
+    RETS implicit $s7, implicit $r1
+...

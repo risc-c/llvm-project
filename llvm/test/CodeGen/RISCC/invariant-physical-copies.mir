@@ -1,0 +1,294 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -riscc-invariant-copies -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/MOV32/MOV/g' -e 's/ANDI32/ANDI/g' -e 's/ADDI32/ADDI/g' -e 's/LDI32/LDI/g' -e 's/ADD32/ADD/g' \
+# RUN:   -e 's/CALL32/CALL/g' -e 's/(s32)/(s16)/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full \
+# RUN:   -riscc-invariant-copies -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# A loop-header copy followed by a pure two-address immediate operation may be
+# evaluated once in its unique outside predecessor.  A load between the two
+# operations is deliberately retained to model a search-like loop body.
+# Every negative case keeps the copied computation in the loop.
+
+# CHECK-LABEL: name: hoist_searchlike
+# CHECK:       bb.0.entry:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK-NEXT:  $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK:       JMP8 %bb.1
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   $r2 = MOV{{(32)?}} $r1
+# CHECK-NOT:   ANDI{{(32)?}}
+# CHECK:       {{(dead )?}}$r3 = LD{{(32)?}} $r4, 0
+# CHECK-LABEL: name: hoist_multiple_loops
+# CHECK:       bb.0.entry:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK-NEXT:  $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK:       bb.2.middle:
+# CHECK:       $r5 = MOV{{(32)?}} $r1
+# CHECK-NEXT:  $r5 = ANDI{{(32)?}} {{(killed )?}}$r5, 31
+# CHECK-LABEL: name: no_source_clobber
+# CHECK:       bb.1.loop:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK:       $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK:       $r1 = ADDI{{(32)?}} {{(killed )?}}$r1, 1
+# CHECK-LABEL: name: no_dest_clobber
+# CHECK:       bb.1.loop:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK:       $r2 = LDI{{(32)?}} 9
+# CHECK:       $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK-LABEL: name: no_source_used_before_op
+# CHECK:       bb.1.loop:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK:       $r3 = ADD{{(32)?}} $r2, $r4
+# CHECK:       $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK-LABEL: name: no_call
+# CHECK:       bb.1.loop:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK:       CALL{{(32)?}} $r6, csr_riscc
+# CHECK:       $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK-LABEL: name: no_other_successor_live_dst
+# CHECK:       bb.1.loop:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK:       $r2 = ANDI{{(32)?}} {{(killed )?}}$r2, 255
+# CHECK-LABEL: name: no_branch_r0_hazard
+# CHECK:       bb.1.loop:
+# CHECK:       $r0 = MOV{{(32)?}} $r1
+# CHECK:       $r0 = ANDI{{(32)?}} {{(killed )?}}$r0, 255
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @hoist_searchlike() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @hoist_multiple_loops() {
+  entry: br label %loop1
+  loop1: br label %middle
+  middle: br label %loop2
+  loop2: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @no_source_clobber() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @no_dest_clobber() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @no_source_used_before_op() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @no_call() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @no_other_successor_live_dst() {
+  entry: br label %loop
+  loop: br label %exit
+  alt: br label %exit
+  exit: ret i32 0
+  }
+  define i32 @no_branch_r0_hazard() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i32 0
+  }
+...
+---
+name: hoist_searchlike
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r2 = ANDI32 $r2, 255
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: hoist_multiple_loops
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop1
+    JMP8 %bb.1.loop1
+  bb.1.loop1:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop1, %bb.3.middle
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r2 = ANDI32 $r2, 255
+    BNEZ %bb.1.loop1, implicit $r0
+    JMP8 %bb.3.middle
+  bb.3.middle:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.4.loop2
+    JMP8 %bb.4.loop2
+  bb.4.loop2:
+    liveins: $r0, $r1, $r4, $r5, $s7
+    successors: %bb.4.loop2, %bb.5.exit
+    $r5 = MOV32 $r1
+    $r6 = LD32 $r4, 4 :: (load (s32))
+    $r5 = ANDI32 $r5, 31
+    BNEZ %bb.4.loop2, implicit $r0
+    JMP8 %bb.5.exit
+  bb.5.exit:
+    liveins: $r1, $r2, $r5, $s7
+    RETS implicit $s7, implicit $r2, implicit $r5
+...
+---
+name: no_source_clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r2 = ANDI32 $r2, 255
+    $r1 = ADDI32 $r1, 1
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: no_dest_clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r2 = LDI32 9
+    $r2 = ANDI32 $r2, 255
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: no_source_used_before_op
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r3 = ADD32 $r2, $r4
+    $r2 = ANDI32 $r2, 255
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: no_call
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $r6, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $r6, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    CALL32 $r6, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = LDI32 7
+    $r2 = MOV32 $r1
+    $r2 = ANDI32 $r2, 255
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: no_other_successor_live_dst
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $r2, $s7
+    successors: %bb.1.loop, %bb.3.alt
+    BNEZ %bb.3.alt, implicit $r0
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r2 = ANDI32 $r2, 255
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+  bb.3.alt:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: no_branch_r0_hazard
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    BNEZ %bb.2.exit, implicit $r0
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    $r0 = MOV32 $r1
+    $r3 = LD32 $r4, 0 :: (load (s32))
+    $r0 = ANDI32 $r0, 255
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r0, $s7
+    RETS implicit $s7, implicit $r0
+...

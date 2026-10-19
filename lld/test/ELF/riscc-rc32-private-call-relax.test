@@ -1,0 +1,128 @@
+# REQUIRES: riscc
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 calls.s -o calls.o
+# RUN: ld.lld -m elf32lriscc --emit-relocs -T layout.ld calls.o -o relaxed
+# RUN: llvm-readobj --sections --relocations relaxed | FileCheck %s --check-prefix=RELAX
+# RUN: llvm-objdump -d --no-show-raw-insn relaxed | FileCheck %s --check-prefix=RELAX-DIS
+# RUN: ld.lld -m elf32lriscc --no-relax --emit-relocs -T layout.ld calls.o -o unrelaxed
+# RUN: llvm-readobj --sections --relocations unrelaxed | FileCheck %s --check-prefix=NO-RELAX
+# RUN: llvm-objdump -d --no-show-raw-insn unrelaxed | FileCheck %s --check-prefix=NO-RELAX-DIS
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 invalid-call.s -o invalid-call.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-call.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-CALL
+# RUN: llvm-mc -filetype=obj -triple=riscc-none-elf -mcpu=sys -mattr=+rc32 invalid-tail.s -o invalid-tail.o
+# RUN: not ld.lld -m elf32lriscc -Ttext=0 invalid-tail.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID-TAIL
+
+# Near calls using S3, S2, and S4 all relax to JALL while preserving the
+# selected nonzero S-register link bits.  The S3 call to the target above the
+# JALL21 range remains the original LDPC/JALR pair.
+# RELAX:      Name: .calls
+# RELAX:      Size: 22
+# RELAX:      R_RISCC_CALL_TARGET far_s3
+# RELAX:      R_RISCC_JALL21 near_s3
+# RELAX:      R_RISCC_RELAX_CALL
+# RELAX:      R_RISCC_JALL21 near_s2
+# RELAX:      R_RISCC_JALL21 near_s4
+# RELAX-DIS-LABEL: <_start>:
+# RELAX-DIS:       jall s3,
+# RELAX-DIS-NEXT:  ldpc r0,
+# RELAX-DIS-NEXT:  jalr s3, r0
+# RELAX-DIS-NEXT:  jall s2,
+# RELAX-DIS-NEXT:  jall s4,
+# RELAX-DIS-NEXT:  ret s7
+
+# --no-relax leaves all four literal words, markers, and original transfers.
+# NO-RELAX:      Name: .calls
+# NO-RELAX:      Size: 34
+# NO-RELAX-COUNT-4: R_RISCC_CALL_TARGET
+# NO-RELAX-COUNT-4: R_RISCC_RELAX_CALL
+# NO-RELAX-NOT:  R_RISCC_JALL21
+# NO-RELAX-DIS-LABEL: <_start>:
+# NO-RELAX-DIS-COUNT-2: jalr s3, r0
+# NO-RELAX-DIS-COUNT-1: jalr s2, r0
+# NO-RELAX-DIS-COUNT-1: jalr s4, r0
+
+# A call marker must use a nonzero S link.  Tail markers remain link-free and
+# therefore require S0; using S3 is rejected.
+# INVALID-CALL: error: {{.*}}RISC-C relaxation marker
+# INVALID-TAIL: error: {{.*}}RISC-C relaxation marker
+
+#--- calls.s
+        .section .text.calls,"ax",@progbits
+        .p2align 2
+.Lnear_s3_literal:
+        .long call_target(near_s3)
+.Lfar_s3_literal:
+        .long call_target(far_s3)
+.Lnear_s2_literal:
+        .long call_target(near_s2)
+.Lnear_s4_literal:
+        .long call_target(near_s4)
+
+        .global _start
+        .type _start,@function
+_start:
+        .reloc .Lnear_s3_call, R_RISCC_RELAX_CALL, .Lnear_s3_literal
+.Lnear_s3_call:
+        ldpc r0, .Lnear_s3_literal
+        jalr s3, r0
+        .reloc .Lfar_s3_call, R_RISCC_RELAX_CALL, .Lfar_s3_literal
+.Lfar_s3_call:
+        ldpc r0, .Lfar_s3_literal
+        jalr s3, r0
+        .reloc .Lnear_s2_call, R_RISCC_RELAX_CALL, .Lnear_s2_literal
+.Lnear_s2_call:
+        ldpc r0, .Lnear_s2_literal
+        jalr s2, r0
+        .reloc .Lnear_s4_call, R_RISCC_RELAX_CALL, .Lnear_s4_literal
+.Lnear_s4_call:
+        ldpc r0, .Lnear_s4_literal
+        jalr s4, r0
+        ret s7
+        .size _start, . - _start
+
+        .section .text.near,"ax",@progbits
+        .p2align 2
+near_s3:
+        ret s3
+near_s2:
+        ret s2
+near_s4:
+        ret s4
+
+        .section .text.far,"ax",@progbits
+        .p2align 2
+far_s3:
+        ret s3
+
+#--- layout.ld
+SECTIONS {
+  .calls 0 : { *(.text.calls) }
+  .near 0x100 : { *(.text.near) }
+  .far 0x200000 : { *(.text.far) }
+}
+
+#--- invalid-call.s
+        .section .text,"ax",@progbits
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+        .global _start
+_start:
+        .reloc _start, R_RISCC_RELAX_CALL, .Lliteral
+        ldpc r0, .Lliteral
+        jalr s0, r0
+target:
+        ret s7
+
+#--- invalid-tail.s
+        .section .text,"ax",@progbits
+        .p2align 2
+.Lliteral:
+        .long call_target(target)
+        .global _start
+_start:
+        .reloc _start, R_RISCC_RELAX_TAIL, .Lliteral
+        ldpc r0, .Lliteral
+        jalr s3, r0
+target:
+        ret s7

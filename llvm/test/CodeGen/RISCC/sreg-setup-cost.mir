@@ -1,6 +1,8 @@
 # REQUIRES: riscc-registered-target
 # RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-sreg-allocator -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: sed -e 's/ ST / ST32 /g' -e 's/= LD /= LD32 /g' -e 's/    CALL /    CALL32 /g' -e 's/size: 2/size: 4/g' -e 's/alignment: 2/alignment: 4/g' -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-sreg-allocator -verify-machineinstrs -o - | FileCheck %s
+# RUN: sed -e 's/ ST / ST32 /g' -e 's/= LD /= LD32 /g' -e 's/    CALL /    CALL32 /g' -e 's/size: 2/size: 4/g' \
+# RUN:   -e 's/alignment: 2/alignment: 4/g' -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -mattr=+rc32 -run-pass=riscc-sreg-allocator -verify-machineinstrs -o - | FileCheck %s
 
 # An ordinary call leaves only callee-saved cache registers available. A
 # one-shot store/reload does not repay their four save/restore instructions.
@@ -29,11 +31,34 @@
 # CHECK-NOT: MTS
 # CHECK: JMP8
 
+# The leaf link is also an entry value. Evicting it to cache a spill needs
+# the same four save/restore instructions as a callee-saved S register.
+# Keep even a hot spill in memory at optsize when S2-S4 are already occupied.
+# CHECK-LABEL: name: leaf_link_size
+# CHECK: ST{{(32)?}} $r1, %stack.0
+# CHECK: bb.1:
+# CHECK: $r1 = LD{{(32)?}} %stack.0
+# CHECK: ST{{(32)?}} $r1, %stack.0
+# CHECK-NOT: $s7 = MTS
+# CHECK: RETS implicit $s7
+
+# A noreturn/nounwind function has no entry S5 value to preserve. Its spill
+# may use S5 across an ordinary call even at optsize.
+# CHECK-LABEL: name: nonreturning_size
+# CHECK: $s5 = MTS $r1
+# CHECK: bb.1:
+# CHECK: CALL
+# CHECK: $r1 = MFS $s5
+# CHECK: $s5 = MTS $r1
+
 --- |
   define void @once() { ret void }
   define void @repeated() { br label %loop
   loop: br label %loop }
   define void @repeated_size() optsize { br label %loop
+  loop: br label %loop }
+  define void @leaf_link_size() optsize { ret void }
+  define void @nonreturning_size() optsize noreturn nounwind { br label %loop
   loop: br label %loop }
 ...
 ---
@@ -72,6 +97,53 @@ body: |
 ...
 ---
 name: repeated_size
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2
+    successors: %bb.1
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2
+    successors: %bb.1
+    CALL $r2, csr_riscc, implicit-def $r2, implicit-def $s7, implicit-def $r0
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1
+...
+---
+name: leaf_link_size
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $s2, $s3, $s4, $s7
+    successors: %bb.1
+    $r0 = MFS $s2
+    $r0 = MFS $s3
+    $r0 = MFS $s4
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1
+  bb.1:
+    liveins: $s7
+    successors: %bb.1, %bb.2
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r0 = MFS $s2
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: nonreturning_size
 tracksRegLiveness: true
 noVRegs: true
 stack:

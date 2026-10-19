@@ -1,0 +1,109 @@
+# REQUIRES: riscc
+# RUN: split-file %s %t
+# RUN: sed -e 's/WIDTH/16/g' -e 's/NATIVE/8:16/g' %t/main.ll.in | llvm-as -o %t/main16.bc
+# RUN: sed -e 's/WIDTH/16/g' -e 's/NATIVE/8:16/g' %t/runtime.ll.in | llvm-as -o %t/runtime16.bc
+# RUN: sed -e 's/WIDTH/32/g' -e 's/NATIVE/8:16:32/g' %t/main.ll.in | llvm-as -o %t/main32.bc
+# RUN: sed -e 's/WIDTH/32/g' -e 's/NATIVE/8:16:32/g' %t/runtime.ll.in | llvm-as -o %t/runtime32.bc
+# RUN: llvm-ar rcs %t/runtime16.a %t/runtime16.bc
+# RUN: llvm-ar rcs %t/runtime32.a %t/runtime32.bc
+# RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections --why-extract=%t/why16.txt %t/main16.bc %t/runtime16.a -o %t/rc16
+# RUN: llvm-nm --defined-only %t/rc16 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: FileCheck %s --check-prefix=WHY --input-file=%t/why16.txt
+# RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections --mllvm=-mattr=+rc32 --why-extract=%t/why32.txt %t/main32.bc \
+# RUN:   %t/runtime32.a -o %t/rc32
+# RUN: llvm-nm --defined-only %t/rc32 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: FileCheck %s --check-prefix=WHY --input-file=%t/why32.txt
+# RUN: opt -module-summary %t/main16.bc -o %t/thin-main16.bc
+# RUN: opt -module-summary %t/runtime16.bc -o %t/thin-runtime16.bc
+# RUN: opt -module-summary %t/main32.bc -o %t/thin-main32.bc
+# RUN: opt -module-summary %t/runtime32.bc -o %t/thin-runtime32.bc
+# RUN: llvm-ar rcs %t/thin-runtime16.a %t/thin-runtime16.bc
+# RUN: llvm-ar rcs %t/thin-runtime32.a %t/thin-runtime32.bc
+# RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections %t/thin-main16.bc %t/thin-runtime16.a -o %t/thin-rc16
+# RUN: llvm-nm --defined-only %t/thin-rc16 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections --mllvm=-mattr=+rc32 %t/thin-main32.bc %t/thin-runtime32.a \
+# RUN:   -o %t/thin-rc32
+# RUN: llvm-nm --defined-only %t/thin-rc32 | FileCheck %s --implicit-check-not=unused_helper
+
+## These helpers have no explicit references in the input IR. Their bitcode
+## archive member must be extracted before LTO, and the definitions must remain
+## externally callable when instruction selection introduces the calls. A late
+## extraction instead produces absolute zero symbols with no emitted code.
+# CHECK-DAG: {{[0-9a-f]+}} T _start
+# CHECK-DAG: {{[0-9a-f]+}} T __addsf3
+# CHECK-DAG: {{[0-9a-f]+}} T __divmodsi4
+# CHECK-DAG: {{[0-9a-f]+}} T __udivmodsi4
+# CHECK-DAG: {{[0-9a-f]+}} T memcpy
+# CHECK-DAG: {{[0-9a-f]+}} T memmove
+# CHECK-DAG: {{[0-9a-f]+}} T memset
+# WHY: <libcall> {{.*}}runtime{{16|32}}.a({{.*}}runtime{{16|32}}.bc)
+
+#--- main.ll.in
+target datalayout = "e-m:e-p:WIDTH:WIDTH-i8:8-i16:16-i32:WIDTH-i64:WIDTH-f32:WIDTH-f64:WIDTH-a:8:WIDTH-nNATIVE-SWIDTH"
+target triple = "riscc-none-elf"
+
+define float @_start(ptr %dest, ptr %source, iWIDTH %length, float %value,
+                     i32 %numerator, i32 %denominator) #0 {
+  call void @llvm.memset.p0.iWIDTH(ptr %dest, i8 90, iWIDTH %length, i1 true)
+  call void @llvm.memcpy.p0.p0.iWIDTH(ptr %dest, ptr %source, iWIDTH %length, i1 true)
+  call void @llvm.memmove.p0.p0.iWIDTH(ptr %dest, ptr %source, iWIDTH %length, i1 true)
+  %uq = udiv i32 %numerator, %denominator
+  %ur = urem i32 %numerator, %denominator
+  %u = add i32 %uq, %ur
+  store volatile i32 %u, ptr %dest
+  %sq = sdiv i32 %numerator, %denominator
+  %sr = srem i32 %numerator, %denominator
+  %s = add i32 %sq, %sr
+  store volatile i32 %s, ptr %dest
+  %sum = fadd float %value, 1.0
+  ret float %sum
+}
+
+declare void @llvm.memset.p0.iWIDTH(ptr, i8, iWIDTH, i1 immarg)
+declare void @llvm.memcpy.p0.p0.iWIDTH(ptr, ptr, iWIDTH, i1 immarg)
+declare void @llvm.memmove.p0.p0.iWIDTH(ptr, ptr, iWIDTH, i1 immarg)
+attributes #0 = { nounwind optsize "target-cpu"="full" }
+
+#--- runtime.ll.in
+target datalayout = "e-m:e-p:WIDTH:WIDTH-i8:8-i16:16-i32:WIDTH-i64:WIDTH-f32:WIDTH-f64:WIDTH-a:8:WIDTH-nNATIVE-SWIDTH"
+target triple = "riscc-none-elf"
+
+; Small stubs suffice to check extraction and symbol preservation, independently
+; of the implementations' contents. This is not a memory-operation runtime test.
+define ptr @memset(ptr %dest, iWIDTH %value, iWIDTH %length) #0 {
+  %byte = trunc iWIDTH %value to i8
+  store volatile i8 %byte, ptr %dest
+  ret ptr %dest
+}
+
+define ptr @memcpy(ptr %dest, ptr %source, iWIDTH %length) #0 {
+  %byte = load volatile i8, ptr %source
+  store volatile i8 %byte, ptr %dest
+  ret ptr %dest
+}
+
+define ptr @memmove(ptr %dest, ptr %source, iWIDTH %length) #0 {
+  %byte = load volatile i8, ptr %source
+  store volatile i8 %byte, ptr %dest
+  ret ptr %dest
+}
+
+define float @__addsf3(float %a, float %b) #0 {
+  ret float %a
+}
+
+define i32 @__divmodsi4(i32 %a, i32 %b, ptr %remainder) #0 {
+  store i32 0, ptr %remainder
+  ret i32 %a
+}
+
+define i32 @__udivmodsi4(i32 %a, i32 %b, ptr %remainder) #0 {
+  store i32 0, ptr %remainder
+  ret i32 %a
+}
+
+define void @unused_helper() #0 {
+  ret void
+}
+
+attributes #0 = { noinline nounwind "target-cpu"="full" }

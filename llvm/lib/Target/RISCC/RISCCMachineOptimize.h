@@ -13,6 +13,8 @@
 namespace llvm {
 class FunctionPass;
 class PassRegistry;
+bool enableRISCCConstantBranches();
+bool coalesceRISCCLocalCopies(MachineFunction &);
 class RISCCMachineOptimizePass
     : public PassInfoMixin<RISCCMachineOptimizePass> {
 public:
@@ -20,5 +22,17 @@ public:
 };
 FunctionPass *createRISCCMachineOptimizeLegacyPass();
 void initializeRISCCMachineOptimizeLegacyPass(PassRegistry &);
+class RISCCPostRAOptimizePass : public PassInfoMixin<RISCCPostRAOptimizePass> {
+public:
+  PreservedAnalyses run(MachineFunction &, MachineFunctionAnalysisManager &);
+};
+FunctionPass *createRISCCPostRAOptimizeLegacyPass();
+void initializeRISCCPostRAOptimizeLegacyPass(PassRegistry &);
+class RISCCReturnOptimizePass : public PassInfoMixin<RISCCReturnOptimizePass> {
+public:
+  PreservedAnalyses run(MachineFunction &, MachineFunctionAnalysisManager &);
+};
+FunctionPass *createRISCCReturnOptimizeLegacyPass();
+void initializeRISCCReturnOptimizeLegacyPass(PassRegistry &);
 } // namespace llvm
 #endif

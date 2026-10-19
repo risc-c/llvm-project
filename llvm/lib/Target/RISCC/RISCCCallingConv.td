@@ -6,20 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-def RetCC_RISCC : CallingConv<[
-  CCIfType<[i1, i8], CCPromoteToType<i16>>,
-  CCIfType<[i16], CCAssignToReg<[R1, R2, R3]>>
-]>;
-def RetCC_RISCC32 : CallingConv<[
-  CCIfType<[i1, i8, i16], CCPromoteToType<i32>>,
-  CCIfType<[i32], CCAssignToReg<[R1, R2, R3]>>
-]>;
+// Both ABIs use the same return registers and native-word stack slots.
+// Only the promoted type and the slot size/alignment depend on XLEN.
+multiclass NativeCallingConv<ValueType vt, list<ValueType> narrow, int bytes> {
+  def "RetCC_"#NAME : CallingConv<[
+    CCIfType<narrow, CCPromoteToType<vt>>,
+    CCIfType<[vt], CCAssignToReg<[R1, R2, R3]>>
+  ]>;
+  def "CC_"#NAME#"_Stack" : CallingConv<[
+    CCIfType<narrow, CCPromoteToType<vt>>,
+    CCIfType<[vt], CCAssignToStack<bytes, bytes>>
+  ]>;
+}
 
-def CC_RISCC_Stack : CallingConv<[
-  CCIfType<[i1, i8], CCPromoteToType<i16>>,
-  CCIfType<[i16], CCAssignToStack<2, 2>>
-]>;
-def CC_RISCC32_Stack : CallingConv<[
-  CCIfType<[i1, i8, i16], CCPromoteToType<i32>>,
-  CCIfType<[i32], CCAssignToStack<4, 4>>
-]>;
+defm RISCC : NativeCallingConv<i16, [i1, i8], 2>;
+defm RISCC32 : NativeCallingConv<i32, [i1, i8, i16], 4>;

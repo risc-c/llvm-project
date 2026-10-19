@@ -1,0 +1,147 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 32 8 > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-local-copies=false -run-pass=riscc-return-optimize \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-local-copies=false -riscc-sign-branch-shifts=false \
+# RUN:   -run-pass=riscc-return-optimize -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: %python %t/generate.py 16 8 > %t/rc16.mir
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-local-copies=false -riscc-sign-branch-shifts \
+# RUN:   -run-pass=riscc-return-optimize -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s
+# RUN: %python %t/generate.py 16 1 > %t/rc16-min.mir
+# RUN: llc -mtriple=riscc -mcpu=min -riscc-local-copies=false -riscc-sign-branch-shifts \
+# RUN:   -run-pass=riscc-return-optimize -verify-machineinstrs %t/rc16-min.mir -o - | FileCheck %s
+# RUN: %python %t/generate.py 32 1 > %t/rc32-min.mir
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -riscc-local-copies=false -riscc-sign-branch-shifts \
+# RUN:   -run-pass=riscc-return-optimize -verify-machineinstrs %t/rc32-min.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=sys -mattr=+rc32 -riscc-local-copies=false -riscc-sign-branch-shifts \
+# RUN:   -run-pass=riscc-return-optimize -verify-machineinstrs %t/rc32-min.mir -o - | FileCheck %s
+# RUN: %python %t/generate.py 32 8 minsize > %t/rc32-minsize.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-local-copies=false -riscc-sign-branch-shifts \
+# RUN:   -run-pass=riscc-return-optimize -verify-machineinstrs %t/rc32-minsize.mir -o - | FileCheck %s
+
+# Isolate this cleanup from copy coalescing, which expects live successor
+# information even for the deliberately no-liveness negative fixture.
+
+# CHECK-LABEL: name: negative
+# CHECK:       $r0 = SLLI
+# CHECK-NOT:   SRAI
+# CHECK:       BLTZ
+# OFF-LABEL:   name: negative
+# OFF:         SRAI
+# OFF:         SRAI
+# OFF:         BLTZ
+# CHECK-LABEL: name: nonnegative
+# CHECK-NOT:   SRAI
+# CHECK:       BGEZ
+# CHECK-LABEL: name: interleaved
+# CHECK:       $r2 = LDI
+# CHECK-NOT:   SRAI
+# CHECK:       BLTZ
+
+# Keep a shift which brings a different source into the branch register.
+# CHECK-LABEL: name: different_source
+# CHECK:       $r0 = SRAI{{(32)?}} killed $r1,
+# CHECK-NOT:   SRAI
+# CHECK:       BLTZ
+
+# An intervening numeric use must retain the earlier shift, but the final
+# unobserved shift can still be removed.
+# CHECK-LABEL: name: observed_between
+# CHECK:       $r0 = SRAI
+# CHECK:       $r2 = ADD
+# CHECK-NOT:   SRAI
+# CHECK:       BLTZ
+
+# CHECK-LABEL: name: live_taken
+# CHECK:       SRAI
+# CHECK:       SRAI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: live_fallthrough
+# CHECK:       SRAI
+# CHECK:       SRAI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: zero_branch
+# CHECK:       SRAI
+# CHECK:       SRAI
+# CHECK:       BEQZ
+# CHECK-LABEL: name: logical_shift
+# CHECK:       SRAI
+# CHECK:       SRLI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: overwritten
+# CHECK:       SRAI
+# CHECK:       SRAI
+# CHECK:       $r0 = LDI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: frame_shift
+# CHECK:       SRAI
+# CHECK:       frame-setup SRAI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: implicit_shift
+# CHECK:       SRAI
+# CHECK:       SRAI{{.*}}implicit $r3
+# CHECK:       BLTZ
+# CHECK-LABEL: name: cfi_boundary
+# CHECK:       SRAI
+# CHECK:       CFI_INSTRUCTION remember_state
+# CHECK-NOT:   SRAI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: speed
+# CHECK:       SRAI
+# CHECK:       SRAI
+# CHECK:       BLTZ
+# CHECK-LABEL: name: no_liveness
+# CHECK:       SRAI
+# CHECK:       SRAI
+# CHECK:       BLTZ
+
+#--- generate.py
+import sys
+
+bits, step = map(int, sys.argv[1:3])
+size_attr = sys.argv[3] if len(sys.argv) > 3 else 'optsize'
+suffix = '32' if bits == 32 else ''
+names = ['negative', 'nonnegative', 'interleaved', 'different_source',
+         'observed_between', 'live_taken', 'live_fallthrough', 'zero_branch',
+         'logical_shift', 'overwritten', 'frame_shift', 'implicit_shift', 'cfi_boundary',
+         'speed', 'no_liveness']
+print('--- |')
+for name in names:
+    attrs = '' if name == 'speed' else size_attr
+    print(f'  define void @{name}() {attrs} {{ ret void }}')
+print('...')
+for name in names:
+    print(f'''---
+name: {name}
+tracksRegLiveness: {'false' if name == 'no_liveness' else 'true'}
+noVRegs: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r1, $r3, $s7
+    $r0 = SLLI{suffix} $r1, {step}''')
+    src = '$r1' if name == 'different_source' else '$r0'
+    print(f'    $r0 = SRAI{suffix} {src}, {step}')
+    if name == 'interleaved':
+        print(f'    $r2 = LDI{suffix} 17')
+    elif name == 'observed_between':
+        print(f'    $r2 = ADD{suffix} $r0, $r3')
+    elif name == 'cfi_boundary':
+        print('    CFI_INSTRUCTION remember_state')
+    flag = 'frame-setup ' if name == 'frame_shift' else ''
+    extra = ', implicit $r3' if name == 'implicit_shift' else ''
+    shift = 'SRLI' if name == 'logical_shift' else 'SRAI'
+    print(f'    $r0 = {flag}{shift}{suffix} $r0, {step}{extra}')
+    if name == 'overwritten':
+        print(f'    $r0 = LDI{suffix} 17')
+    branch = 'BGEZ' if name == 'nonnegative' else 'BEQZ' if name == 'zero_branch' else 'BLTZ'
+    print(f'    {branch} %bb.2, implicit $r0')
+    for i in (1, 2):
+        live = ((i == 1 and name == 'live_fallthrough') or
+                (i == 2 and name == 'live_taken'))
+        result = '$r0' if live else '$r2' if name in ('interleaved', 'observed_between') else ''
+        print(f'  bb.{i}:')
+        print('    liveins: $s7' + (f', {result}' if result else ''))
+        print('    RETS implicit $s7' + (f', implicit {result}' if result else ''))
+    print('...')

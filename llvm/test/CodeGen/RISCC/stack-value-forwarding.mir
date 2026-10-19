@@ -1,0 +1,181 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -riscc-stack-values -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/MOV32/MOV/g' -e 's/ADDI32/ADDI/g' -e 's/LDI32/LDI/g' -e 's/LD32/LD/g' -e 's/ST32/ST/g' \
+# RUN:   -e 's/(s32)/(s16)/g' -e 's/size: 4/size: 2/g' -e 's/alignment: 4/alignment: 2/g' %s | llc -x mir \
+# RUN:   -mtriple=riscc-none-elf -mcpu=full -riscc-stack-values -run-pass=riscc-postra-optimize -verify-machineinstrs \
+# RUN:   -o - | FileCheck %s
+
+# A native load from one fixed stack slot can forward an already live GPR
+# value.  Any intervening clobber, store, ordered access, offset change, SP
+# update, or frame boundary invalidates the cached stack value.
+
+# CHECK-LABEL: name: stack_forward
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK-NEXT:  $r2 = MOV{{(32)?}} $r1
+# CHECK-LABEL: name: stack_copy_forward
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK:       $r3 = MOV{{(32)?}} $r1
+# CHECK-LABEL: name: stack_load_clobber
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       $r1 = LDI{{(32)?}} 9
+# CHECK:       $r2 = LD{{(32)?}} $r7, 0
+# CHECK-LABEL: name: stack_store_barrier
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       ST{{(32)?}} $r2, $r3, 4
+# CHECK:       $r4 = LD{{(32)?}} $r7, 0
+# CHECK-LABEL: name: stack_volatile
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0 :: (volatile load (s{{(16|32)}}){{.*}})
+# CHECK:       $r2 = LD{{(32)?}} $r7, 0
+# CHECK-LABEL: name: stack_offset
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       $r2 = LD{{(32)?}} $r7, 4
+# CHECK-LABEL: name: stack_sp_change
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       $r7 = ADDI{{(32)?}} $r7, 4
+# CHECK:       $r2 = LD{{(32)?}} $r7, 0
+# CHECK-LABEL: name: stack_call_barrier
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       CALL{{(32)?}} $r3, csr_riscc
+# CHECK:       $r2 = LD{{(32)?}} $r7, 0
+# CHECK-LABEL: name: stack_frame
+# CHECK:       $r1 = LD{{(32)?}} $r7, 0
+# CHECK:       frame-setup MTS $r4
+# CHECK:       $r2 = LD{{(32)?}} $r7, 0
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @stack_forward() { ret i32 0 }
+  define i32 @stack_copy_forward() { ret i32 0 }
+  define i32 @stack_load_clobber() { ret i32 0 }
+  define i32 @stack_store_barrier() { ret i32 0 }
+  define i32 @stack_volatile() { ret i32 0 }
+  define i32 @stack_offset() { ret i32 0 }
+  define i32 @stack_sp_change() { ret i32 0 }
+  define i32 @stack_call_barrier() { ret i32 0 }
+  define i32 @stack_frame() { ret i32 0 }
+...
+---
+name: stack_forward
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r2, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    $r2 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: stack_copy_forward
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    $r2 = MOV32 $r1
+    $r3 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: stack_load_clobber
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    $r1 = LDI32 9
+    $r2 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: stack_store_barrier
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r4, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    ST32 $r2, $r3, 4 :: (store (s32))
+    $r4 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r4
+...
+---
+name: stack_volatile
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (volatile load (s32) from %fixed-stack.0)
+    $r2 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: stack_offset
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    $r2 = LD32 $r7, 4 :: (load (s32) from %fixed-stack.0 + 4)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: stack_sp_change
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    $r7 = ADDI32 $r7, 4
+    $r2 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r7
+...
+---
+name: stack_call_barrier
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r7, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    CALL32 $r3, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r2 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r2
+...
+---
+name: stack_frame
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r7, $s2, $s7
+    $r1 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    $s2 = frame-setup MTS $r4
+    $r2 = LD32 $r7, 0 :: (load (s32) from %fixed-stack.0)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...

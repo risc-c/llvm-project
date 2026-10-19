@@ -1,0 +1,50 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir \
+# RUN:   -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/min.o
+
+# Many disjoint reach windows must not trigger a whole-function layout check
+# for every combination of source pools and distant destination. Local pools
+# may still pack: do not cap the search or disable it for large functions.
+# Every distinct word remains present once, in first-use order.
+# CHECK-LABEL: many_pools:
+# CHECK:       .long 286331136
+# CHECK:       .long 286331137
+# CHECK:       .long 286331138
+# CHECK:       .long 286331139
+# CHECK:       .long 286331140
+# CHECK:       .long 286331141
+# CHECK:       .long 286331142
+# CHECK:       .long 286331143
+# CHECK-COUNT-23: .long
+# CHECK:       .long 286331167
+# CHECK-NOT:   .long
+# CHECK:       .Lfunc_end
+
+#--- generate.py
+print('''--- |
+  define i32 @many_pools() optsize { ret i32 0 }
+...
+---
+name: many_pools
+tracksRegLiveness: true
+constants:''')
+for index in range(32):
+    print(f"  - {{ id: {index}, value: 'i32 {0x11111100 + index}', alignment: 4 }}")
+print('body: |')
+for index in range(32):
+    print(f'  bb.{index}:')
+    if index != 31:
+        print(f'    successors: %bb.{index + 1}')
+    print('    liveins: $s7')
+    print(f'    $r1 = LDPC %const.{index}')
+    for _ in range(120):
+        print('    $r0 = LDI32 0')
+    if index != 31:
+        print(f'    JMP8 %bb.{index + 1}')
+    else:
+        print('    RETS implicit $s7, implicit $r1')
+print('...')

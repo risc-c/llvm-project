@@ -1,0 +1,231 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-return-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bLDI\b/LDI32/g' -e 's/\bMOV\b/MOV32/g' -e 's/\bADD\b/ADD32/g' \
+# RUN:   -e 's/\bADDI\b/ADDI32/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 \
+# RUN:   -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bLDI\b/LDI32/g' -e 's/\bADD\b/ADD32/g' -e 's/\bADDI\b/ADDI32/g' %s | llc \
+# RUN:   -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-return-optimize -verify-machineinstrs -o - | \
+# RUN:   FileCheck %s
+
+# A stack reload remains live through the stack adjustment and the return.
+# Other implicit uses preserve return values and restored callee-saved state.
+# CHECK-LABEL: name: stack_return
+# CHECK: $r0 = frame-destroy LD{{(32)?}} $r7, 4
+# CHECK-NEXT: $r7 = frame-destroy ADDI{{(32)?}} $r7, 12
+# CHECK-NOT: MTS
+# CHECK: RET_REG killed $r0, implicit killed $r1, implicit killed $r4, implicit $s5
+---
+name: stack_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s5
+    $r0 = frame-destroy LD $r7, 4
+    $r7 = frame-destroy ADDI $r7, 12
+    $s7 = frame-destroy MTS killed $r0
+    RETS implicit $s7, implicit $r1, implicit $r4, implicit $s5
+...
+
+# Computed targets and a private link use the same transformation.
+# CHECK-LABEL: name: computed_return
+# CHECK: $r2 = ADD{{(32)?}}
+# CHECK-NOT: MTS
+# CHECK: RET_REG killed $r2, implicit killed $r1
+---
+name: computed_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3
+    $r2 = ADD $r2, $r3
+    $s3 = MTS $r2
+    LINK_S3_RET implicit $s3, implicit $r1
+...
+
+# CHECK-LABEL: name: explicit_return
+# CHECK-NOT: MTS
+# CHECK: RET_REG killed $r2, implicit killed $r2
+---
+name: explicit_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r2
+    $s4 = MTS $r2
+    RET $s4, implicit $r2
+...
+
+# An independent instruction may separate the transfer and return.
+# CHECK-LABEL: name: separated_return
+# CHECK-NOT: MTS
+# CHECK: $r7 = ADDI{{(32)?}} $r7, 4
+# CHECK-NEXT: RET_REG killed $r0
+---
+name: separated_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s7 = MTS $r0
+    $r7 = ADDI $r7, 4
+    RETS implicit $s7
+...
+
+# Large frame adjustments can overwrite the GPR holding the address. The
+# S-register copy is then necessary, even though the original MTS is nearby.
+# CHECK-LABEL: name: clobbered_target
+# CHECK: $s7 = MTS
+# CHECK: $r0 = LDI{{(32)?}} 200
+# CHECK: $r7 = ADD{{(32)?}}
+# CHECK: RETS
+# CHECK-NOT: RET_REG
+---
+name: clobbered_target
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s7 = MTS $r0
+    $r0 = LDI 200
+    $r7 = ADD $r7, $r0
+    RETS implicit $s7
+...
+
+# Other uses of the S-register result must retain its defining transfer.
+# CHECK-LABEL: name: observed_link
+# CHECK: $s7 = MTS
+# CHECK: $r2 = frame-destroy MFS $s7
+# CHECK: RETS
+---
+name: observed_link
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s7 = MTS $r0
+    $r2 = frame-destroy MFS $s7
+    RETS implicit $s7, implicit $r2
+...
+
+# A tail call must receive the original link, not just transfer to its target.
+# CHECK-LABEL: name: tail_link
+# CHECK: $s7 = MTS
+# CHECK: TAIL_REG
+---
+name: tail_link
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0, $r2
+    $s7 = MTS $r0
+    TAIL_REG $r2, implicit $s7
+...
+
+# RETI changes interrupt enable. RET S0 does not, but S0 is still architectural
+# exception state; neither form may lose a write to S0. S1 is also reserved.
+# CHECK-LABEL: name: interrupt_return
+# CHECK: $s0 = MTS
+# CHECK: RETI $s0
+---
+name: interrupt_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s0 = MTS $r0
+    RETI $s0
+...
+# CHECK-LABEL: name: exception_return
+# CHECK: $s0 = MTS
+# CHECK: RET $s0
+---
+name: exception_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s0 = MTS $r0
+    RET $s0
+...
+# CHECK-LABEL: name: reserved_return
+# CHECK: $s1 = MTS
+# CHECK: RET $s1
+---
+name: reserved_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s1 = MTS $r0
+    RET $s1
+...
+
+# Restored callee-saved S registers must still be written at return.
+# CHECK-LABEL: name: preserved_return
+# CHECK: $s5 = MTS
+# CHECK: RET $s5
+---
+name: preserved_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s5 = MTS $r0
+    RET $s5
+...
+
+# An address already in an S register needs no conversion to a GPR.
+# CHECK-LABEL: name: resident_return
+# CHECK: RETS
+# CHECK-NOT: RET_REG
+---
+name: resident_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    RETS implicit $s7
+...
+
+# Unwind state and inline assembly are observation barriers even when they
+# do not have a simple explicit use of the link register.
+# CHECK-LABEL: name: cfi_boundary
+# CHECK: $s7 = MTS
+# CHECK: CFI_INSTRUCTION remember_state
+# CHECK: RETS
+---
+name: cfi_boundary
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s7 = MTS $r0
+    CFI_INSTRUCTION remember_state
+    RETS implicit $s7
+...
+# CHECK-LABEL: name: asm_boundary
+# CHECK: $s7 = MTS
+# CHECK: INLINEASM
+# CHECK: RETS
+---
+name: asm_boundary
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $s7 = MTS $r0
+    INLINEASM &"", 1
+    RETS implicit $s7
+...
+# CHECK-LABEL: name: undef_target
+# CHECK: $s7 = MTS undef $r0
+# CHECK: RETS
+---
+name: undef_target
+tracksRegLiveness: true
+body: |
+  bb.0:
+    $s7 = MTS undef $r0
+    RETS implicit $s7
+...

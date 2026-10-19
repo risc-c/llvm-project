@@ -1,0 +1,131 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py > %t/input.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %t/input.mir \
+# RUN:   -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-pack-literals=false -start-before=branch-relaxation \
+# RUN:   -verify-machineinstrs %t/input.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/full.o
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %t/input.mir -o %t/min.o
+
+# The distinct words are pinned by users at opposite ends of the function.
+# Neither entire source pool can move to the middle gap. The two uses of
+# 0x11111111 can share there, leaving the other words in separate pools.
+# CHECK-LABEL: partial_middle:
+# CHECK:       ldpc r1, [[LEFT:.Ltmp[0-9]+]]
+# CHECK:       [[LEFT]]:
+# CHECK-NEXT:  .long 572662306
+# CHECK:       ldpc r1, [[MIDDLE:.Ltmp[0-9]+]]
+# CHECK:       [[MIDDLE]]:
+# CHECK-NEXT:  .long 286331153
+# CHECK-NOT:   .long 286331153
+# CHECK:       ldpc r1, [[MIDDLE]]
+# CHECK:       ldpc r1, [[RIGHT:.Ltmp[0-9]+]]
+# CHECK:       [[RIGHT]]:
+# CHECK-NEXT:  .long 858993459
+# CHECK-NOT:   .long 286331153
+# CHECK:       .Lfunc_end
+# OFF-LABEL:   partial_middle:
+# OFF-COUNT-2: .long 286331153
+# OFF-NOT:     .long 286331153
+# OFF:         .Lfunc_end
+
+# Both loads fit after sharing, but moving a word into their common middle
+# gap would extend an unrelated +254 branch by four bytes. Keep both copies.
+# CHECK-LABEL: branch_veto:
+# CHECK:       .long 286331153
+# CHECK:       bnez
+# CHECK:       .long 286331153
+# CHECK:       .Lfunc_end
+# OFF-LABEL:   branch_veto:
+# OFF-COUNT-2: .long 286331153
+# OFF:         .Lfunc_end
+
+# With users farther apart than the total signed LDPC reach, no common pool
+# position is possible even without an intervening branch constraint.
+# CHECK-LABEL: distant_users:
+# CHECK-COUNT-2: .long 286331153
+# CHECK:       .Lfunc_end
+# OFF-LABEL:   distant_users:
+# OFF-COUNT-2: .long 286331153
+# OFF:         .Lfunc_end
+
+#--- generate.py
+print('''--- |
+  define i32 @partial_middle() optsize { ret i32 0 }
+  define i32 @branch_veto() optsize { ret i32 0 }
+  define i32 @distant_users() optsize { ret i32 0 }
+...''')
+
+
+def function(name):
+    print(f'''---
+name: {name}
+tracksRegLiveness: true
+constants:
+  - {{ id: 0, value: 'i32 286331153', alignment: 4 }}
+  - {{ id: 1, value: 'i32 572662306', alignment: 4 }}
+  - {{ id: 2, value: 'i32 858993459', alignment: 4 }}
+body: |''')
+
+
+def block(number, successor=None):
+    print(f'  bb.{number}:')
+    if successor is not None:
+        print(f'    successors: %bb.{successor}')
+    print('    liveins: $s7')
+
+
+def padding(count):
+    for _ in range(count):
+        print('    $r0 = LDI32 0')
+
+
+for name, veto in [('partial_middle', False), ('branch_veto', True)]:
+    function(name)
+    block(0, 1)
+    print('    $r1 = LDPC %const.1')
+    padding(118)
+    print('    JMP8 %bb.1')
+    if veto:
+        print('  bb.1:')
+        print('    successors: %bb.2, %bb.4')
+        print('    liveins: $s7')
+        print('    $r1 = LDPC %const.0')
+        padding(85)
+        print('    BNEZ %bb.4, implicit $r0')
+        block(2, 3)
+        padding(32)
+        print('    JMP8 %bb.3')
+        block(3, 4)
+        padding(94)
+        block(4, 5)
+        print('    JMP8 %bb.5')
+        block(5)
+    else:
+        block(1, 2)
+        print('    $r1 = LDPC %const.0')
+        padding(118)
+        print('    JMP8 %bb.2')
+        block(2, 3)
+        padding(84)
+        print('    JMP8 %bb.3')
+        block(3)
+    padding(25)
+    print('    $r1 = LDPC %const.0')
+    padding(90)
+    print('    $r1 = LDPC %const.2')
+    print('    RETS implicit $s7, implicit $r1')
+    print('...')
+
+function('distant_users')
+block(0, 1)
+print('    $r1 = LDPC %const.0')
+print('    JMP8 %bb.1')
+block(1)
+padding(300)
+print('    $r1 = LDPC %const.0')
+print('    RETS implicit $s7, implicit $r1')
+print('...')

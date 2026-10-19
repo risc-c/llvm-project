@@ -1,0 +1,183 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 16 > %t/rc16.mir
+# RUN: %python %t/generate.py 32 > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -riscc-unused-upper-bits -verify-machineinstrs \
+# RUN:   %t/rc16.mir -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -riscc-unused-upper-bits \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefixes=CHECK,RC32
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -riscc-unused-upper-bits=false \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=OFF
+
+# These inputs are not known narrow. Only their consumers make the upper
+# bits irrelevant. Follow arithmetic and PHIs without changing memory widths.
+# CHECK-LABEL: name: byte_xor
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: XOR
+# CHECK: STB
+# OFF-LABEL: name: byte_xor
+# OFF: ANDI32 %0, 255
+# CHECK-LABEL: name: byte_add
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-NOT: nuw
+# CHECK-NOT: nsw
+# CHECK: %3:{{gpr(32)?}} = ADD
+# CHECK-LABEL: name: byte_sub
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-LABEL: name: byte_mul
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-LABEL: name: byte_or
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-LABEL: name: byte_sext
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-NOT: SEXT
+# CHECK: STB
+# CHECK-LABEL: name: byte_shift_left
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: SLLI
+# CHECK-LABEL: name: byte_shift_fill
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK-NOT: nuw
+# CHECK-NOT: nsw
+# CHECK: RETS
+# CHECK-LABEL: name: byte_remask
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: ANDI{{(32)?}} %2, 7
+# CHECK-LABEL: name: byte_phi
+# CHECK: %2:{{gpr(32)?}} = COPY %0
+# CHECK: PHI
+
+# A value used as an address, comparison, wide store, or outgoing register
+# must keep its upper-bit normalization, even with another narrow store use.
+# CHECK-LABEL: name: keep_address
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_compare
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_wide_store
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_mixed
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_shift_right
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_shift_cycle
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_undef_mask_input
+# CHECK: ANDI{{(32)?}} undef %{{[0-9]+}}, 255
+# CHECK-LABEL: name: keep_undef_copy
+# CHECK: ANDI{{(32)?}} %{{[0-9]+}}, 255
+# CHECK-LABEL: name: keep_undef_other_mask
+# CHECK: ANDI{{(32)?}} %0, 255
+# CHECK-LABEL: name: keep_long_chain
+# CHECK: ANDI{{(32)?}} %0, 255
+
+# The known-width cleanup must also reject undefined inputs with the new
+# all-users optimization disabled.
+# OFF-LABEL: name: keep_undef_mask_input
+# OFF: ANDI32 undef %{{[0-9]+}}, 255
+# OFF-LABEL: name: keep_undef_copy
+# OFF: ANDI32 %{{[0-9]+}}, 255
+
+# A 16-bit mask in RC32 can be consumed as a halfword, or shifted down and
+# stored as a byte. Both constant-operand orders are supported.
+# RC32-LABEL: name: half_store
+# RC32: [[HALF:%[0-9]+]]:gpr32 = COPY %0
+# RC32: STH [[HALF]], %1
+# RC32-LABEL: name: half_commuted
+# RC32: [[COMMUTED:%[0-9]+]]:gpr32 = COPY %0
+# RC32: STH [[COMMUTED]], %1
+# RC32-LABEL: name: half_shift
+# RC32: [[SHIFT:%[0-9]+]]:gpr32 = COPY %0
+# RC32: SRLI32 [[SHIFT]], 8
+# RC32: STB32
+# RC32-LABEL: name: keep_half_compare
+# RC32: AND32
+# RC32-LABEL: name: keep_half_undef_mask
+# RC32: AND32 undef %{{[0-9]+}}, %0
+
+#--- generate.py
+import sys
+
+width = int(sys.argv[1])
+suffix = '32' if width == 32 else ''
+rc = 'gpr' + suffix
+
+def emit(name, instructions, constants=False):
+    print('---')
+    print('name: ' + name)
+    print('tracksRegLiveness: true')
+    if constants:
+        print('constants:')
+        print("  - { id: 0, value: 'i32 65535', alignment: 4 }")
+    print('body: |')
+    for line in instructions:
+        print('  ' + line.replace(':RC', ':' + rc).replace('SUFFIX', suffix))
+    print('...')
+
+head = ['bb.0:', '  liveins: $r1, $r2, $s7',
+        '  %0:RC = COPY $r1', '  %1:RC = COPY $r2']
+mask = '  %2:RC = ANDISUFFIX %0, 255'
+end = ['  RETS implicit $s7']
+for operation in ('XOR', 'ADD', 'SUB', 'MUL', 'OR'):
+    flags = 'nuw nsw ' if operation == 'ADD' else ''
+    emit('byte_' + operation.lower(), head + [mask,
+         f'  %3:RC = {flags}{operation}SUFFIX %2, %1',
+         '  STBSUFFIX %3, %1'] + end)
+emit('byte_sext', head + [f'  %2:RC = SEXT8_RC{width} %0',
+     '  STBSUFFIX %2, %1'] + end)
+emit('byte_shift_left', head + [mask, '  %3:RC = SLLISUFFIX %2, 8',
+     '  STBSUFFIX %3, %1'] + end)
+# The last shift removes every differing upper bit. It still needs its
+# no-wrap flags cleared, but its full-width output can be returned unchanged.
+shifts = [f'  %{i + 3}:RC = nuw nsw SLLISUFFIX %{i + 2}, 8'
+          for i in range(width // 8 - 1)]
+emit('byte_shift_fill', head + [mask] + shifts +
+     [f'  $r1 = COPY %{width // 8 + 1}',
+      '  RETS implicit $s7, implicit $r1'])
+emit('byte_remask', head + [mask, '  %3:RC = ANDISUFFIX %2, 7',
+     '  $r1 = COPY %3', '  RETS implicit $s7, implicit $r1'])
+phi_head = head[:1] + ['  successors: %bb.1'] + head[1:]
+emit('byte_phi', phi_head + [mask, '  JMP8 %bb.1',
+     'bb.1:', '  successors: %bb.1, %bb.2', '  liveins: $s7',
+     '  %3:RC = PHI %2, %bb.0, %4, %bb.1',
+     '  %4:RC = ADDISUFFIX %3, 1', '  STBSUFFIX %4, %1',
+     '  $r0 = COPY %1', '  BNEZ %bb.1, implicit $r0',
+     '  JMP8 %bb.2', 'bb.2:', '  liveins: $s7'] + end)
+emit('keep_address', head + [mask, '  STBSUFFIX %1, %2'] + end)
+emit('keep_compare', head + [mask, '  %3:RC = SLTUSUFFIX %2, %1',
+     '  STBSUFFIX %3, %1'] + end)
+emit('keep_wide_store', head + [mask, '  STSUFFIX %2, %1, 0'] + end)
+emit('keep_mixed', head + [mask, '  STBSUFFIX %2, %1',
+     '  $r1 = COPY %2', '  RETS implicit $s7, implicit $r1'])
+emit('keep_shift_right', head + [mask, '  %3:RC = SRLISUFFIX %2, 8',
+     '  STBSUFFIX %3, %1'] + end)
+emit('keep_shift_cycle', phi_head + [mask, '  JMP8 %bb.1',
+     'bb.1:', '  successors: %bb.1, %bb.2', '  liveins: $s7',
+     '  %3:RC = PHI %2, %bb.0, %4, %bb.1',
+     '  %4:RC = SRLISUFFIX %3, 1', '  %5:RC = ANDISUFFIX %4, 1',
+     '  STBSUFFIX %5, %1', '  $r0 = COPY %1',
+     '  BNEZ %bb.1, implicit $r0', '  JMP8 %bb.2', 'bb.2:',
+     '  liveins: $s7'] + end)
+emit('keep_undef_mask_input', head + ['  %6:RC = LDISUFFIX 7',
+     '  %2:RC = ANDISUFFIX undef %6, 255', '  $r1 = COPY %2',
+     '  RETS implicit $s7, implicit $r1'])
+emit('keep_undef_copy', head + ['  %6:RC = LDISUFFIX 7',
+     '  %7:RC = COPY undef %6', '  %2:RC = ANDISUFFIX %7, 255',
+     '  $r1 = COPY %2', '  RETS implicit $s7, implicit $r1'])
+emit('keep_undef_other_mask', head + [mask, '  %6:RC = LDISUFFIX 7',
+     '  %3:RC = ANDSUFFIX %2, undef %6', '  $r1 = COPY %3',
+     '  RETS implicit $s7, implicit $r1'])
+emit('keep_long_chain', head + [mask] +
+     [f'  %{i + 3}:RC = ADDISUFFIX %{i + 2}, 1' for i in range(70)] +
+     ['  STBSUFFIX %72, %1'] + end)
+if width == 32:
+    half_head = head + ['  %6:RC = LDPC %const.0']
+    for name, operands in [('half_store', '%0, %6'),
+                           ('half_commuted', '%6, %0')]:
+        emit(name, half_head + [f'  %2:RC = AND32 {operands}',
+             '  STH %2, %1'] + end, True)
+    emit('half_shift', half_head + ['  %2:RC = AND32 %0, %6',
+         '  %3:RC = SRLI32 %2, 8', '  STB32 %3, %1'] + end, True)
+    emit('keep_half_compare', half_head + ['  %2:RC = AND32 %0, %6',
+         '  %3:RC = SLTU32 %2, %1', '  STB32 %3, %1'] + end, True)
+    emit('keep_half_undef_mask', half_head + ['  %2:RC = AND32 undef %6, %0',
+         '  STH %2, %1'] + end, True)

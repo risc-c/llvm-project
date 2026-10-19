@@ -611,7 +611,7 @@ class MachineBlockPlacement {
   void precomputeTriangleChains();
 
   /// Apply a post-processing step optimizing block placement.
-  void applyExtTsp(bool OptForSize);
+  void applyExtTsp(bool OptForSize, bool GuardSize);
 
   /// Modify the existing block placement in the function and adjust all jumps.
   void assignBlockOrder(const std::vector<const MachineBasicBlock *> &NewOrder);
@@ -3597,8 +3597,13 @@ bool MachineBlockPlacement::run(MachineFunction &MF) {
   // disabled for huge functions (exceeding a certain size).
   bool UseExtTspForPerf = false;
   bool UseExtTspForSize = false;
+  bool GuardSize = false;
   if (3 <= MF.size() && MF.size() <= ExtTspBlockPlacementMaxBlocks) {
-    UseExtTspForSize = OptForSize && ApplyExtTspForSize;
+    // An explicit option keeps its existing meaning. Targets may instead
+    // request a conservative refinement of ordinary chain placement.
+    GuardSize = OptForSize && !ApplyExtTspForSize.getNumOccurrences() &&
+                TII->enableSizeAwareBlockPlacement(MF);
+    UseExtTspForSize = OptForSize && (ApplyExtTspForSize || GuardSize);
     UseExtTspForPerf =
         !UseExtTspForSize && EnableExtTspBlockPlacement &&
         (ApplyExtTspWithoutProfile || MF.getFunction().hasProfileData());
@@ -3611,12 +3616,12 @@ bool MachineBlockPlacement::run(MachineFunction &MF) {
     const bool PreRegAlloc = false;
     TailDup.initMF(MF, PreRegAlloc, MBPI, MBFI.get(), PSI,
                    /* LayoutMode */ true, TailDupSize);
-    if (!UseExtTspForSize)
+    if (!UseExtTspForSize || GuardSize)
       precomputeTriangleChains();
   }
 
   // Run the main block placement.
-  if (!UseExtTspForSize)
+  if (!UseExtTspForSize || GuardSize)
     buildCFGChains();
 
   // Changing the layout can create new tail merging opportunities.
@@ -3636,7 +3641,7 @@ bool MachineBlockPlacement::run(MachineFunction &MF) {
       // Must redo the post-dominator tree if blocks were changed.
       if (MPDT)
         MPDT->recalculate(MF);
-      if (!UseExtTspForSize) {
+      if (!UseExtTspForSize || GuardSize) {
         // Redo the layout if tail merging creates/removes/moves blocks.
         BlockToChain.clear();
         ComputedEdges.clear();
@@ -3653,7 +3658,7 @@ bool MachineBlockPlacement::run(MachineFunction &MF) {
     assert(
         !(UseExtTspForPerf && UseExtTspForSize) &&
         "UseExtTspForPerf and UseExtTspForSize can not be set simultaneously");
-    applyExtTsp(/*OptForSize=*/UseExtTspForSize);
+    applyExtTsp(/*OptForSize=*/UseExtTspForSize, GuardSize);
     createCFGChainExtTsp();
   }
 
@@ -3678,7 +3683,65 @@ bool MachineBlockPlacement::run(MachineFunction &MF) {
   return true;
 }
 
-void MachineBlockPlacement::applyExtTsp(bool OptForSize) {
+void MachineBlockPlacement::applyExtTsp(bool OptForSize, bool GuardSize) {
+  // Chain construction and tail merging can reduce the CFG after the initial
+  // eligibility check. ExtTSP needs at least three remaining blocks.
+  if (F->size() < 3)
+    return;
+  // Compare a target-requested refinement against ordinary chain placement,
+  // not the initial machine-block order. Equal-footprint rearrangements can
+  // add jumps to hot loops without paying for them in saved bytes. This model
+  // accounts for instruction sizes and alignment, but is evaluated before
+  // branch relaxation and target-specific constant-island placement.
+  struct LayoutCost {
+    uint64_t Bytes = 0;
+    unsigned FarBranches = 0;
+    bool Known = true;
+  };
+  auto GetLayoutCost = [&]() {
+    LayoutCost Cost;
+    DenseMap<const MachineBasicBlock *, uint64_t> Offsets;
+    for (const MachineBasicBlock &MBB : *F) {
+      if (MBB.isEHPad() || MBB.hasAddressTaken() || MBB.isBeginSection() ||
+          MBB.isEndSection() || MBB.getAlignment() > F->getAlignment())
+        Cost.Known = false;
+      uint64_t Aligned = alignTo(Cost.Bytes, MBB.getAlignment());
+      unsigned MaxPadding = MBB.getMaxBytesForAlignment();
+      if (!MaxPadding || Aligned - Cost.Bytes <= MaxPadding)
+        Cost.Bytes = Aligned;
+      Offsets[&MBB] = Cost.Bytes;
+      for (const MachineInstr &MI : MBB) {
+        if (MI.isMetaInstruction())
+          continue;
+        unsigned Bytes = TII->getInstSizeInBytes(MI);
+        if (!Bytes || MI.isInlineAsm() || MI.isBundle())
+          Cost.Known = false;
+        Cost.Bytes += Bytes;
+      }
+    }
+    for (const MachineBasicBlock &MBB : *F) {
+      uint64_t Offset = Offsets.lookup(&MBB);
+      for (const MachineInstr &MI : MBB) {
+        if (MI.isMetaInstruction())
+          continue;
+        if (MI.isBranch())
+          if (const MachineBasicBlock *Dest = TII->getBranchDestBlock(MI))
+            Cost.FarBranches += !TII->isBranchOffsetInRange(
+                MI.getOpcode(),
+                int64_t(Offsets.lookup(Dest)) - int64_t(Offset));
+        Offset += TII->getInstSizeInBytes(MI);
+      }
+    }
+    return Cost;
+  };
+  LayoutCost OriginalCost;
+  if (GuardSize) {
+    optimizeBranches();
+    alignBlocks();
+    OriginalCost = GetLayoutCost();
+    if (!OriginalCost.Known)
+      return;
+  }
   // Prepare data; blocks are indexed by their index in the current ordering.
   DenseMap<const MachineBasicBlock *, uint64_t> BlockIndex;
   BlockIndex.reserve(F->size());
@@ -3709,6 +3772,12 @@ void MachineBlockPlacement::applyExtTsp(bool OptForSize) {
         instructionsWithoutDebug(MBB.instr_begin(), MBB.instr_end());
     size_t NumInsts = std::distance(NonDbgInsts.begin(), NonDbgInsts.end());
     BlockSizes[BlockIndex[&MBB]] = 4 * NumInsts;
+    if (GuardSize) {
+      BlockSizes[BlockIndex[&MBB]] = 0;
+      for (const MachineInstr &MI : MBB)
+        if (!MI.isMetaInstruction())
+          BlockSizes[BlockIndex[&MBB]] += TII->getInstSizeInBytes(MI);
+    }
 
     // Getting jump frequencies.
     if (OptForSize) {
@@ -3766,6 +3835,19 @@ void MachineBlockPlacement::applyExtTsp(bool OptForSize) {
     assignBlockOrder(CurrentBlockOrder);
   else
     assignBlockOrder(NewBlockOrder);
+
+  if (GuardSize) {
+    LayoutCost NewCost = GetLayoutCost();
+    bool Accept = NewCost.Known && NewCost.Bytes < OriginalCost.Bytes &&
+                  NewCost.FarBranches <= OriginalCost.FarBranches;
+    LLVM_DEBUG(dbgs() << "  guarded size layout " << F->getName() << ": "
+                      << OriginalCost.Bytes << " -> " << NewCost.Bytes
+                      << " bytes, " << OriginalCost.FarBranches << " -> "
+                      << NewCost.FarBranches << " far branches: "
+                      << (Accept ? "accept" : "reject") << '\n');
+    if (!Accept)
+      assignBlockOrder(CurrentBlockOrder);
+  }
 }
 
 void MachineBlockPlacement::assignBlockOrder(

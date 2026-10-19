@@ -14,16 +14,27 @@
 using namespace llvm;
 
 MCRegister llvm::getRISCCMainlineLinkRegister(const Function &F) {
+  if (F.getFnAttribute("riscc-link-register").getValueAsString() == "s7")
+    return RISCC::S7;
   return F.hasLocalLinkage() && !F.hasAddressTaken() ? RISCC::S3 : RISCC::S7;
+}
+
+unsigned llvm::getRISCCArgumentRegisterCount(const Function &F,
+                                             const RISCCSubtarget &STI) {
+  unsigned Count;
+  StringRef Value =
+      F.getFnAttribute("riscc-private-reg-args").getValueAsString();
+  if (Value.getAsInteger(10, Count) || Count < 3 || Count > 6)
+    return 3;
+  // llc's CPU need not appear in IR attributes. Nano's link always reserves R6.
+  return STI.isNano() ? std::min(Count, 5u) : Count;
 }
 
 RISCCMachineFunctionInfo::RISCCMachineFunctionInfo(
     const Function &F, const TargetSubtargetInfo *STI) {
   const auto &Subtarget = *static_cast<const RISCCSubtarget *>(STI);
   if (!Subtarget.isNano())
-    // The private S3 calling convention is used only on RC16.
-    ReturnAddressReg =
-        Subtarget.isRC32() ? RISCC::S7 : getRISCCMainlineLinkRegister(F);
+    ReturnAddressReg = getRISCCMainlineLinkRegister(F);
 }
 
 void RISCCMachineFunctionInfo::setCalleeSavedSReg(MCRegister GPR,

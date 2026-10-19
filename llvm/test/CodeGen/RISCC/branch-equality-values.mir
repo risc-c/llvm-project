@@ -1,0 +1,437 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s
+# RUN: sed -e 's/LDI32/LDI/g' -e 's/MOV32/MOV/g' -e 's/CMPI32/CMPI/g' -e 's/LD32/LD/g' -e 's/CALL32/CALL/g' \
+# RUN:   -e 's/ADDI32/ADDI/g' %s | llc -x mir -mtriple=riscc -mcpu=full -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-branch-equality=false -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+# OFF-LABEL: name: taken_equality
+# OFF: bb.2:
+# OFF: $r3 = LDI32 5
+# OFF: CMPI32
+#
+# Infer equality on exactly the zero edge. The tests below distinguish
+# unchanged source aliases from clobbers, agreement from ambiguous joins,
+# and forward knowledge from unprocessed backedges.
+# CHECK-LABEL: name: taken_equality
+# CHECK: bb.2:
+# CHECK-NOT: LDI
+# CHECK-NOT: CMPI
+# CHECK: RETS
+# CHECK-LABEL: name: fallthrough_zero
+# CHECK: bb.1:
+# CHECK-NOT: LDI
+# CHECK: RETS
+# CHECK: bb.2:
+# CHECK: $r0 = LDI
+# CHECK-LABEL: name: source_clobber
+# CHECK: bb.2:
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: condition_clobber
+# CHECK: bb.2:
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: join_agrees
+# CHECK: bb.3:
+# CHECK-NOT: LDI
+# CHECK: RETS
+# CHECK-LABEL: name: join_disagrees
+# CHECK: bb.3:
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: backedge
+# CHECK: bb.1:
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: sign_branch
+# CHECK: bb.2:
+# CHECK: $r0 = LDI
+# CHECK-LABEL: name: multiple_conditions
+# CHECK: bb.2:
+# CHECK: $r0 = LDI
+# CHECK-LABEL: name: speed
+# CHECK: bb.2:
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: call_before_branch
+# CHECK: bb.2:
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: call_after_branch
+# CHECK: bb.2:
+# CHECK: CALL
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: call_preserved
+# CHECK: bb.2:
+# CHECK: CALL
+# CHECK-NOT: LDI
+# CHECK: RETS
+# CHECK-LABEL: name: spill_cache_alias
+# CHECK: bb.2:
+# CHECK-NOT: LDI
+# CHECK-NOT: MFS
+# CHECK: $r1 = MOV{{(32)?}} {{(killed )?}}$r3
+# CHECK: RETS
+# CHECK-LABEL: name: native_wrap
+# CHECK: bb.2:
+# CHECK: $r3 = ADDI{{(32)?}} {{(killed )?}}$r3, 1
+# CHECK-NOT: LDI
+# CHECK: RETS
+# CHECK-LABEL: name: explicit_false_edge
+# CHECK: bb.2:
+# CHECK-NOT: LDI
+# CHECK: RETS
+# CHECK-LABEL: name: inline_asm_clobber
+# CHECK: bb.2:
+# CHECK: INLINEASM
+# CHECK: $r3 = LDI
+# CHECK-LABEL: name: asynchronous_source
+# CHECK: bb.2:
+# CHECK: $r1 = MFS $s0
+# CHECK: RETS
+--- |
+  target triple = "riscc-none-elf"
+  define void @taken_equality() optsize { ret void }
+  define void @fallthrough_zero() optsize { ret void }
+  define void @source_clobber() optsize { ret void }
+  define void @condition_clobber() optsize { ret void }
+  define void @join_agrees() optsize { ret void }
+  define void @join_disagrees() optsize { ret void }
+  define void @backedge() optsize { ret void }
+  define void @sign_branch() optsize { ret void }
+  define void @multiple_conditions() optsize { ret void }
+  define void @speed() { ret void }
+  define void @call_before_branch() optsize { ret void }
+  define void @call_after_branch() optsize { ret void }
+  define void @call_preserved() optsize { ret void }
+  define void @spill_cache_alias() optsize { ret void }
+  define void @native_wrap() optsize { ret void }
+  define void @explicit_false_edge() optsize { ret void }
+  define void @inline_asm_clobber() optsize { ret void }
+  define void @asynchronous_source() optsize { ret void }
+...
+---
+name: taken_equality
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r3 = LDI32 5
+    CMPI32 $r3, 5, implicit-def $r0
+    RETS implicit $s7, implicit $r0, implicit $r3
+...
+---
+name: fallthrough_zero
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    $r0 = LDI32 0
+    RETS implicit $s7, implicit $r0
+  bb.2:
+    liveins: $s7
+    $r0 = LDI32 0
+    RETS implicit $s7, implicit $r0
+...
+---
+name: source_clobber
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    $r3 = LDI32 9
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: condition_clobber
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $r6, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    $r0 = LD32 $r6, 0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: join_agrees
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.3
+    liveins: $r3, $s7
+    JMP8 %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $s7
+    $r3 = LDI32 5
+    JMP8 %bb.3
+  bb.3:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: join_disagrees
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.3
+    liveins: $r3, $s7
+    JMP8 %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $s7
+    $r3 = LDI32 6
+    JMP8 %bb.3
+  bb.3:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: backedge
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r3 = LDI32 5
+    BNEZ %bb.1, implicit $r0
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: sign_branch
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BLTZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r0 = LDI32 0
+    RETS implicit $s7, implicit $r0
+...
+---
+name: multiple_conditions
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    BEQZ %bb.2, implicit $r0
+    BNEZ %bb.1, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r0 = LDI32 0
+    RETS implicit $s7, implicit $r0
+...
+---
+name: speed
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: call_before_branch
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r2, $r3
+    CMPI32 $r3, 5, implicit-def $r0
+    CALL32 $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: call_after_branch
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r2, $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $r2
+    CALL32 $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: call_preserved
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r2, $r4, $s7
+    CMPI32 $r4, 5, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $r2
+    CALL32 $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r4 = LDI32 5
+    RETS implicit $s7, implicit $r4
+...
+---
+name: spill_cache_alias
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    $s2 = MTS $r3
+    CMPI32 $r3, 5, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s2, $s7
+    $r3 = LDI32 5
+    $r1 = MFS $s2
+    RETS implicit $s7, implicit $r1, implicit $r3
+...
+---
+name: native_wrap
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, -1, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $r3, $s7
+    $r3 = ADDI32 $r3, 1
+    $r3 = LDI32 0
+    RETS implicit $s7, implicit $r3
+...
+---
+name: explicit_false_edge
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: inline_asm_clobber
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r3, $s7
+    CMPI32 $r3, 5, implicit-def $r0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    INLINEASM &"", 1, 12, implicit-def $r3
+    $r3 = LDI32 5
+    RETS implicit $s7, implicit $r3
+...
+---
+name: asynchronous_source
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = MFS $s0
+    BEQZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    $r1 = MFS $s0
+    RETS implicit $s7, implicit $r1
+...

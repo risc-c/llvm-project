@@ -3,7 +3,8 @@
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj %s -o %t
 ; RUN: llvm-readobj -r %t | FileCheck %s --check-prefix=RELOC
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s --check-prefix=FULL
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32,+mdu -verify-machineinstrs < %s | FileCheck %s --check-prefix=MDU
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32,+mdu -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefix=MDU
 
 target datalayout = "e-m:e-p:32:32-i8:8-i16:16-i32:32-i64:32-n8:16:32-S32"
 target triple = "riscc-none-elf"
@@ -30,7 +31,7 @@ define i32 @literal_call(i32 %x) {
 ; CHECK:       ldpc r0, [[CALLEE:.Ltmp[0-9]+]]
 ; CHECK-NEXT:  jalr s7, r0
 ; CHECK:       addi r1, 1
-; CHECK:       ret s7
+; CHECK:       jalr s0, r0
 ; CHECK:       [[CALLEE]]:
 ; CHECK-NEXT:  .long call_target(callee)
   %call = call i32 @callee(i32 %x)

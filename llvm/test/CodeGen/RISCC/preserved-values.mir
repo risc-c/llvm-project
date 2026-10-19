@@ -1,0 +1,80 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-preserved-values -run-pass=riscc-postra-optimize -verify-machineinstrs %s \
+# RUN:   -o - | FileCheck %s
+# RUN: sed -e 's/\bMOV\b/MOV32/g' -e 's/\bCALL\b/CALL32/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 \
+# RUN:   -riscc-preserved-values -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# A call can change memory, but it cannot change registers declared preserved
+# by its mask. Explicit definitions override preservation by the mask.
+# CHECK-LABEL: name: preserved
+# CHECK: $r5 = MOV{{(32)?}} {{(killed )?}}$r4
+# CHECK: CALL{{(32)?}} {{(killed )?}}$r1, csr_riscc
+# CHECK-NOT: MOV
+# CHECK: RETS
+# CHECK-LABEL: name: caller_clobbered
+# CHECK: $r2 = MOV{{(32)?}} $r4
+# CHECK: CALL{{(32)?}} {{(killed )?}}$r1, csr_riscc
+# CHECK: $r2 = MOV{{(32)?}} {{(killed )?}}$r4
+# CHECK: RETS
+# CHECK-LABEL: name: explicit_clobber
+# CHECK: $r5 = MOV{{(32)?}} $r4
+# CHECK: CALL{{(32)?}} {{(killed )?}}$r1, csr_riscc
+# CHECK: $r5 = MOV{{(32)?}} {{(killed )?}}$r4
+# CHECK: RETS
+# CHECK-LABEL: name: missing_mask
+# CHECK: $r5 = MOV{{(32)?}} $r4
+# CHECK: CALL{{(32)?}} {{(killed )?}}$r1
+# CHECK: $r5 = MOV{{(32)?}} {{(killed )?}}$r4
+# CHECK: RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @preserved() { ret void }
+  define void @caller_clobbered() { ret void }
+  define void @explicit_clobber() { ret void }
+  define void @missing_mask() { ret void }
+...
+---
+name: preserved
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r4
+    $r5 = MOV $r4
+    CALL $r1, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r5 = MOV $r4
+    RETS implicit $s7, implicit $r5
+...
+---
+name: caller_clobbered
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r4
+    $r2 = MOV $r4
+    CALL $r1, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r2 = MOV $r4
+    RETS implicit $s7, implicit $r2
+...
+---
+name: explicit_clobber
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r4
+    $r5 = MOV $r4
+    CALL $r1, csr_riscc, implicit-def $s7, implicit-def $r0, implicit-def $r5
+    $r5 = MOV $r4
+    RETS implicit $s7, implicit $r5
+...
+---
+name: missing_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r4
+    $r5 = MOV $r4
+    CALL $r1, implicit-def $s7, implicit-def $r0
+    $r5 = MOV $r4
+    RETS implicit $s7, implicit $r5
+...

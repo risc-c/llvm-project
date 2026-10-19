@@ -15,7 +15,7 @@
 ## Relaxation owns the call pair and all four bytes of its literal. Reject
 ## duplicate markers, overlapping fields, and references into the literal.
 # OVERLAP: error: {{.*}}relaxable RISC-C call or literal overlaps another relocation
-# SHARED: error: {{.*}}relaxable RISC-C call literal is shared or has unexpected references
+# SHARED: error: {{.*}}relaxable RISC-C call literal has unexpected references
 ## Relocations need not arrive in offset order.
 # UNSORTED: 34380c00 f8c728c0 0c000000 f8c7
 

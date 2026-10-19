@@ -48,12 +48,15 @@ public:
   }
 
   std::optional<MCFixupKind> getFixupKind(StringRef Name) const override {
-    if (Name == "R_RISCC_NONE")
+    // The generic ELF streamer uses this alias for call-graph profiles.
+    if (Name == "R_RISCC_NONE" || Name == "BFD_RELOC_NONE")
       return FirstLiteralRelocationKind + ELF::R_RISCC_NONE;
     if (Name == "R_RISCC_RELAX_CALL")
       return FirstLiteralRelocationKind + ELF::R_RISCC_RELAX_CALL;
     if (Name == "R_RISCC_RELAX_TAIL")
       return FirstLiteralRelocationKind + ELF::R_RISCC_RELAX_TAIL;
+    if (Name == "R_RISCC_RELAX_LITERAL")
+      return FirstLiteralRelocationKind + ELF::R_RISCC_RELAX_LITERAL;
     return std::nullopt;
   }
 
@@ -123,15 +126,12 @@ public:
     }
 
     // LDPC needs the final absolute address for its word-alignment check.
-    // Sys/Full call relaxation can also change local branch displacements.
+    // Call and literal relaxation can also change local branch displacements.
     // Use the merged object profile, which includes per-function features.
     unsigned Flags =
         static_cast<ELFObjectWriter &>(Asm->getWriter()).getELFHeaderEFlags();
-    unsigned Profile = Flags & ELF::EF_RISCC_PROFILE_MASK;
     if (Kind == RISCC::fixup_pcrel8_word ||
-        (Kind == RISCC::fixup_pcrel8_branch && (Flags & ELF::EF_RISCC_RC32) &&
-         (Profile == ELF::EF_RISCC_PROFILE_SYS ||
-          Profile == ELF::EF_RISCC_PROFILE_FULL)))
+        (Kind == RISCC::fixup_pcrel8_branch && (Flags & ELF::EF_RISCC_RC32)))
       IsResolved = false;
 
     maybeAddReloc(F, Fixup, Target, Value, IsResolved);

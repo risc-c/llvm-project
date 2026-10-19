@@ -19,6 +19,10 @@ class RISCCFrameLowering final : public TargetFrameLowering {
 
 public:
   explicit RISCCFrameLowering(const RISCCSubtarget &);
+  bool enableCalleeSaveSkip(const MachineFunction &MF) const override;
+  bool enableShrinkWrapping(const MachineFunction &MF) const override;
+  bool canUseAsPrologue(const MachineBasicBlock &MBB) const override;
+  bool canUseAsEpilogue(const MachineBasicBlock &MBB) const override;
   void emitPrologue(MachineFunction &, MachineBasicBlock &) const override;
   void emitEpilogue(MachineFunction &, MachineBasicBlock &) const override;
   bool

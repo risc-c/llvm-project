@@ -1,0 +1,203 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 32 8 > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-late-sign-mask -run-pass=riscc-return-optimize \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=MASK
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-late-sign-mask=false -run-pass=riscc-return-optimize \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: %python %t/generate.py 16 1 > %t/rc16-min.mir
+# RUN: llc -mtriple=riscc -mcpu=min -riscc-late-sign-mask -run-pass=riscc-return-optimize -verify-machineinstrs \
+# RUN:   %t/rc16-min.mir -o - | FileCheck %s --check-prefix=MASK
+# RUN: %python %t/generate.py 32 1 > %t/rc32-min.mir
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -riscc-late-sign-mask -run-pass=riscc-return-optimize \
+# RUN:   -verify-machineinstrs %t/rc32-min.mir -o - | FileCheck %s --check-prefix=MASK
+# RUN: llc -mtriple=riscc -mcpu=sys -mattr=+rc32 -riscc-late-sign-mask -run-pass=riscc-return-optimize \
+# RUN:   -verify-machineinstrs %t/rc32-min.mir -o - | FileCheck %s --check-prefix=MASK
+# RUN: llc -mtriple=riscc -mcpu=nano -riscc-late-sign-mask -run-pass=riscc-return-optimize -verify-machineinstrs \
+# RUN:   %t/rc16-min.mir -o - | FileCheck %s --check-prefix=OFF
+# RUN: %python %t/generate.py 16 8 > %t/rc16-full.mir
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-late-sign-mask -run-pass=riscc-return-optimize -verify-machineinstrs \
+# RUN:   %t/rc16-full.mir -o - | FileCheck %s --check-prefix=OFF
+
+# Use a dead volatile register without destroying the original source.
+# MASK-LABEL: name: source_preserved
+# MASK:       $r0 = LDI{{(32)?}} 0
+# MASK-NEXT:  $r2 = SLT{{(32)?}} $r1, $r0
+# MASK-NEXT:  $r2 = SUB{{(32)?}} killed $r0, killed $r2
+# MASK-NEXT:  RETS
+# OFF-LABEL:  name: source_preserved
+# OFF:        $r2 = SRAI{{(32)?}} $r1,
+# OFF-NOT:    SLT
+# OFF:        RETS
+
+# The output may overwrite the input. No negation of INT_MIN is involved.
+# MASK-LABEL: name: in_place
+# MASK:       $r0 = LDI{{(32)?}} 0
+# MASK-NEXT:  $r1 = SLT{{(32)?}} killed $r1, $r0
+# MASK-NEXT:  $r1 = SUB{{(32)?}} killed $r0, killed $r1
+# MASK-NEXT:  RETS
+
+# Register allocation can change the destination of the last shift.
+# MASK-LABEL: name: changing_result
+# MASK:       $r0 = LDI{{(32)?}} 0
+# MASK-NEXT:  $r3 = SLT{{(32)?}} killed $r1, $r0
+# MASK-NEXT:  $r3 = SUB{{(32)?}} killed $r0, killed $r3
+# MASK-NEXT:  RETS
+
+# Preserve an intermediate result that is observable after the chain.
+# MASK-LABEL: name: intermediate_live
+# MASK:       $r2 = SRAI{{(32)?}} $r1,
+# MASK-NOT:   SLT
+# MASK:       RETS
+
+# R4-R6 must not become new callee-saved clobbers, even without valid CSI.
+# MASK-LABEL: name: no_scratch
+# MASK:       $r2 = SRAI{{(32)?}} $r1,
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: pristine_valid
+# MASK:       $r2 = SRAI{{(32)?}} $r1,
+# MASK-NOT:   SLT
+# MASK:       RETS
+
+# R4 is usable between its existing save and restore, not outside them.
+# MASK-LABEL: name: saved_scratch
+# MASK:       ST{{(32)?}} killed $r4,
+# MASK-NEXT:  $r4 = LDI{{(32)?}} 0
+# MASK-NEXT:  $r2 = SLT{{(32)?}} $r1, $r4
+# MASK-NEXT:  $r2 = SUB{{(32)?}} killed $r4, killed $r2
+# MASK-NEXT:  $r4 = frame-destroy LD{{(32)?}}
+# MASK-LABEL: name: after_restore
+# MASK:       $r4 = frame-destroy LD{{(32)?}}
+# MASK-NEXT:  $r2 = SRAI{{(32)?}} $r1,
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: before_save
+# MASK:       $r2 = SRAI{{(32)?}} $r1,
+# MASK-NOT:   SLT
+# MASK:       ST{{(32)?}} $r4,
+# MASK:       RETS
+
+# Do not reinterpret a shorter shift, lose implicit operands/frame flags, or
+# cross a position/debug/unwind boundary. Leave speed builds unchanged.
+# MASK-LABEL: name: short_shift
+# MASK:       SRAI
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: frame_shift
+# MASK:       frame-setup SRAI
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: implicit_shift
+# MASK:       SRAI{{.*}}implicit $r3
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: cfi_barrier
+# MASK:       SRAI
+# MASK:       CFI_INSTRUCTION remember_state
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: speed_optimized
+# MASK:       SRAI
+# MASK-NOT:   SLT
+# MASK:       RETS
+# MASK-LABEL: name: no_liveness
+# MASK:       SRAI
+# MASK-NOT:   SLT
+# MASK:       RETS
+
+# The current function's private convention can make R4 call-clobbered.
+# MASK-LABEL: name: private_scratch
+# MASK:       $r4 = LDI{{(32)?}} 0
+# MASK-NEXT:  $r2 = SLT{{(32)?}} $r1, $r4
+# MASK-NEXT:  $r2 = SUB{{(32)?}} killed $r4, killed $r2
+# MASK-NEXT:  RETS
+
+# Overshifting a chain still produces the native sign mask. Walking backward
+# through two adjacent rewrites must keep the new uses in the live set.
+# MASK-LABEL: name: overshift
+# MASK:       SLT
+# MASK-NEXT:  {{.*}}SUB
+# MASK-NEXT:  RETS
+# MASK-LABEL: name: adjacent_masks
+# MASK:       SLT
+# MASK:       SLT
+# MASK:       RETS
+
+#--- generate.py
+import sys
+
+bits, step = map(int, sys.argv[1:])
+suffix = '32' if bits == 32 else ''
+names = ['source_preserved', 'in_place', 'changing_result',
+         'intermediate_live', 'no_scratch', 'pristine_valid',
+         'saved_scratch', 'after_restore', 'before_save', 'short_shift',
+         'frame_shift', 'implicit_shift', 'cfi_barrier', 'speed_optimized',
+         'no_liveness', 'private_scratch', 'overshift', 'adjacent_masks']
+print('--- |')
+for name in names:
+    attrs = '' if name == 'speed_optimized' else 'optsize'
+    if name == 'private_scratch':
+        attrs += ' "riscc-private-reg-args"="4"'
+    print(f'  define void @{name}() {attrs} {{ ret void }}')
+print('...')
+
+for name in names:
+    csi = name in ('saved_scratch', 'after_restore', 'before_save')
+    print(f'''---
+name: {name}
+tracksRegLiveness: {'false' if name == 'no_liveness' else 'true'}
+noVRegs: true''')
+    if csi or name == 'pristine_valid':
+        print('frameInfo:\n  isCalleeSavedInfoValid: true')
+    if csi:
+        print(f'''  stackSize: {bits // 8}
+stack:
+  - {{ id: 0, type: spill-slot, offset: -{bits // 8}, size: {bits // 8}, alignment: {bits // 8}, callee-saved-register: '$r4', callee-saved-restored: true }}''')
+    print('body: |\n  bb.0:')
+    print('    liveins: $r0, $r1, $r3, $r4, $r7, $s7')
+    save = f'    ST{suffix} $r4, $r7, 0 :: (store (s{bits}) into %stack.0)'
+    restore = f'    $r4 = frame-destroy LD{suffix} $r7, 0 :: (load (s{bits}) from %stack.0)'
+    if name in ('saved_scratch', 'after_restore'):
+        print(save)
+    if name == 'after_restore':
+        print(restore)
+    amount = bits if name == 'overshift' else bits - (2 if name == 'short_shift' else 1)
+    src = '$r1'
+    dst = '$r1' if name == 'in_place' else '$r2'
+    first = True
+    while amount:
+        shift = min(step, amount)
+        amount -= shift
+        result = '$r3' if name in ('changing_result', 'intermediate_live') and not amount else dst
+        flags = 'frame-setup ' if first and name == 'frame_shift' else ''
+        extra = ', implicit $r3' if first and name == 'implicit_shift' else ''
+        print(f'    {result} = {flags}SRAI{suffix} {src}, {shift}{extra}')
+        if first and name == 'cfi_barrier':
+            print('    CFI_INSTRUCTION remember_state')
+        src = result
+        first = False
+    if name == 'before_save':
+        print(save)
+    if name in ('saved_scratch', 'before_save'):
+        print(restore)
+    outputs = [src]
+    if name == 'adjacent_masks':
+        amount = bits - 1
+        src = '$r3'
+        while amount:
+            shift = min(step, amount)
+            amount -= shift
+            print(f'    $r1 = SRAI{suffix} {src}, {shift}')
+            src = '$r1'
+        outputs.append(src)
+    if name == 'source_preserved':
+        outputs.append('$r1')
+    if name == 'intermediate_live':
+        outputs.append('$r2')
+    if name in ('no_scratch', 'pristine_valid', 'private_scratch') or csi:
+        outputs = ['$r0', '$r1', '$r2', '$r3']
+    if csi:
+        outputs.append('$r4')
+    print('    RETS implicit $s7' + ''.join(f', implicit {reg}' for reg in outputs))
+    print('...')

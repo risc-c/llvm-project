@@ -1,7 +1,10 @@
 ; REQUIRES: riscc-registered-target
-; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefix=MIN
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefix=FULL
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32,+mdu -O2 -verify-machineinstrs < %s | FileCheck %s --check-prefix=MDU
+; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefix=MIN
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefix=FULL
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32,+mdu -O2 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefix=MDU
 
 target triple = "riscc-none-elf"
 
@@ -10,8 +13,8 @@ define i32 @multiply_by_3(i32 %value) {
 ; MIN:       add [[TWICE_MIN:r[0-7]]], r1, r1
 ; MIN-NEXT:  add r1, [[TWICE_MIN]], r1
 ; FULL-LABEL: multiply_by_3:
-; FULL:       add [[TWICE_FULL:r[0-7]]], r1, r1
-; FULL-NEXT:  add r1, [[TWICE_FULL]], r1
+; FULL:       slli [[FOUR_FULL:r[0-7]]], r1, 2
+; FULL-NEXT:  sub r1, [[FOUR_FULL]], r1
   %product = mul i32 %value, 3
   ret i32 %product
 }
@@ -22,18 +25,17 @@ define i32 @multiply_by_5(i32 %value) {
 ; MIN-NEXT:  add [[QUAD5:r[0-7]]], [[TWICE5]], [[TWICE5]]
 ; MIN-NEXT:  add r1, [[QUAD5]], r1
 ; FULL-LABEL: multiply_by_5:
-; FULL:       add [[TWICE_FULL5:r[0-7]]], r1, r1
-; FULL-NEXT:  add [[QUAD_FULL5:r[0-7]]], [[TWICE_FULL5]], [[TWICE_FULL5]]
+; FULL:       slli [[QUAD_FULL5:r[0-7]]], r1, 2
 ; FULL-NEXT:  add r1, [[QUAD_FULL5]], r1
   %product = mul i32 %value, 5
   ret i32 %product
 }
 
-; Size-oriented hardware builds retain the shorter load/multiply pair.
+; A Full shift/add pair is also small enough for size-oriented builds.
 define i32 @multiply_by_5_small(i32 %value) optsize {
 ; FULL-LABEL: multiply_by_5_small:
-; FULL:       ldi [[CONST5:r[0-7]]], 5
-; FULL-NEXT:  mul r1, r1, [[CONST5]]
+; FULL:       slli [[QUAD_SMALL5:r[0-7]]], r1, 2
+; FULL-NEXT:  add r1, [[QUAD_SMALL5]], r1
   %product = mul i32 %value, 5
   ret i32 %product
 }

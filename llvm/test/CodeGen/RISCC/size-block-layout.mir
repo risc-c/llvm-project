@@ -1,0 +1,81 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: %python %t/generate.py 32 optsize fewer_jumps > %t/rc32.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs -filetype=obj \
+# RUN:   %t/rc32.mir -o %t/rc32.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs \
+# RUN:   -riscc-size-layout=false -filetype=obj %t/rc32.mir -o %t/rc32-off.o
+# RUN: llvm-nm -S %t/rc32.o | FileCheck %s --check-prefix=SMALL
+# RUN: llvm-nm -S %t/rc32-off.o | FileCheck %s --check-prefix=ORIGINAL
+# RUN: %python %t/generate.py 16 optsize fewer_jumps > %t/rc16.mir
+# RUN: llc -mtriple=riscc -mcpu=full -start-before=block-placement -verify-machineinstrs -filetype=obj %t/rc16.mir \
+# RUN:   -o %t/rc16.o
+# RUN: llvm-nm -S %t/rc16.o | FileCheck %s --check-prefix=SMALL
+# RUN: %python %t/generate.py 32 minsize fewer_jumps > %t/minsize.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs -filetype=obj \
+# RUN:   %t/minsize.mir -o %t/minsize.o
+# RUN: llvm-nm -S %t/minsize.o | FileCheck %s --check-prefix=SMALL
+# RUN: %python %t/generate.py 32 speed fewer_jumps > %t/speed.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs -filetype=obj \
+# RUN:   %t/speed.mir -o %t/speed.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs \
+# RUN:   -riscc-size-layout=false -filetype=obj %t/speed.mir -o %t/speed-off.o
+# RUN: cmp %t/speed.o %t/speed-off.o
+# RUN: %python %t/generate.py 32 optsize keep_equal_loop > %t/equal.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs -filetype=obj \
+# RUN:   %t/equal.mir -o %t/equal.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs \
+# RUN:   -riscc-size-layout=false -filetype=obj %t/equal.mir -o %t/equal-off.o
+# RUN: cmp %t/equal.o %t/equal-off.o
+# RUN: %python %t/generate.py 32 optsize uncertain_alignment > %t/aligned.mir
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs -filetype=obj \
+# RUN:   %t/aligned.mir -o %t/aligned.o
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=block-placement -verify-machineinstrs \
+# RUN:   -riscc-size-layout=false -filetype=obj %t/aligned.mir -o %t/aligned-off.o
+# RUN: cmp %t/aligned.o %t/aligned-off.o
+
+# Refinement starts from ordinary chain placement and removes one jump.
+# Use the same policy for both native widths and for -Os/-Oz.
+# SMALL:    00000014 T fewer_jumps
+# ORIGINAL: 00000016 T fewer_jumps
+# An equally sized alternative for keep_equal_loop adds a frequently executed
+# jump. Keep the ordinary layout, including its loop fall-through. Speed builds
+# must remain entirely unchanged.
+# Do not claim exact padding costs when an internal alignment exceeds the
+# function's guaranteed alignment.
+
+#--- generate.py
+import sys
+
+width, attribute, name = sys.argv[1:]
+attribute = '' if attribute == 'speed' else attribute
+opcode = 'LDI32' if width == '32' else 'LDI'
+edges = {
+    'fewer_jumps': [[1, 3], [2, 4], [3, 1], [4, 2], []],
+    'uncertain_alignment': [[1, 3], [2, 4], [3, 1], [4, 2], []],
+    'keep_equal_loop': [[1, 7], [2, 9], [3], [4, 2], [5, 9],
+                        [6], [7, 2], [8], [9, 1], []],
+}[name]
+print(f'''--- |
+  define i{width} @{name}() {attribute} {{ ret i{width} 0 }}
+...
+---
+name: {name}
+alignment: 2
+tracksRegLiveness: true
+body: |''')
+for block, successors in enumerate(edges):
+    alignment = ' (align 8)' if name == 'uncertain_alignment' and block == 2 else ''
+    print(f'  bb.{block}{alignment}:')
+    if successors:
+        print('    successors: ' + ', '.join(f'%bb.{n}' for n in successors))
+    print('    liveins: $s7')
+    print(f'    $r0 = {opcode} {block + 1}')
+    if len(successors) == 2:
+        print(f'    BNEZ %bb.{successors[1]}, implicit $r0')
+        print(f'    JMP8 %bb.{successors[0]}')
+    elif successors:
+        print(f'    JMP8 %bb.{successors[0]}')
+    else:
+        print('    RETS implicit $s7')
+print('...')

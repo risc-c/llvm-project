@@ -1,0 +1,172 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s --check-prefix=PACK
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-pack-literals=false -start-before=branch-relaxation \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -start-before=branch-relaxation -verify-machineinstrs -filetype=obj \
+# RUN:   %s -o %t.o
+
+# Size-optimized functions may combine distinct words into an existing natural
+# gap when every LDPC remains in range. The disabled run keeps the original
+# separately aligned pools, making the layout distinction observable.
+# PACK-LABEL: whole_pool:
+# PACK:       .long 286331153
+# PACK-NEXT:  .Ltmp{{[0-9]+}}:
+# PACK-NEXT:  .long 572662306
+# PACK:       ret s7
+# OFF-LABEL:  whole_pool:
+# OFF:        .long 286331153
+# OFF:        ret s7
+# OFF:        .long 572662306
+
+# A second natural gap can be packed independently of the first one. The
+# first two words become adjacent, while the third remains at its own gap.
+# PACK-LABEL: three_gaps:
+# PACK:       .long 286331153
+# PACK-NEXT:  .Ltmp{{[0-9]+}}:
+# PACK-NEXT:  .long 572662306
+# PACK:       .long 858993459
+# OFF-LABEL:  three_gaps:
+# OFF:        .long 286331153
+# OFF:        ret s7
+# OFF:        .long 572662306
+# OFF:        ret s7
+# OFF:        .long 858993459
+
+# A single pool can move to an unused return gap, making the fallthrough
+# skip redundant. No second pool or duplicate value is needed.
+# PACK-LABEL: single_skip:
+# PACK:       ldpc
+# PACK:       bnez
+# PACK-NOT:   jmp8
+# PACK:       ret s7
+# PACK-NEXT:  .LBB{{[0-9]+}}_{{[0-9]+}}:
+# PACK-NEXT:  ret s7
+# PACK:       .long 286331153
+# OFF-LABEL:  single_skip:
+# OFF:        bnez
+# OFF-NEXT:   jmp8
+# OFF:        .long 286331153
+# OFF:        ret s7
+
+# An unrelated branch to an empty forwarding block must not veto all pool
+# movement. Its aligned block label has a known address without a first MI.
+# This case also exercises minsize rather than optsize.
+# PACK-LABEL: empty_target:
+# PACK:       .long 286331153
+# PACK-NEXT:  .Ltmp{{[0-9]+}}:
+# PACK-NEXT:  .long 572662306
+# OFF-LABEL:  empty_target:
+# OFF:        .long 286331153
+# OFF:        ret s7
+# OFF:        .long 572662306
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @whole_pool() optsize { ret i32 0 }
+  define i32 @three_gaps() optsize { ret i32 0 }
+  define i32 @single_skip() optsize { ret i32 0 }
+  define i32 @empty_target() minsize { ret i32 0 }
+...
+---
+name:            whole_pool
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 286331153', alignment: 4 }
+  - { id: 1, value: 'i32 572662306', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    $r0 = ADD32 $r0, $r1
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $r0, $s7
+    $r1 = LDPC %const.1
+    $r0 = ADD32 $r0, $r1
+    RETS implicit $s7, implicit $r0
+...
+---
+name:            single_skip
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 286331153', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+  bb.2:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...
+---
+name:            empty_target
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 286331153', alignment: 4 }
+  - { id: 1, value: 'i32 572662306', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.3
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    $r0 = ADD32 $r0, $r1
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.1:
+    successors: %bb.2
+    liveins: $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+  bb.3:
+    liveins: $r0, $s7
+    $r1 = LDPC %const.1
+    $r0 = ADD32 $r0, $r1
+    RETS implicit $s7, implicit $r0
+...
+---
+name:            three_gaps
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 286331153', alignment: 4 }
+  - { id: 1, value: 'i32 572662306', alignment: 4 }
+  - { id: 2, value: 'i32 858993459', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0, $s7
+    $r1 = LDPC %const.0
+    $r0 = ADD32 $r0, $r1
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    successors: %bb.3, %bb.4
+    liveins: $r0, $s7
+    $r1 = LDPC %const.1
+    $r0 = ADD32 $r0, $r1
+    BNEZ %bb.3, implicit $r0
+    JMP8 %bb.4
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+  bb.4:
+    liveins: $r0, $s7
+    $r1 = LDPC %const.2
+    $r0 = ADD32 $r0, $r1
+    RETS implicit $s7, implicit $r0
+...

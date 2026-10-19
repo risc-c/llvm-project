@@ -25,6 +25,11 @@ class RISCCInstrInfo final : public RISCCGenInstrInfo {
 public:
   explicit RISCCInstrInfo(const RISCCSubtarget &);
   const RISCCRegisterInfo &getRegisterInfo() const { return RI; }
+  // Select a native-width opcode using the RC16 member of a NativeInst pair.
+  // This maps types, not feature availability (including Nano restrictions).
+  unsigned getNativeOpcode(unsigned RC16Opcode) const;
+  unsigned getTailMergeSize(const MachineFunction &) const override;
+  bool enableSizeAwareBlockPlacement(const MachineFunction &) const override;
   static bool isConditionalBranchOpcode(unsigned Opcode);
   static unsigned getOppositeBranchOpcode(unsigned Opcode);
   void materializeImmediate(MachineBasicBlock &, MachineBasicBlock::iterator,
@@ -36,6 +41,24 @@ public:
                    bool = false) const override;
   std::optional<DestSourcePair>
   isCopyInstrImpl(const MachineInstr &) const override;
+  bool simplifyInstruction(MachineInstr &) const override;
+  bool isReMaterializableImpl(const MachineInstr &) const override;
+  bool isFunctionSafeToOutlineFrom(MachineFunction &, bool) const override;
+  bool shouldOutlineFromFunctionByDefault(MachineFunction &) const override;
+  bool isMBBSafeToOutlineFrom(MachineBasicBlock &, unsigned &) const override;
+  outliner::InstrType getOutliningTypeImpl(const MachineModuleInfo &,
+                                           MachineBasicBlock::iterator &,
+                                           unsigned) const override;
+  std::optional<std::unique_ptr<outliner::OutlinedFunction>>
+  getOutliningCandidateInfo(const MachineModuleInfo &,
+                            std::vector<outliner::Candidate> &,
+                            unsigned) const override;
+  void buildOutlinedFrame(MachineBasicBlock &, MachineFunction &,
+                          const outliner::OutlinedFunction &) const override;
+  MachineBasicBlock::iterator
+  insertOutlinedCall(Module &, MachineBasicBlock &,
+                     MachineBasicBlock::iterator &, MachineFunction &,
+                     outliner::Candidate &) const override;
   void storeRegToStackSlot(MachineBasicBlock &, MachineBasicBlock::iterator,
                            Register, bool, int, const TargetRegisterClass *,
                            Register, MachineInstr::MIFlag) const override;

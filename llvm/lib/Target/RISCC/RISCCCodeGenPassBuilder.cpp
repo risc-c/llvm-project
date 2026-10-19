@@ -8,14 +8,16 @@
 
 #include "RISCC.h"
 #include "RISCCAsmPrinter.h"
+#include "RISCCCallPolicy.h"
 #include "RISCCConstantIslandPass.h"
-#include "RISCCPrepare.h"
 #include "RISCCMachineOptimize.h"
+#include "RISCCPrepare.h"
 #include "RISCCSRegAllocator.h"
 #include "RISCCTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
 #include "llvm/CodeGen/BranchRelaxation.h"
 #include "llvm/CodeGen/GlobalMerge.h"
+#include "llvm/CodeGen/TypePromotion.h"
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/Passes/CodeGenPassBuilder.h"
@@ -36,6 +38,8 @@ public:
       : CodeGenPassBuilder(TM, O, PIC) {}
   void addIRPasses(PassManagerWrapper &PMW) const {
     addFunctionPass(AtomicExpandPass(TM), PMW);
+    if (getOptLevel() != CodeGenOptLevel::None)
+      addFunctionPass(TypePromotionPass(TM), PMW);
     Base::addIRPasses(PMW);
   }
   void addGlobalMergePass(PassManagerWrapper &PMW) const {
@@ -51,6 +55,8 @@ public:
       // Reuse related addresses after preparation exposes loop-carried bases.
       addFunctionPass(StraightLineStrengthReducePass(), PMW);
     }
+    flushFPMsToMPM(PMW);
+    addModulePass(RISCCCallPolicyPass(), PMW);
   }
   Error addInstSelector(PassManagerWrapper &PMW) const {
     addMachineFunctionPass(RISCCISelDAGToDAGPass(TM, getOptLevel()), PMW);
@@ -61,11 +67,24 @@ public:
       addMachineFunctionPass(RISCCMachineOptimizePass(), PMW);
   }
   void addPostRewrite(PassManagerWrapper &PMW) const {
+    // Match the legacy pipeline: discard unused rematerialized definitions
+    // before the spill-cache and frame planners observe their register uses.
+    if (getOptLevel() != CodeGenOptLevel::None && enableRISCCEarlyCleanup())
+      addMachineFunctionPass(DeadMachineInstructionElimPass(), PMW);
     addMachineFunctionPass(RISCCSRegAllocatorPass(), PMW);
+  }
+  void addPreSched2(PassManagerWrapper &PMW) const {
+    if (getOptLevel() != CodeGenOptLevel::None) {
+      addMachineFunctionPass(RISCCPostRAOptimizePass(), PMW);
+      if (enableRISCCConstantBranches())
+        addMachineFunctionPass(UnreachableMachineBlockElimPass(), PMW);
+    }
   }
   void addPreEmitPass(PassManagerWrapper &PMW) const {
     if (getOptLevel() >= CodeGenOptLevel::Default)
       addMachineFunctionPass(MachineCopyPropagationPass(true), PMW);
+    if (getOptLevel() != CodeGenOptLevel::None)
+      addMachineFunctionPass(RISCCReturnOptimizePass(), PMW);
     addMachineFunctionPass(BranchRelaxationPass(), PMW);
   }
   void addPreEmitPass2(PassManagerWrapper &PMW) const {

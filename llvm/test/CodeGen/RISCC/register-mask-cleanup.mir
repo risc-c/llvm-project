@@ -1,0 +1,77 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s
+
+---
+name: half_mask
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 65535', alignment: 4 }
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr32 = COPY $r1
+    %1:gpr32 = LDH %0
+    %2:gpr32 = LDPC %const.0
+    %3:gpr32 = AND32 %1, %2
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: half_mask
+# CHECK: %3:gpr32 = COPY %1
+# CHECK-NOT: AND32
+
+---
+name: commuted_half_mask
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 65535', alignment: 4 }
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr32 = COPY $r1
+    %1:gpr32 = LDH %0
+    %2:gpr32 = LDPC %const.0
+    %3:gpr32 = AND32 %2, %1
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: commuted_half_mask
+# CHECK: %3:gpr32 = COPY %1
+# CHECK-NOT: AND32
+
+---
+name: retain_narrower_mask
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 511', alignment: 4 }
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr32 = COPY $r1
+    %1:gpr32 = LDH %0
+    %2:gpr32 = LDPC %const.0
+    %3:gpr32 = AND32 %1, %2
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: retain_narrower_mask
+# CHECK: %3:gpr32 = AND32 %1, %2
+
+---
+name: retain_signed_mask
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 65535', alignment: 4 }
+body: |
+  bb.0:
+    liveins: $r1
+    %0:gpr32 = COPY $r1
+    %1:gpr32 = LDHS %0
+    %2:gpr32 = LDPC %const.0
+    %3:gpr32 = AND32 %1, %2
+    $r1 = COPY %3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: retain_signed_mask
+# CHECK: %3:gpr32 = AND32 %1, %2

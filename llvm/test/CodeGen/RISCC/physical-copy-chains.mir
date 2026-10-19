@@ -1,0 +1,272 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-return-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bMOV\b/MOV32/g' -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' -e 's/\bCALL\b/CALL32/g' \
+# RUN:   -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-local-copies=true -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=SPEED
+
+# The source is overwritten before its second copy. Capture it directly in
+# the final destination; the temporary is dead after the second copy.
+# CHECK-LABEL: name: overwritten_source
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK-NEXT:  {{(renamable )?}}$r1 = LD{{(32)?}} {{(killed )?}}{{(renamable )?}}$r4, 0
+# CHECK-NEXT:  RETS
+
+# CHECK-LABEL: name: temporary_live
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(renamable )?}}$r3
+# CHECK:       RETS
+
+# CHECK-LABEL: name: destination_read
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       ST{{(32)?}} {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r4, 0
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: destination_written
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r2 = LD{{(32)?}} {{(renamable )?}}$r1, 0
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: temporary_read
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r1 = LD{{(32)?}} {{(killed )?}}{{(renamable )?}}$r4, 0
+# CHECK:       ST{{(32)?}} {{(killed )?}}{{(renamable )?}}$r2, {{(killed )?}}{{(renamable )?}}$r4, 0
+# CHECK-NOT:   {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: call_barrier
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       CALL{{(32)?}}
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: frame_barrier
+# CHECK:       {{(renamable )?}}$r3 = frame-setup MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: ordered_memory
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r1 = LD{{(32)?}} {{(killed )?}}{{(renamable )?}}$r4, 0 :: (volatile load
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: stack_pointer
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r7 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: cfi_barrier
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       CFI_INSTRUCTION remember_state
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+
+# CHECK-LABEL: name: speed_optimized
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+# SPEED-LABEL: name: speed_optimized
+# SPEED:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# SPEED-NEXT:  {{(renamable )?}}$r1 = LD{{(32)?}} {{(killed )?}}{{(renamable )?}}$r4, 0
+# SPEED-NEXT:  RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @overwritten_source() optsize { ret void }
+  define void @temporary_live() optsize { ret void }
+  define void @destination_read() optsize { ret void }
+  define void @destination_written() optsize { ret void }
+  define void @temporary_read() optsize { ret void }
+  define void @call_barrier() optsize { ret void }
+  define void @frame_barrier() optsize { ret void }
+  define void @ordered_memory() optsize { ret void }
+  define void @stack_pointer() optsize { ret void }
+  define void @cfi_barrier() optsize { ret void }
+  define void @speed_optimized() { ret void }
+  define void @extra_intervening_use() optsize { ret void }
+  define void @nonrenamable_copy() optsize { ret void }
+  define void @abi_fixed_copy() optsize { ret void }
+...
+---
+name: overwritten_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: temporary_live
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: destination_read
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    ST renamable $r2, renamable $r4, 0 :: (store (s16))
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: destination_written
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r2 = LD renamable $r1, 0 :: (load (s16))
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: temporary_read
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    ST renamable $r3, renamable $r4, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: call_barrier
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    CALL renamable $r4, implicit-def $s7
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: frame_barrier
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = frame-setup MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: ordered_memory
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (volatile load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: stack_pointer
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    $r7 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r7
+...
+---
+name: cfi_barrier
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    CFI_INSTRUCTION remember_state
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: speed_optimized
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r4, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r1 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: extra_intervening_use
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r4, $r5, $s7
+    renamable $r3 = MOV renamable $r1
+    renamable $r4 = ADD renamable $r3, renamable $r2
+    renamable $r5 = MOV renamable $r3
+    RETS implicit $s7, implicit $r4, implicit $r5
+...
+---
+name: nonrenamable_copy
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r3 = MOV $r1
+    renamable $r2 = MOV renamable $r3
+    RETS implicit $s7, implicit $r2
+...
+---
+name: abi_fixed_copy
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $r3, $r4, $s7
+    renamable $r3 = MOV $r1
+    $r1 = LDH renamable $r0 :: (load (s16))
+    $r2 = MOV renamable $r3
+    CALL renamable $r4, implicit-def $s7
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+# CHECK-LABEL: name: extra_intervening_use
+# CHECK:       {{(renamable )?}}$r5 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK-NEXT:  {{(renamable )?}}$r4 = ADD{{(32)?}} {{(killed )?}}{{(renamable )?}}$r5, {{(killed )?}}{{(renamable )?}}$r2
+# CHECK-NEXT:  RETS
+# CHECK-LABEL: name: nonrenamable_copy
+# CHECK:       {{(renamable )?}}$r3 = MOV{{(32)?}} {{(renamable )?}}$r1
+# CHECK-NEXT:  {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r3
+# CHECK-NEXT:  RETS
+# CHECK-LABEL: name: abi_fixed_copy
+# CHECK-NOT:   $r3 = MOV
+# CHECK:       {{(renamable )?}}$r2 = MOV{{(32)?}} {{(killed )?}}{{(renamable )?}}$r1
+# CHECK-NEXT:  {{(renamable )?}}$r1 = LDH {{(killed )?}}{{(renamable )?}}$r0
+# CHECK-NOT:   $r3 = MOV
+# CHECK:       CALL{{(32)?}}

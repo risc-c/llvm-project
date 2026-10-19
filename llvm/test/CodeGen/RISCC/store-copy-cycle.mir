@@ -1,0 +1,401 @@
+# REQUIRES: riscc-registered-target
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -riscc-local-copies=true -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %t/rc32.mir -o - | FileCheck %s --check-prefix=RC32
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-local-copies=true -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %t/rc16.mir -o - | FileCheck %s --check-prefix=RC16
+
+# A five-instruction copy cycle around a load/store may be rewritten only when
+# all three register values and the memory order are preserved.  The negative
+# cases exercise the register, memory, and frame boundaries of that rewrite.
+
+# RC32-LABEL: name: store_cycle_word
+# RC32:       {{(renamable )?}}$r1 = LD32 {{(killed )?}}{{(renamable )?}}$r3, 12
+# RC32-NEXT:  ST32 {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3, 16
+# RC32-NEXT:  {{(renamable )?}}$r2 = MOV32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32-NEXT:  {{(renamable )?}}$r3 = MOV32 {{(killed )?}}{{(renamable )?}}$r1
+# RC32-LABEL: name: store_cycle_load_s
+# RC32:       {{(renamable )?}}$r1 = LD32 {{(killed )?}}{{(renamable )?}}$r3, 20
+# RC32-NEXT:  ST32 {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3, 24
+# RC32-NEXT:  {{(renamable )?}}$r2 = MOV32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32-NEXT:  {{(renamable )?}}$r3 = MOV32 {{(killed )?}}{{(renamable )?}}$r1
+# RC32-LABEL: name: store_cycle_byte
+# RC32:       {{(renamable )?}}$r1 = LDB32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32-NEXT:  STB32 {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3
+# RC32-NEXT:  {{(renamable )?}}$r2 = MOV32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32-NEXT:  {{(renamable )?}}$r3 = MOV32 {{(killed )?}}{{(renamable )?}}$r1
+# RC32-LABEL: name: store_cycle_half
+# RC32:       {{(renamable )?}}$r1 = LDH {{(killed )?}}{{(renamable )?}}$r3
+# RC32-NEXT:  STH {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3
+# RC32-NEXT:  {{(renamable )?}}$r2 = MOV32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32-NEXT:  {{(renamable )?}}$r3 = MOV32 {{(killed )?}}{{(renamable )?}}$r1
+
+# The exact five operations remain in place when a register is repeated, the
+# stack pointer participates, an extra read intervenes, or memory is ordered.
+# RC32-LABEL: name: store_cycle_same_reg
+# RC32:       {{(renamable )?}}$r2 = MOV32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32:       {{(renamable )?}}$r3 = LD32 {{(killed )?}}{{(renamable )?}}$r3, 12
+# RC32:       ST32 {{(killed )?}}{{(renamable )?}}$r1, {{(renamable )?}}$r2, 16
+# RC32-LABEL: name: store_cycle_stack_pointer
+# RC32-NOT:   $r7 =
+# RC32:       ST32 $r7, {{(killed )?}}{{(renamable )?}}$r2, 16
+# RC32-NOT:   $r7 =
+# RC32-LABEL: name: store_cycle_extra_read
+# RC32:       {{(renamable )?}}$r4 = ADD32 {{(killed )?}}{{(renamable )?}}$r4, {{(killed )?}}{{(renamable )?}}$r2
+# RC32:       {{(renamable )?}}$r1 = LD32 {{(killed )?}}{{(renamable )?}}$r3, 12
+# RC32:       ST32 {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3, 16
+# RC32:       {{(renamable )?}}$r2 = MOV32 {{(killed )?}}{{(renamable )?}}$r3
+# RC32:       {{(renamable )?}}$r3 = MOV32 {{(killed )?}}{{(renamable )?}}$r1
+# RC32-LABEL: name: store_cycle_volatile
+# RC32:       {{(renamable )?}}$r3 = LD32 {{(killed )?}}{{(renamable )?}}$r3, 12 :: (volatile load (s32))
+# RC32-LABEL: name: store_cycle_frame
+# RC32:       {{(renamable )?}}$r1 = frame-setup MOV32 {{(renamable )?}}$r2
+# RC32-LABEL: name: store_cycle_abi
+# RC32:       $r0 = LD32 $r6, 0
+# RC32-NEXT:  ST32 {{(killed )?}}$r4, $r6, 0
+# RC32-NEXT:  $r4 = MOV32 {{(killed )?}}$r6
+# RC32-NEXT:  $r6 = MOV32 {{(killed )?}}$r0
+# RC32-NEXT:  BNEZ %bb.1, implicit {{(killed )?}}$r0
+
+# RC16-LABEL: name: store_cycle_word
+# RC16:       {{(renamable )?}}$r1 = LD {{(killed )?}}{{(renamable )?}}$r3, 12
+# RC16-NEXT:  ST {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3, 16
+# RC16-NEXT:  {{(renamable )?}}$r2 = MOV {{(killed )?}}{{(renamable )?}}$r3
+# RC16-NEXT:  {{(renamable )?}}$r3 = MOV {{(killed )?}}{{(renamable )?}}$r1
+# RC16-LABEL: name: store_cycle_load_s
+# RC16:       {{(renamable )?}}$r1 = LD {{(killed )?}}{{(renamable )?}}$r3, 20
+# RC16-NEXT:  ST {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3, 24
+# RC16-NEXT:  {{(renamable )?}}$r2 = MOV {{(killed )?}}{{(renamable )?}}$r3
+# RC16-NEXT:  {{(renamable )?}}$r3 = MOV {{(killed )?}}{{(renamable )?}}$r1
+# RC16-LABEL: name: store_cycle_byte
+# RC16:       {{(renamable )?}}$r1 = LDB {{(killed )?}}{{(renamable )?}}$r3
+# RC16-NEXT:  STB {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3
+# RC16-NEXT:  {{(renamable )?}}$r2 = MOV {{(killed )?}}{{(renamable )?}}$r3
+# RC16-NEXT:  {{(renamable )?}}$r3 = MOV {{(killed )?}}{{(renamable )?}}$r1
+# RC16-LABEL: name: store_cycle_same_reg
+# RC16:       {{(renamable )?}}$r2 = MOV {{(killed )?}}{{(renamable )?}}$r3
+# RC16:       {{(renamable )?}}$r3 = LD {{(killed )?}}{{(renamable )?}}$r3, 12
+# RC16:       ST {{(killed )?}}{{(renamable )?}}$r1, {{(renamable )?}}$r2, 16
+# RC16-LABEL: name: store_cycle_stack_pointer
+# RC16-NOT:   $r7 =
+# RC16:       ST $r7, {{(killed )?}}{{(renamable )?}}$r2, 16
+# RC16-NOT:   $r7 =
+# RC16-LABEL: name: store_cycle_extra_read
+# RC16:       {{(renamable )?}}$r4 = ADD {{(killed )?}}{{(renamable )?}}$r4, {{(killed )?}}{{(renamable )?}}$r2
+# RC16:       {{(renamable )?}}$r1 = LD {{(killed )?}}{{(renamable )?}}$r3, 12
+# RC16:       ST {{(killed )?}}{{(renamable )?}}$r2, {{(renamable )?}}$r3, 16
+# RC16:       {{(renamable )?}}$r2 = MOV {{(killed )?}}{{(renamable )?}}$r3
+# RC16:       {{(renamable )?}}$r3 = MOV {{(killed )?}}{{(renamable )?}}$r1
+# RC16-LABEL: name: store_cycle_volatile
+# RC16:       {{(renamable )?}}$r3 = LD {{(killed )?}}{{(renamable )?}}$r3, 12 :: (volatile load (s16))
+# RC16-LABEL: name: store_cycle_frame
+# RC16:       {{(renamable )?}}$r1 = frame-setup MOV {{(renamable )?}}$r2
+# RC16-LABEL: name: store_cycle_abi
+# RC16:       $r0 = LD $r6, 0
+# RC16-NEXT:  ST {{(killed )?}}$r4, $r6, 0
+# RC16-NEXT:  $r4 = MOV {{(killed )?}}$r6
+# RC16-NEXT:  $r6 = MOV {{(killed )?}}$r0
+# RC16-NEXT:  BNEZ %bb.1, implicit {{(killed )?}}$r0
+
+#--- rc32.mir
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @store_cycle_word() { ret i32 0 }
+  define i32 @store_cycle_load_s() { ret i32 0 }
+  define i32 @store_cycle_byte() { ret i32 0 }
+  define i32 @store_cycle_half() { ret i32 0 }
+  define i32 @store_cycle_same_reg() { ret i32 0 }
+  define i32 @store_cycle_stack_pointer() { ret i32 0 }
+  define i32 @store_cycle_extra_read() { ret i32 0 }
+  define i32 @store_cycle_volatile() { ret i32 0 }
+  define i32 @store_cycle_frame() { ret i32 0 }
+  define i32 @store_cycle_abi() { ret i32 0 }
+...
+---
+name: store_cycle_word
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV32 renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r3, 12 :: (load (s32))
+    ST32 renamable $r1, renamable $r2, 16 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_load_s
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV32 renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r2, 20 :: (load (s32))
+    ST32 renamable $r1, renamable $r2, 24 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_byte
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV32 renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LDB32 renamable $r3 :: (load (s8))
+    STB32 renamable $r1, renamable $r2 :: (store (s8))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_half
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV32 renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LDH renamable $r3 :: (load (s16))
+    STH renamable $r1, renamable $r2 :: (store (s16))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_same_reg
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV32 renamable $r1
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r3, 12 :: (load (s32))
+    ST32 renamable $r1, renamable $r2, 16 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_stack_pointer
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r7, $s7
+    renamable $r1 = MOV32 $r7
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r3, 12 :: (load (s32))
+    ST32 renamable $r1, renamable $r2, 16 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3, implicit $r7
+...
+---
+name: store_cycle_extra_read
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r4, $s7
+    renamable $r1 = MOV32 renamable $r2
+    renamable $r4 = ADD32 renamable $r4, renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r3, 12 :: (load (s32))
+    ST32 renamable $r1, renamable $r2, 16 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3, implicit $r4
+...
+---
+name: store_cycle_volatile
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV32 renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r3, 12 :: (volatile load (s32))
+    ST32 renamable $r1, renamable $r2, 16 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_frame
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = frame-setup MOV32 renamable $r2
+    renamable $r2 = MOV32 renamable $r3
+    renamable $r3 = LD32 renamable $r3, 12 :: (load (s32))
+    ST32 renamable $r1, renamable $r2, 16 :: (store (s32))
+    renamable $r1 = MOV32 renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_abi
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r4, $r6, $s7
+    renamable $r0 = MOV32 renamable $r4
+    renamable $r4 = MOV32 renamable $r6
+    renamable $r6 = LD32 $r6, 0 :: (load (s32))
+    ST32 renamable $r0, renamable $r4, 0 :: (store (s32))
+    $r0 = MOV32 renamable $r6
+    BNEZ %bb.1, implicit $r0
+  bb.1:
+    liveins: $r4, $r6, $s7
+    RETS implicit $s7, implicit $r4, implicit $r6
+...
+
+#--- rc16.mir
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @store_cycle_word() { ret i16 0 }
+  define i16 @store_cycle_load_s() { ret i16 0 }
+  define i16 @store_cycle_byte() { ret i16 0 }
+  define i16 @store_cycle_same_reg() { ret i16 0 }
+  define i16 @store_cycle_stack_pointer() { ret i16 0 }
+  define i16 @store_cycle_extra_read() { ret i16 0 }
+  define i16 @store_cycle_volatile() { ret i16 0 }
+  define i16 @store_cycle_frame() { ret i16 0 }
+  define i16 @store_cycle_abi() { ret i16 0 }
+...
+---
+name: store_cycle_word
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV renamable $r2
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r3, 12 :: (load (s16))
+    ST renamable $r1, renamable $r2, 16 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_load_s
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV renamable $r2
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r2, 20 :: (load (s16))
+    ST renamable $r1, renamable $r2, 24 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_byte
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV renamable $r2
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LDB renamable $r3 :: (load (s8))
+    STB renamable $r1, renamable $r2 :: (store (s8))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_same_reg
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV renamable $r1
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r3, 12 :: (load (s16))
+    ST renamable $r1, renamable $r2, 16 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_stack_pointer
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r7, $s7
+    renamable $r1 = MOV $r7
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r3, 12 :: (load (s16))
+    ST renamable $r1, renamable $r2, 16 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3, implicit $r7
+...
+---
+name: store_cycle_extra_read
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $r4, $s7
+    renamable $r1 = MOV renamable $r2
+    renamable $r4 = ADD renamable $r4, renamable $r2
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r3, 12 :: (load (s16))
+    ST renamable $r1, renamable $r2, 16 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3, implicit $r4
+...
+---
+name: store_cycle_volatile
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = MOV renamable $r2
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r3, 12 :: (volatile load (s16))
+    ST renamable $r1, renamable $r2, 16 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_frame
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r3, $s7
+    renamable $r1 = frame-setup MOV renamable $r2
+    renamable $r2 = MOV renamable $r3
+    renamable $r3 = LD renamable $r3, 12 :: (load (s16))
+    ST renamable $r1, renamable $r2, 16 :: (store (s16))
+    renamable $r1 = MOV renamable $r3
+    RETS implicit $s7, implicit $r1, implicit $r2, implicit $r3
+...
+---
+name: store_cycle_abi
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r4, $r6, $s7
+    renamable $r0 = MOV renamable $r4
+    renamable $r4 = MOV renamable $r6
+    renamable $r6 = LD $r6, 0 :: (load (s16))
+    ST renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = MOV renamable $r6
+    BNEZ %bb.1, implicit $r0
+  bb.1:
+    liveins: $r4, $r6, $s7
+    RETS implicit $s7, implicit $r4, implicit $r6
+...

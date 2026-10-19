@@ -1,0 +1,240 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s --check-prefixes=CHECK,FULL
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -riscc-synthesize-constants -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,MIN
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-synthesize-constants=false -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+
+# OFF-LABEL: name: minus_one
+# OFF: $r1 = LDPC %const.0
+# OFF-LABEL: name: plus_256
+# OFF: $r1 = LDPC %const.0
+
+# Check both arithmetic boundaries, the profile's immediate shift width,
+# sharing, relocations, nonnative constants and volatile accesses.
+# CHECK-LABEL: name: minus_one
+# CHECK: $r1 = LDI32 0
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, -1
+# CHECK-NOT: LDPC
+# CHECK-LABEL: name: minus_128
+# CHECK: $r1 = LDI32 0
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, -128
+# CHECK-LABEL: name: minus_129
+# CHECK: $r1 = LDPC %const.0
+# CHECK-LABEL: name: plus_256
+# CHECK: $r1 = LDI32 255
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, 1
+# CHECK-LABEL: name: plus_382
+# CHECK: $r1 = LDI32 255
+# CHECK-NEXT: $r1 = ADDI32 killed $r1, 127
+# CHECK-LABEL: name: plus_383
+# CHECK: $r1 = LDPC %const.0
+# CHECK-LABEL: name: shift_one
+# CHECK: $r1 = LDI32 255
+# CHECK-NEXT: $r1 = SLLI32 killed $r1, 1
+# CHECK-LABEL: name: shift_eight
+# FULL: $r1 = LDI32 255
+# FULL-NEXT: $r1 = SLLI32 killed $r1, 8
+# MIN: $r1 = LDPC %const.0
+# CHECK-LABEL: name: shared
+# CHECK: $r1 = LDPC %const.0
+# CHECK: $r1 = LD32
+# CHECK: $r2 = LDPC %const.0
+# CHECK-LABEL: name: symbolic
+# CHECK: $r1 = LDPC %const.0
+# CHECK-LABEL: name: offset
+# CHECK: $r1 = LDPC %const.0 + 4
+# CHECK-LABEL: name: ordered
+# CHECK: $r1 = LDPC %const.0
+# CHECK-LABEL: name: speed
+# CHECK: $r1 = LDPC %const.0
+
+--- |
+  target triple = "riscc-none-elf"
+  @object = external global i8
+  define void @minus_one() optsize { ret void }
+  define void @minus_128() optsize { ret void }
+  define void @minus_129() optsize { ret void }
+  define void @plus_256() optsize { ret void }
+  define void @plus_382() optsize { ret void }
+  define void @plus_383() optsize { ret void }
+  define void @shift_one() optsize { ret void }
+  define void @shift_eight() optsize { ret void }
+  define void @shared() optsize { ret void }
+  define void @symbolic() optsize { ret void }
+  define void @offset() optsize { ret void }
+  define void @ordered() optsize { ret void }
+  define void @speed() { ret void }
+...
+---
+name: minus_one
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 -1'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: minus_128
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 -128'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: minus_129
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 -129'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: plus_256
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 256'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: plus_382
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 382'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: plus_383
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 383'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: shift_one
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 510'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: shift_eight
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 65280'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: shared
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 256'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = LD32 $r1, 0 :: (load (s32))
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: symbolic
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'ptr getelementptr (i8, ptr @object, i32 1)'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: offset
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i64 1099511627776'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 + 4 :: (load (s32) from constant-pool + 4)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: ordered
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 256'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (volatile load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: speed
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 256'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...

@@ -1,0 +1,53 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s \
+# RUN:   --check-prefix=RC16
+# RUN: llc -mtriple=riscc -mcpu=min -run-pass=prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s \
+# RUN:   --check-prefix=RC16
+# RUN: llc -mtriple=riscc -mcpu=sys -run-pass=prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s \
+# RUN:   --check-prefix=RC16
+# RUN: sed -e 's/FRAMEADDR/FRAMEADDR32/g' -e 's/size: 2/size: 4/g' -e 's/alignment: 2/alignment: 4/g' %s | llc -x mir \
+# RUN:   -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=prolog-epilog -verify-machineinstrs -o - | FileCheck %s \
+# RUN:   --check-prefix=RC32
+# RUN: sed -e 's/FRAMEADDR/FRAMEADDR32/g' -e 's/size: 2/size: 4/g' -e 's/alignment: 2/alignment: 4/g' %s | llc -x mir \
+# RUN:   -mtriple=riscc -mcpu=min -mattr=+rc32 -run-pass=prolog-epilog -verify-machineinstrs -o - | FileCheck %s \
+# RUN:   --check-prefix=RC32
+# RUN: sed -e 's/RETS implicit \$s7/RET_NANO $r6/g' -e 's/, \$s7//g' %s | llc -x mir -mtriple=riscc -mcpu=nano \
+# RUN:   -run-pass=prolog-epilog -verify-machineinstrs -o - | FileCheck %s --check-prefix=RC16
+#
+# Every other allocatable register is live across the address calculation.
+# Its own destination is enough to materialize a large offset; no other GPR
+# needs a spill/reload. The frame index stays symbolic until SPAdj is known.
+# RC16-LABEL: name: large_address
+# RC16: stackSize: 0
+# RC16-NOT: frame-setup
+# RC16-NOT: ST
+# RC16-NOT: = LD {{.*}}
+# RC16: $r1 = LDI16 300
+# RC16-NEXT: $r1 = ADD $r7, killed $r1
+# RC16-NOT: ST
+# RC16-NOT: = LD
+# RC16-NOT: frame-destroy
+# RC16: {{RETS|RET_NANO}}
+# RC32-LABEL: name: large_address
+# RC32: stackSize: 0
+# RC32-NOT: frame-setup
+# RC32-NOT: ST32
+# RC32-NOT: = LD32
+# RC32: $r1 = LDPC %const.0
+# RC32-NEXT: $r1 = ADD32 $r7, killed $r1
+# RC32-NOT: ST32
+# RC32-NOT: = LD32
+# RC32-NOT: frame-destroy
+# RC32: RETS
+---
+name: large_address
+tracksRegLiveness: true
+noVRegs: true
+fixedStack:
+  - { id: 0, type: default, offset: 300, size: 2, alignment: 2, isImmutable: true }
+body: |
+  bb.0:
+    liveins: $r0, $r2, $r3, $r4, $r5, $r6, $s7
+    $r1 = FRAMEADDR %fixed-stack.0, 0
+    RETS implicit $s7, implicit $r0, implicit $r1, implicit $r2, implicit $r3, implicit $r4, implicit $r5, implicit $r6
+...

@@ -1,0 +1,111 @@
+# REQUIRES: riscc-registered-target
+#
+# Keep loop spill promotion/hoisting disabled here: these cases exercise the
+# S-register allocator's free-cache order and entry-link liveness directly.
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-loop-spill-promotion=false -riscc-loop-spill-hoist=false \
+# RUN:   -run-pass=riscc-sreg-allocator,prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/ ST / ST32 /g' -e 's/= LD /= LD32 /g' -e 's/    CALL16 /    CALL32_LITERAL /g' \
+# RUN:   -e 's/size: 2/size: 4/g' -e 's/alignment: 2/alignment: 4/g' -e 's/maxAlignment: 2/maxAlignment: 4/g' \
+# RUN:   -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 \
+# RUN:   -riscc-loop-spill-promotion=false -riscc-loop-spill-hoist=false -run-pass=riscc-sreg-allocator,prolog-epilog \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+
+--- |
+  define internal i16 @private_hot() {
+  entry:
+    br label %loop
+  loop:
+    br i1 true, label %loop, label %exit
+  exit:
+    ret i16 0
+  }
+
+  declare void @external()
+  define void @public_noreturn() noreturn {
+  entry:
+    br label %loop
+  loop:
+    call void @external()
+    br label %loop
+  }
+
+---
+name:            private_hot
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $r1, $s2, $s4
+    successors: %bb.1.loop
+    $r0 = MFS $s2
+    $r0 = MFS $s4
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+
+  bb.1.loop:
+    liveins: $r1, $s2, $s4
+    successors: %bb.1.loop, %bb.2.exit
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    ST $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r0 = MFS $s2
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+
+  bb.2.exit:
+    liveins: $r1, $s3
+    LINK_S3_RET implicit $s3, implicit $r1
+
+# CHECK-LABEL: name: private_hot
+# CHECK: $s7 = MTS $r1
+# CHECK: $r1 = MFS $s7
+# CHECK-NOT: frame-setup MFS $s5
+# CHECK-NOT: frame-setup MTS $s5
+# CHECK-NOT: frame-setup ST{{(32)?}} {{.*}}$s5
+# CHECK: LINK_S3_RET implicit $s3, implicit $r1
+
+---
+name:            public_noreturn
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  hasCalls: true
+  adjustsStack: true
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body:             |
+  bb.0.entry:
+    liveins: $s2, $s3, $s4
+    successors: %bb.1.loop
+    $r0 = MFS $s2
+    $r0 = MFS $s3
+    $r0 = MFS $s4
+    JMP8 %bb.1.loop
+
+  bb.1.loop:
+    successors: %bb.1.loop
+    CALL16 @external, csr_riscc
+    $r1 = LDI 7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    JMP8 %bb.1.loop
+
+# CHECK-LABEL: name: public_noreturn
+# CHECK-NOT: frame-setup
+# CHECK-NOT: frame-setup MFS $s7
+# CHECK-NOT: frame-setup MTS $s7
+# CHECK-NOT: frame-setup ST{{(32)?}} {{.*}}$s7
+# CHECK: CALL{{16|32_LITERAL}} @external, csr_riscc
+# CHECK: $s7 = MTS{{.*}}$r1
+# CHECK: $r1 = MFS $s7

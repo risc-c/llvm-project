@@ -1,0 +1,289 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-branch-copy-paths -run-pass=riscc-postra-optimize -verify-machineinstrs \
+# RUN:   %s -o - | FileCheck %s
+# RUN: sed -e 's/\bMOV\b/MOV32/g' -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' -e 's/\bLDI\b/LDI32/g' \
+# RUN:   -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-branch-copy-paths \
+# RUN:   -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# The producer writes R0 directly. The successor's existing handoff moves
+# ahead of its uses, and the old source assignment is repaired only on exit.
+# CHECK-LABEL: name: handoff_exit
+# CHECK: bb.1:
+# CHECK: renamable $r0 = LD{{(32)?}} {{(killed )?}}renamable $r2, 0
+# CHECK: ST{{(32)?}} {{(killed )?}}renamable $r6, {{(killed )?}}renamable $r2, 0
+# CHECK-NOT: MOV
+# CHECK: BEQZ %bb.4
+# CHECK: bb.2:
+# CHECK: $r6 = MOV{{(32)?}} {{(killed )?}}renamable $r0
+# CHECK: $r0 = LD{{(32)?}} renamable $r6, 0
+# CHECK: ST{{(32)?}} {{(killed )?}}renamable $r2, renamable $r6, 0
+# CHECK: $r2 = MOV{{(32)?}} {{(killed )?}}renamable $r0
+# CHECK-NOT: $r6 = MOV
+# CHECK: BNEZ %bb.1
+# CHECK: bb.5:
+# CHECK: $r5 = MOV{{(32)?}} {{(killed )?}}$r6
+# CHECK: bb.3:
+# CHECK: RETS
+
+# No repair is needed if the source is dead on both loop exits.
+# CHECK-LABEL: name: handoff_no_repair
+# CHECK: bb.1:
+# CHECK: renamable $r0 = LD{{(32)?}}
+# CHECK-NOT: MOV
+# CHECK: BEQZ
+# CHECK: bb.2:
+# CHECK: $r6 = MOV{{(32)?}} {{(killed )?}}renamable $r0
+# CHECK: $r0 = LD{{(32)?}} renamable $r6, 0
+# CHECK: bb.3:
+# CHECK-NOT: MOV
+# CHECK: RETS
+
+# A live R0 value, a live destination, or a fixed source operand prevents
+# the rewrite; none may be silently clobbered or renamed.
+# CHECK-LABEL: name: handoff_r0_conflict
+# CHECK: bb.1:
+# CHECK: renamable $r5 = LD{{(32)?}}
+# CHECK: $r0 = MOV{{(32)?}} {{(killed )?}}renamable $r5
+# CHECK: bb.2:
+# CHECK: $r0 = LD{{(32)?}}
+# CHECK-LABEL: name: handoff_live_destination
+# CHECK: bb.1:
+# CHECK: renamable $r5 = LD{{(32)?}}
+# CHECK: $r0 = MOV{{(32)?}} {{(killed )?}}renamable $r5
+# CHECK: bb.2:
+# CHECK: $r0 = LD{{(32)?}}
+# CHECK-LABEL: name: handoff_fixed_source
+# CHECK: bb.1:
+# CHECK: renamable $r5 = LD{{(32)?}}
+# CHECK: $r0 = MOV{{(32)?}} {{(killed )?}}renamable $r5
+# CHECK: bb.2:
+# CHECK: $r0 = LD{{(32)?}}
+# CHECK-LABEL: name: handoff_frame_setup
+# CHECK: bb.1:
+# CHECK: renamable $r5 = LD{{(32)?}}
+# CHECK: $r0 = MOV{{(32)?}} {{(killed )?}}renamable $r5
+# CHECK: bb.2:
+# CHECK: $r0 = LD{{(32)?}}
+# CHECK: $r6 = frame-setup MOV{{(32)?}}
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @handoff_exit() { ret void }
+  define void @handoff_no_repair() { ret void }
+  define void @handoff_r0_conflict() { ret void }
+  define void @handoff_live_destination() { ret void }
+  define void @handoff_fixed_source() { ret void }
+  define void @handoff_frame_setup() { ret void }
+...
+---
+name: handoff_exit
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r6, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $r6, $s7
+    successors: %bb.2, %bb.4
+    renamable $r5 = LD renamable $r2, 0 :: (load (s16))
+    ST killed renamable $r6, renamable $r2, 0 :: (store (s16))
+    $r0 = MOV renamable $r5
+    BEQZ %bb.4, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r2, $r5, $s7
+    successors: %bb.1, %bb.3
+    renamable $r0 = LD renamable $r5, 0 :: (load (s16))
+    ST killed renamable $r2, renamable $r5, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r0
+    renamable $r6 = MOV renamable $r5
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r5, $s7
+    RETS implicit $s7, implicit $r5
+  bb.4:
+    liveins: $r2, $s7
+    successors: %bb.3
+    renamable $r5 = MOV killed renamable $r2
+    JMP8 %bb.3
+...
+---
+name: handoff_no_repair
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r6, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $r6, $s7
+    successors: %bb.2, %bb.4
+    renamable $r5 = LD renamable $r2, 0 :: (load (s16))
+    ST killed renamable $r6, renamable $r2, 0 :: (store (s16))
+    $r0 = MOV renamable $r5
+    BEQZ %bb.4, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r2, $r5, $s7
+    successors: %bb.1, %bb.3
+    renamable $r0 = LD renamable $r5, 0 :: (load (s16))
+    ST killed renamable $r2, renamable $r5, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r0
+    renamable $r6 = MOV renamable $r5
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $s7
+    RETS implicit $s7
+  bb.4:
+    liveins: $r2, $s7
+    successors: %bb.3
+    JMP8 %bb.3
+...
+---
+name: handoff_r0_conflict
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r6, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $r6, $s7
+    successors: %bb.2, %bb.4
+    renamable $r5 = LD renamable $r2, 0 :: (load (s16))
+    ST killed renamable $r6, renamable $r2, 0 :: (store (s16))
+    renamable $r0 = LDI 7
+    ST killed renamable $r0, renamable $r2, 2 :: (store (s16))
+    $r0 = MOV renamable $r5
+    BEQZ %bb.4, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r2, $r5, $s7
+    successors: %bb.1, %bb.3
+    renamable $r0 = LD renamable $r5, 0 :: (load (s16))
+    ST killed renamable $r2, renamable $r5, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r0
+    renamable $r6 = MOV renamable $r5
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r5, $s7
+    RETS implicit $s7, implicit $r5
+  bb.4:
+    liveins: $r2, $s7
+    successors: %bb.3
+    renamable $r5 = MOV killed renamable $r2
+    JMP8 %bb.3
+...
+---
+name: handoff_live_destination
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r6, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $r6, $s7
+    successors: %bb.2, %bb.4
+    renamable $r5 = LD renamable $r2, 0 :: (load (s16))
+    ST killed renamable $r6, renamable $r2, 0 :: (store (s16))
+    $r0 = MOV renamable $r5
+    BEQZ %bb.4, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r2, $r5, $r6, $s7
+    successors: %bb.1, %bb.3
+    ST renamable $r6, renamable $r2, 2 :: (store (s16))
+    renamable $r0 = LD renamable $r5, 0 :: (load (s16))
+    ST killed renamable $r2, renamable $r5, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r0
+    renamable $r6 = MOV renamable $r5
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r5, $s7
+    RETS implicit $s7, implicit $r5
+  bb.4:
+    liveins: $r2, $s7
+    successors: %bb.3
+    renamable $r5 = MOV killed renamable $r2
+    JMP8 %bb.3
+...
+---
+name: handoff_fixed_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r6, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $r6, $s7
+    successors: %bb.2, %bb.4
+    renamable $r5 = LD renamable $r2, 0 :: (load (s16))
+    ST killed renamable $r6, renamable $r2, 0 :: (store (s16))
+    $r0 = MOV renamable $r5
+    BEQZ %bb.4, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r2, $r5, $s7
+    successors: %bb.1, %bb.3
+    renamable $r0 = LD $r5, 0 :: (load (s16))
+    ST killed renamable $r2, renamable $r5, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r0
+    renamable $r6 = MOV renamable $r5
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r5, $s7
+    RETS implicit $s7, implicit $r5
+  bb.4:
+    liveins: $r2, $s7
+    successors: %bb.3
+    renamable $r5 = MOV killed renamable $r2
+    JMP8 %bb.3
+...
+---
+name: handoff_frame_setup
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $r6, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r2, $r6, $s7
+    successors: %bb.2, %bb.4
+    renamable $r5 = LD renamable $r2, 0 :: (load (s16))
+    ST killed renamable $r6, renamable $r2, 0 :: (store (s16))
+    $r0 = MOV renamable $r5
+    BEQZ %bb.4, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r2, $r5, $s7
+    successors: %bb.1, %bb.3
+    renamable $r0 = LD renamable $r5, 0 :: (load (s16))
+    ST killed renamable $r2, renamable $r5, 0 :: (store (s16))
+    renamable $r2 = MOV renamable $r0
+    renamable $r6 = frame-setup MOV renamable $r5
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r5, $s7
+    RETS implicit $s7, implicit $r5
+  bb.4:
+    liveins: $r2, $s7
+    successors: %bb.3
+    renamable $r5 = MOV killed renamable $r2
+    JMP8 %bb.3
+...

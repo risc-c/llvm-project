@@ -1,4 +1,9 @@
 // Intentionally no include guard: consumed by TargetPassRegistry.inc.
+#ifndef MODULE_PASS
+#define MODULE_PASS(NAME, CREATE_PASS)
+#endif
+MODULE_PASS("riscc-call-policy", RISCCCallPolicyPass())
+#undef MODULE_PASS
 #ifndef FUNCTION_PASS
 #define FUNCTION_PASS(NAME, CREATE_PASS)
 #endif
@@ -11,4 +16,6 @@ MACHINE_FUNCTION_PASS("riscc-isel",
                       RISCCISelDAGToDAGPass(*this, getOptLevel()))
 MACHINE_FUNCTION_PASS("riscc-constant-islands", RISCCConstantIslandPass())
 MACHINE_FUNCTION_PASS("riscc-machine-optimize", RISCCMachineOptimizePass())
+MACHINE_FUNCTION_PASS("riscc-postra-optimize", RISCCPostRAOptimizePass())
+MACHINE_FUNCTION_PASS("riscc-return-optimize", RISCCReturnOptimizePass())
 #undef MACHINE_FUNCTION_PASS

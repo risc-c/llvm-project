@@ -1,0 +1,73 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=machine-cp -mcp-use-is-copy-instr -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=machine-cp -mcp-use-is-copy-instr -verify-machineinstrs \
+# RUN:   %s -o - | FileCheck %s
+
+---
+name: self_moves
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = MOV $r1
+    $r2 = MOV32 $r2
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+# CHECK-LABEL: name: self_moves
+# CHECK-NOT: MOV
+# CHECK: KILL
+# CHECK: KILL
+# CHECK: RETS
+
+---
+name: identical_logic
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = OR $r1, $r1
+    $r2 = AND32 $r2, $r2
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+# CHECK-LABEL: name: identical_logic
+# CHECK-NOT: OR
+# CHECK-NOT: AND
+# CHECK: KILL
+# CHECK: KILL
+# CHECK: RETS
+
+---
+name: exposed_copy
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    renamable $r2 = MOV32 renamable $r1
+    renamable $r3 = OR32 renamable $r1, renamable $r2
+    renamable $r1 = ADD32 renamable $r1, renamable $r3
+    RETS implicit $s7, implicit $r1
+...
+# CHECK-LABEL: name: exposed_copy
+# CHECK-NOT: MOV
+# CHECK-NOT: OR32
+# CHECK: $r1 = ADD32 {{.*}}$r1, {{.*}}$r1
+# CHECK-NEXT: RETS
+
+---
+name: distinct_inputs
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = OR32 $r1, $r2
+    $r2 = AND $r1, $r2
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+# CHECK-LABEL: name: distinct_inputs
+# CHECK: $r1 = OR32 $r1, $r2
+# CHECK: $r2 = AND $r1, $r2

@@ -1,0 +1,203 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-loop-invariant-spills=false -riscc-loop-spill-hoist \
+# RUN:   -riscc-multiblock-spill-hoist -riscc-loop-spill-promotion=false -run-pass=riscc-sreg-allocator \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' -e 's/\bFRAMEADDR\b/FRAMEADDR32/g' -e 's/size: 2/size: 4/g' \
+# RUN:   -e 's/alignment: 2/alignment: 4/g' -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full \
+# RUN:   -mattr=+rc32 -riscc-loop-invariant-spills=false -riscc-loop-spill-hoist -riscc-multiblock-spill-hoist \
+# RUN:   -riscc-loop-spill-promotion=false -run-pass=riscc-sreg-allocator -verify-machineinstrs -o - | FileCheck %s
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-loop-invariant-spills=false -riscc-loop-spill-promotion=false \
+# RUN:   -run-pass=riscc-sreg-allocator -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=DEFAULT
+
+# A two-block loop has a live-through donor that is unused in every loop
+# block.  The invariant reload is local to the body, so it can use the donor.
+# DEFAULT-LABEL: name: multiblock_positive
+# DEFAULT:       bb.2.body:
+# DEFAULT:       $r3 = ADD {{(killed )?}}$r2, $r4
+# CHECK-LABEL: name: multiblock_positive
+# CHECK:       bb.0.entry:
+# CHECK:       {{(ST(32)?( killed)? \$r1, %stack\.[1-9]|\$s[2-6] = MTS( killed)? \$r1)}}
+# CHECK:       {{(LD(32)?( killed)? \$r1, %stack\.0|\$r1 = MFS \$s[2-6])}}
+# CHECK:       bb.1.header:
+# CHECK:       BNEZ %bb.2, implicit $r0
+# CHECK:       bb.2.body:
+# CHECK-NOT:   LD{{(32)?}} {{.*}}%stack.0
+# CHECK:       $r3 = ADD{{(32)?}} {{(killed )?}}$r1, $r4
+# CHECK:       bb.3.exit:
+# CHECK:       RETS implicit $s7, implicit {{(killed )?}}$r1
+
+# A reload whose destination is live into the next loop block is not local to
+# its block, so a multi-block loop must retain the reload destination.
+# CHECK-LABEL: name: multiblock_reload_liveout
+# CHECK:       bb.1.header:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       bb.2.body:
+# CHECK:       $r3 = ADD{{(32)?}} {{(killed )?}}$r2, $r4
+
+# A shared exit is not a dedicated loop exit.
+# CHECK-LABEL: name: multiblock_shared_exit
+# CHECK:       bb.2.body:
+# CHECK-NOT:   ADD{{(32)?}} {{.*}}$r1, $r4
+# CHECK:       $r3 = ADD{{(32)?}} {{(killed )?}}$r2, $r4
+
+# A store to the candidate spill slot makes it mutable.
+# CHECK-LABEL: name: multiblock_mutable_spill
+# CHECK:       bb.2.body:
+# CHECK:       $r3 = ADD{{(32)?}} {{(killed )?}}$r2, $r4
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @multiblock_positive() {
+  entry: br label %header
+  header: br i1 true, label %body, label %header
+  body: br i1 true, label %header, label %exit
+  exit: ret void
+  }
+  define void @multiblock_reload_liveout() {
+  entry: br label %header
+  header: br i1 true, label %body, label %header
+  body: br i1 true, label %header, label %exit
+  exit: ret void
+  }
+  define void @multiblock_shared_exit() {
+  entry: br i1 true, label %header, label %alt
+  header: br i1 true, label %body, label %header
+  body: br i1 true, label %header, label %exit
+  alt: br label %exit
+  exit: ret void
+  }
+  define void @multiblock_mutable_spill() {
+  entry: br label %header
+  header: br i1 true, label %body, label %header
+  body: br i1 true, label %header, label %exit
+  exit: ret void
+  }
+...
+---
+name: multiblock_positive
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1
+    successors: %bb.1.header
+    ST $r0, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.header
+  bb.1.header:
+    liveins: $r0, $r1
+    successors: %bb.2.body(0x7f000000), %bb.1.header(0x01000000)
+    BNEZ %bb.2.body, implicit $r0
+    JMP8 %bb.1.header
+  bb.2.body:
+    liveins: $r0, $r1, $r4
+    successors: %bb.1.header(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    BNEZ %bb.1.header, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $r1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: multiblock_reload_liveout
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1
+    successors: %bb.1.header
+    ST $r0, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.header
+  bb.1.header:
+    liveins: $r0, $r1
+    successors: %bb.2.body(0x7f000000), %bb.1.header(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    BNEZ %bb.2.body, implicit $r0
+    JMP8 %bb.1.header
+  bb.2.body:
+    liveins: $r0, $r1, $r2, $r4
+    successors: %bb.1.header(0x7f000000), %bb.3.exit(0x01000000)
+    $r3 = ADD $r2, $r4
+    BNEZ %bb.1.header, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $r1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: multiblock_shared_exit
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1
+    successors: %bb.1.header, %bb.4.alt
+    BNEZ %bb.4.alt, implicit $r0
+    JMP8 %bb.1.header
+  bb.1.header:
+    liveins: $r0, $r1
+    successors: %bb.2.body(0x7f000000), %bb.1.header(0x01000000)
+    BNEZ %bb.2.body, implicit $r0
+    JMP8 %bb.1.header
+  bb.2.body:
+    liveins: $r0, $r1, $r4
+    successors: %bb.1.header(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    BNEZ %bb.1.header, implicit $r0
+    JMP8 %bb.3.exit
+  bb.4.alt:
+    successors: %bb.3.exit
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $r1
+    RETS implicit $s7, implicit $r1
+...
+---
+name: multiblock_mutable_spill
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1
+    successors: %bb.1.header
+    ST $r0, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.header
+  bb.1.header:
+    liveins: $r0, $r1
+    successors: %bb.2.body(0x7f000000), %bb.1.header(0x01000000)
+    BNEZ %bb.2.body, implicit $r0
+    JMP8 %bb.1.header
+  bb.2.body:
+    liveins: $r0, $r1, $r4
+    successors: %bb.1.header(0x7f000000), %bb.3.exit(0x01000000)
+    ST $r0, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    BNEZ %bb.1.header, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $r1
+    RETS implicit $s7, implicit $r1
+...

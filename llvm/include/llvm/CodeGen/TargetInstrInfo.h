@@ -2348,6 +2348,15 @@ public:
     return OptLevel >= CodeGenOptLevel::Aggressive ? 4 : 2;
   }
 
+  /// Opt in to size-aware refinement after ordinary block placement. A new
+  /// layout must have a strictly smaller instruction/alignment footprint and
+  /// no additional out-of-range branches. The target must implement accurate
+  /// instruction sizes and direct-branch destination/range queries. Later
+  /// branch relaxation and constant islands are not included in this model.
+  virtual bool enableSizeAwareBlockPlacement(const MachineFunction &MF) const {
+    return false;
+  }
+
   /// Returns the target-specific default value for tail merging.
   /// This value will be used if the tail-merge-size argument is not provided.
   virtual unsigned getTailMergeSize(const MachineFunction &MF) const {

@@ -1,0 +1,265 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | \
+# RUN:   FileCheck %s
+# RUN: sed -e 's/MOV32/MOV/g' -e 's/ADDI32/ADDI/g' -e 's/CMPI32/CMPI/g' -e 's/LDI32/LDI/g' -e 's/CALL32/CALL/g' \
+# RUN:   -e 's/ST32/ST/g' -e 's/(s32)/(s16)/g' %s | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# Physical values may be removed when the defining value is unchanged.  The
+# checks below also cover the CFG, call, reserved-register, and frame-boundary
+# cases where the value identity must be forgotten.
+
+# CHECK-LABEL: name: duplicate_mov_edge
+# CHECK:       bb.0:
+# CHECK:       $r2 = MOV{{(32)?}} $r1
+# CHECK-NEXT:  ST{{(32)?}} $r2,
+# CHECK:       JMP8
+# CHECK:       bb.1:
+# CHECK:       liveins: {{.*}}$r2
+# CHECK-NOT:   MOV{{(32)?}}
+# CHECK:       RETS implicit $s7, implicit {{(killed )?}}$r2, implicit {{(killed )?}}$r1
+
+# CHECK-LABEL: name: duplicate_cmpi_edge
+# CHECK:       bb.0:
+# CHECK:       CMPI{{(32)?}} $r1, 7, implicit-def $r0
+# CHECK:       bb.1:
+# CHECK:       liveins: {{.*}}$r0
+# CHECK-NOT:   CMPI{{(32)?}}
+# CHECK:       BNEZ
+
+# CHECK-LABEL: name: duplicate_ldi
+# CHECK-COUNT-1: $r1 = LDI{{(32)?}} 7
+# CHECK-NOT:     LDI
+# CHECK:         RETS
+
+# CHECK-LABEL: name: duplicate_addi
+# CHECK-COUNT-1: $r2 = ADDI{{(32)?}} {{(killed )?}}$r2, 5
+# CHECK:         $r3 = ADDI{{(32)?}} {{(killed )?}}$r3, 5
+# CHECK-NOT:     $r2 = MOV{{(32)?}} $r3
+# CHECK:         RETS
+
+# CHECK-LABEL: name: transfer_roundtrip
+# CHECK:       $s2 = MTS $r1
+# CHECK:       $r2 = MOV{{(32)?}} {{(killed )?}}$r1
+# CHECK-NOT:   MTS
+# CHECK:       RETS
+
+# CHECK-LABEL: name: source_clobber
+# CHECK-COUNT-2: $s2 = MTS $r1
+# CHECK:         RETS
+
+# CHECK-LABEL: name: call_clobber
+# CHECK-COUNT-2: $r1 = MFS $s2
+# CHECK:         RETS
+
+# CHECK-LABEL: name: multi_pred_join
+# CHECK-COUNT-2: $s2 = MTS $r1
+# CHECK:         bb.3:
+# CHECK-NOT:     MTS
+# CHECK:         RETS
+
+# CHECK-LABEL: name: loop_carried
+# CHECK-COUNT-2: $s2 = MTS $r1
+# CHECK:         RETS
+
+# CHECK-LABEL: name: reserved_s_reads
+# CHECK-COUNT-4: {{\$r[12] = MFS \$s[01]}}
+# CHECK:         RETS
+
+# CHECK-LABEL: name: frame_boundary
+# CHECK-COUNT-2: frame-setup MTS $r1
+# CHECK:         RETS
+
+# CHECK-LABEL: name: stack_pointer_writes
+# CHECK-COUNT-2: $r7 = ADDI{{(32)?}} $r7, 0
+# CHECK:         RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @duplicate_mov_edge() { ret i32 0 }
+  define i32 @duplicate_cmpi_edge() { ret i32 0 }
+  define i32 @duplicate_ldi() { ret i32 0 }
+  define i32 @duplicate_addi() { ret i32 0 }
+  define i32 @transfer_roundtrip() { ret i32 0 }
+  define i32 @source_clobber() { ret i32 0 }
+  define i32 @call_clobber() { ret i32 0 }
+  define i32 @multi_pred_join() { ret i32 0 }
+  define i32 @loop_carried() { ret i32 0 }
+  define i32 @reserved_s_reads() { ret i32 0 }
+  define i32 @frame_boundary() { ret i32 0 }
+  define i32 @stack_pointer_writes() { ret i32 0 }
+...
+---
+name: duplicate_mov_edge
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r3, $s7
+    successors: %bb.1
+    $r2 = MOV32 $r1
+    ST32 killed $r2, $r3, 0 :: (store (s32))
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    $r2 = MOV32 $r1
+    RETS implicit $s7, implicit $r2, implicit $r1
+...
+---
+name: duplicate_cmpi_edge
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1
+    CMPI32 $r1, 7, implicit-def $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r1, $s7
+    successors: %bb.2
+    CMPI32 $r1, 7, implicit-def $r0
+    BNEZ %bb.2, implicit killed $r0
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: duplicate_ldi
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDI32 7
+    $r1 = LDI32 7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: duplicate_addi
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = MOV32 $r1
+    $r3 = MOV32 $r1
+    $r2 = ADDI32 $r2, 5
+    $r3 = ADDI32 $r3, 5
+    $r2 = MOV32 $r3
+    RETS implicit $s7, implicit $r2, implicit $r3
+...
+---
+name: transfer_roundtrip
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s2, $s7
+    $s2 = MTS $r1
+    $r2 = MFS $s2
+    $s2 = MTS $r2
+    RETS implicit $s7, implicit $r2
+...
+---
+name: source_clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $s2 = MTS $r1
+    $r1 = ADDI32 $r1, 1
+    $s2 = MTS $r1
+    RETS implicit $s7
+...
+---
+name: call_clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r2, $s2, $s7
+    $r1 = MFS $s2
+    CALL32 $r2, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = MFS $s2
+    RETS implicit $s7
+...
+---
+name: multi_pred_join
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $s2 = MTS $r1
+    JMP8 %bb.3
+  bb.2:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $s2 = MTS $r1
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $s2, $s7
+    $s2 = MTS $r1
+    RETS implicit $s7
+...
+---
+name: loop_carried
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1
+    $s2 = MTS $r1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r0, $r1, $s2, $s7
+    successors: %bb.1, %bb.2
+    $s2 = MTS $r1
+    BNEZ %bb.1, implicit $r0
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: reserved_s_reads
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $s0, $s1, $s7
+    $r1 = MFS $s0
+    $r2 = MFS $s1
+    $r1 = MFS $s0
+    $r2 = MFS $s1
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: frame_boundary
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $s2 = frame-setup MTS $r1
+    $s2 = frame-setup MTS $r1
+    RETS implicit $s7
+...
+---
+name: stack_pointer_writes
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r7, $s7
+    $r7 = ADDI32 $r7, 0
+    $r7 = ADDI32 $r7, 0
+    RETS implicit $s7
+...

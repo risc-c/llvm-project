@@ -1,10 +1,14 @@
 # REQUIRES: riscc-registered-target
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs -filetype=obj %s -o %t
-# RUN: llvm-readobj --relocations %t | FileCheck %s --check-prefix=RELOC
-# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all -verify-machineinstrs -filetype=obj %s -o %t
-# RUN: llvm-readobj --relocations %t | FileCheck %s --check-prefix=RELOC
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,MIN
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,FULL
+# RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all \
+# RUN:   -verify-machineinstrs -filetype=obj %s -o %t
+# RUN: llvm-readobj --relocations %t | FileCheck %s --check-prefix=MIN-RELOC
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -O0 -start-before=prolog-epilog -basic-block-sections=all \
+# RUN:   -verify-machineinstrs -filetype=obj %s -o %t
+# RUN: llvm-readobj --relocations %t | FileCheck %s --check-prefix=FULL-RELOC
 
 # The body is only 16 bytes before frame lowering. Splitting its two blocks
 # into sections still requires a long branch, with all GPRs live at its target.
@@ -12,17 +16,22 @@
 # CHECK-LABEL: section_spill:
 # CHECK-NOT:   jmp8
 # CHECK:       st r0, [r7 + 0]
+# FULL-NEXT:   .reloc [[SITE:.Ltmp[0-9]+]], R_RISCC_RELAX_TAIL, [[LITERAL:.Ltmp[0-9]+]]
+# FULL-NEXT:   [[SITE]]:
 # CHECK-NEXT:  ldpc r0, [[WORD:.Ltmp[0-9]+]]{{$}}
 # CHECK-NEXT:  jalr s0, r0
 # CHECK:       [[WORD]]:
-# CHECK-NEXT:  .long section_spill.__part.1
+# MIN-NEXT:    .long section_spill.__part.1
+# FULL-NEXT:   .long call_target(section_spill.__part.1)
 # CHECK:       section_spill.__part.1:
 # CHECK-NEXT:  ld r0, [r7 + 0]
 # CHECK:       add r1, r0, r1
-# RELOC:       R_RISCC_ABS32 .text.section_spill 0x0
+# MIN-RELOC:   R_RISCC_ABS32 .text.section_spill 0x0
+# FULL-RELOC:  R_RISCC_RELAX_TAIL
+# FULL-RELOC:  R_RISCC_CALL_TARGET section_spill.__part.1 0x0
 
 --- |
-  define i32 @section_spill() {
+  define i32 @section_spill() optsize {
   entry:
     br label %sum
   sum:

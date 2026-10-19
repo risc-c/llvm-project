@@ -1,0 +1,248 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -enable-ipra=false -enable-machine-outliner=always \
+# RUN:   -run-pass=machine-outliner -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=FULL,ENABLED
+# RUN: sed -e 's/\bADD\b/ADD32/g' -e 's/\bSUB\b/SUB32/g' -e 's/\bAND\b/AND32/g' -e 's/\bOR\b/OR32/g' \
+# RUN:   -e 's/\bXOR\b/XOR32/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -enable-ipra=false \
+# RUN:   -enable-machine-outliner=always -run-pass=machine-outliner -verify-machineinstrs -o - | FileCheck %s \
+# RUN:   --check-prefixes=RC32,ENABLED
+# RUN: llc -mtriple=riscc-none-elf -mcpu=min -enable-ipra=false -enable-machine-outliner=always \
+# RUN:   -run-pass=machine-outliner -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=MIN,ENABLED
+# RUN: llc -mtriple=riscc-none-elf -mcpu=min -enable-ipra=false -enable-machine-outliner=always \
+# RUN:   -start-before=machine-outliner -filetype=obj %s -o %t.min.o
+# RUN: sed -e 's/\bADD\b/ADD32/g' -e 's/\bSUB\b/SUB32/g' -e 's/\bAND\b/AND32/g' -e 's/\bOR\b/OR32/g' \
+# RUN:   -e 's/\bXOR\b/XOR32/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -enable-ipra=false \
+# RUN:   -enable-machine-outliner=always -start-before=machine-outliner -filetype=obj -o %t.rc32.o
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -enable-ipra -enable-machine-outliner=always -run-pass=machine-outliner \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=DISABLED
+# RUN: sed 's/RETS implicit \$s7/RET_NANO \$r6/g; s/\$s7/\$r6/g' %s | llc -x mir -mtriple=riscc-none-elf -mcpu=nano \
+# RUN:   -enable-machine-outliner=always -run-pass=machine-outliner -verify-machineinstrs -o - | FileCheck %s \
+# RUN:   --check-prefix=DISABLED
+
+# The repeated region is a compact, side-effect-free R1/R2 computation.  R0
+# and S3 are dead across it, so the target can use them for the private link.
+# FULL-LABEL: name: outline_a
+# FULL:       LINK_S3_CALL16 @OUTLINED_FUNCTION_0
+# FULL-LABEL: name: outline_b
+# FULL:       LINK_S3_CALL16 @OUTLINED_FUNCTION_0
+# FULL-LABEL: name: outline_c
+# FULL:       LINK_S3_CALL16 @OUTLINED_FUNCTION_0
+# RC32-LABEL: name: outline_a
+# RC32:       LINK_S3_CALL32_LITERAL @OUTLINED_FUNCTION_0
+# MIN-LABEL: name: outline_a
+# MIN:       LINK_S3_CALL_MIN @OUTLINED_FUNCTION_0
+
+# The same safety checks hold when outlining is enabled: a live R0/S3 or loop
+# body keeps the repeated region inline.
+# ENABLED-LABEL: name: negative_r0_liveout
+# ENABLED-NOT:   LINK_S3_CALL
+# ENABLED:       BNEZ %bb.1, implicit $r0
+# ENABLED-LABEL: name: negative_s3_liveout
+# ENABLED-NOT:   LINK_S3_CALL
+# ENABLED:       $r2 = MFS $s3
+# ENABLED-LABEL: name: negative_loop
+# ENABLED-NOT:   LINK_S3_CALL
+# ENABLED:       $r1 = ADD{{(32)?}} $r1, $r2
+
+# Each width creates exactly one helper, returning through the private S3 link.
+# FULL-LABEL: name: OUTLINED_FUNCTION_0
+# FULL:       RET $s3
+# FULL-NOT:   OUTLINED_FUNCTION_1
+# RC32-LABEL: name: OUTLINED_FUNCTION_0
+# RC32:       RET $s3
+# RC32-NOT:   OUTLINED_FUNCTION_1
+# MIN-LABEL: name: OUTLINED_FUNCTION_0
+# MIN:       RET $s3
+# MIN-NOT:   OUTLINED_FUNCTION_1
+
+# IPRA and Nano globally disable the RISCC outliner, including the positives.
+# DISABLED-LABEL: name: outline_a
+# DISABLED-NOT:   OUTLINED_FUNCTION
+# DISABLED-LABEL: name: outline_b
+# DISABLED-NOT:   OUTLINED_FUNCTION
+# DISABLED-LABEL: name: outline_c
+# DISABLED-NOT:   OUTLINED_FUNCTION
+
+# R0 live after the region makes the candidate unavailable to the outliner.
+# DISABLED-LABEL: name: negative_r0_liveout
+# DISABLED-NOT:   OUTLINED_FUNCTION
+# DISABLED:       BNEZ %bb.1, implicit $r0
+# DISABLED-LABEL: name: negative_s3_liveout
+# DISABLED-NOT:   OUTLINED_FUNCTION
+# DISABLED:       $r2 = MFS $s3
+# DISABLED-LABEL: name: negative_loop
+# DISABLED-NOT:   OUTLINED_FUNCTION
+# DISABLED:       bb.1:
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @outline_a() optsize nounwind { ret void }
+  define void @outline_b() optsize nounwind { ret void }
+  define void @outline_c() optsize nounwind { ret void }
+  define void @negative_r0_liveout() optsize nounwind { ret void }
+  define void @negative_s3_liveout() optsize nounwind { ret void }
+  define void @negative_loop() optsize nounwind { ret void }
+...
+---
+name: outline_a
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r2 = ADD $r2, $r1
+    $r1 = XOR $r1, $r2
+    $r2 = SUB $r2, $r1
+    $r1 = OR $r1, $r2
+    $r2 = AND $r2, $r1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r1 = ADD $r1, $r2
+    RETS implicit $s7, implicit $r1
+...
+---
+name: outline_b
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r2 = ADD $r2, $r1
+    $r1 = XOR $r1, $r2
+    $r2 = SUB $r2, $r1
+    $r1 = OR $r1, $r2
+    $r2 = AND $r2, $r1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r1 = ADD $r1, $r2
+    RETS implicit $s7, implicit $r1
+...
+---
+name: outline_c
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r2 = ADD $r2, $r1
+    $r1 = XOR $r1, $r2
+    $r2 = SUB $r2, $r1
+    $r1 = OR $r1, $r2
+    $r2 = AND $r2, $r1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r1 = ADD $r1, $r2
+    RETS implicit $s7, implicit $r1
+...
+---
+name: negative_r0_liveout
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $r2, $s7
+    successors: %bb.1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r2 = ADD $r2, $r1
+    $r1 = XOR $r1, $r2
+    $r2 = SUB $r2, $r1
+    $r1 = OR $r1, $r2
+    $r2 = AND $r2, $r1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r1 = ADD $r1, $r2
+    BNEZ %bb.1, implicit $r0
+  bb.1:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: negative_s3_liveout
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s3, $s7
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r2 = ADD $r2, $r1
+    $r1 = XOR $r1, $r2
+    $r2 = SUB $r2, $r1
+    $r1 = OR $r1, $r2
+    $r2 = AND $r2, $r1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r1 = ADD $r1, $r2
+    $r2 = MFS $s3
+    RETS implicit $s7, implicit $r1
+...
+---
+name: negative_loop
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $r2, $s7
+    successors: %bb.1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r0, $r1, $r2, $s7
+    successors: %bb.1, %bb.2
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r2 = ADD $r2, $r1
+    $r1 = XOR $r1, $r2
+    $r2 = SUB $r2, $r1
+    $r1 = OR $r1, $r2
+    $r2 = AND $r2, $r1
+    $r1 = ADD $r1, $r2
+    $r2 = XOR $r2, $r1
+    $r1 = SUB $r1, $r2
+    $r2 = OR $r2, $r1
+    $r1 = AND $r1, $r2
+    $r1 = ADD $r1, $r2
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...

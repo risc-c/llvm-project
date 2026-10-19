@@ -1,0 +1,596 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-loop-spill-promotion -riscc-loop-spill-hoist=false \
+# RUN:   -run-pass=riscc-sreg-allocator -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' -e 's/\bADDI\b/ADDI32/g' -e 's/\bFRAMEADDR\b/FRAMEADDR32/g' \
+# RUN:   -e 's/size: 2/size: 4/g' -e 's/alignment: 2/alignment: 4/g' -e 's/(s16)/(s32)/g' %s | llc -x mir \
+# RUN:   -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -riscc-loop-spill-promotion -riscc-loop-spill-hoist=false \
+# RUN:   -run-pass=riscc-sreg-allocator -verify-machineinstrs -o - | FileCheck %s
+
+# These guards deliberately keep loop spill traffic. The ordinary S-register
+# allocator may spell that traffic as MFS/MTS, so checks accept either form.
+# The promotion pass must not use a carrier when the value is observed by an
+# unrelated register definition, when the access registers disagree, when the
+# carrier is live at a boundary, or when the frame index is not a private,
+# unordered compiler spill.
+
+# CHECK-LABEL: name: clobber_after_store
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r2, %stack\.0, 0|\$s[2-6] = MTS killed \$r2)}}
+# CHECK:       {{\$r2 = MOV(32)?.*\$r3}}
+
+# CHECK-LABEL: name: different_store_live
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r3, %stack\.0, 0|\$s[2-6] = MTS killed \$r3)}}
+# CHECK:       {{\$r4 = MOV(32)?.*\$r2}}
+
+# A store from another register is legal when the working register is dead
+# after that store. The promotion inserts a reset copy and removes the loop
+# spill traffic; this is the positive companion to different_store_live.
+# CHECK-LABEL: name: other_reg_reset
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   %stack.0
+# CHECK-NOT:   MFS
+# CHECK-NOT:   MTS
+# CHECK:       {{\$r2 = COPY.*\$r3}}
+# CHECK:       bb.2.latch:
+# CHECK-NOT:   %stack.0
+# CHECK-NOT:   MFS
+# CHECK-NOT:   MTS
+# CHECK:       {{\$r2 = COPY.*\$r3}}
+
+# CHECK-LABEL: name: live_in_loop
+# CHECK:       bb.1.loop:
+# CHECK:       liveins: $r0, $r2
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r2, %stack\.0, 0|\$s[2-6] = MTS killed \$r2)}}
+
+# CHECK-LABEL: name: live_out_r2
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       bb.3.exit:
+# CHECK:       liveins: $r2, $s7
+# CHECK:       RETS implicit $s7, implicit $r2
+
+# CHECK-LABEL: name: escaped_frameaddr
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r2, %stack\.0, 0|\$s[2-6] = MTS killed \$r2)}}
+# CHECK:       bb.3.exit:
+# CHECK:       RETS
+
+# CHECK-LABEL: name: volatile_slot
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0 :: \(volatile load|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r2, %stack\.0, 0 :: \(volatile store|\$s[2-6] = MTS killed \$r2)}}
+
+# CHECK-LABEL: name: call_in_loop
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       CALL
+
+# CHECK-LABEL: name: shared_exit
+# CHECK:       bb.2.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r2, %stack\.0, 0|\$s[2-6] = MTS killed \$r2)}}
+# CHECK:       bb.4.exit:
+
+# An otherwise-profitable loop must remain untouched when the function is
+# optnone; this guard is exercised by the pass-level option check.
+# CHECK-LABEL: name: optnone_loop
+# CHECK:       bb.1.loop:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       {{(ST(32)? killed \$r2, %stack\.0, 0|\$s[2-6] = MTS killed \$r2)}}
+
+# CHECK-LABEL: name: debug_slot
+# CHECK:       bb.1.loop:
+# CHECK:       DBG_VALUE $noreg,
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+
+# One invariant load can move without growing the sequence or borrowing R1.
+# CHECK-LABEL: name: hoist_single_reload
+# CHECK:       bb.0.entry:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   %stack.0
+# CHECK-NOT:   MFS
+# CHECK:       $r3 = ADD{{(32)?}} {{(killed )?}}$r2, $r4
+
+# A rarely executed reload does not repay an unconditional preheader load.
+# CHECK-LABEL: name: cold_single_reload
+# CHECK:       bb.2.reload:
+# CHECK:       {{(\$r2 = LD(32)? %stack\.0, 0|\$r2 = MFS \$s[2-6])}}
+# CHECK:       $r3 = ADD{{(32)?}} {{(killed )?}}$r2, $r4
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @clobber_after_store() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @different_store_live() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @other_reg_reset() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @live_in_loop() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @live_out_r2() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @escaped_frameaddr() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @volatile_slot() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @call_in_loop() {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @shared_exit() {
+  entry: br i1 true, label %preheader, label %bypass
+  preheader: br label %loop
+  loop: br label %latch
+  latch: br i1 true, label %loop, label %exit
+  bypass: br label %exit
+  exit: ret void
+  }
+  define void @optnone_loop() noinline optnone {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @debug_slot() !dbg !4 {
+  entry: br label %loop
+  loop: br label %latch
+  latch: br label %exit
+  exit: ret void
+  }
+  define void @hoist_single_reload() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret void
+  }
+  define void @cold_single_reload() {
+  entry: br label %loop
+  loop: br label %reload
+  reload: br label %loop
+  exit: ret void
+  }
+  !llvm.dbg.cu = !{!0}
+  !llvm.module.flags = !{!3}
+  !0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "test", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug)
+  !1 = !DIFile(filename: "loop-spill-negative.c", directory: "/")
+  !2 = !DISubroutineType(types: !{})
+  !3 = !{i32 2, !"Debug Info Version", i32 3}
+  !4 = distinct !DISubprogram(name: "debug_slot", scope: !1, file: !1, line: 1, type: !2, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0)
+  !5 = !DILocalVariable(name: "spill", scope: !4, file: !1, line: 1, type: !6)
+  !6 = !DIBasicType(name: "short", size: 16, encoding: DW_ATE_signed)
+  !7 = !DILocation(line: 1, column: 1, scope: !4)
+...
+---
+name: clobber_after_store
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r3, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r3, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r2 = MOV killed $r3
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $r3, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r2 = MOV killed $r3
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $s7
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: different_store_live
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r3, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = MOV $r2
+    ST killed $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r4 = MOV $r2
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = MOV $r2
+    ST killed $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r4 = MOV $r2
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7, implicit $r4
+...
+---
+name: other_reg_reset
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = MOV killed $r2
+    ST killed $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = MOV killed $r2
+    ST killed $r3, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7
+...
+---
+name: hoist_single_reload
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    ST $r0, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.2.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: cold_single_reload
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    ST $r0, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.2.reload(0x01000000), %bb.3.exit(0x7f000000)
+    BNEZ %bb.2.reload, implicit $r0
+    JMP8 %bb.3.exit
+  bb.2.reload:
+    liveins: $r0, $r1, $r4, $s7
+    successors: %bb.1.loop
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r2, $r4
+    JMP8 %bb.1.loop
+  bb.3.exit:
+    liveins: $r1, $s7
+    RETS implicit $s7, implicit $r1
+...
+---
+name: live_in_loop
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r2, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r2, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $r2, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7
+...
+---
+name: live_out_r2
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r3, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r3, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    liveins: $r2, $s7
+    RETS implicit $s7, implicit $r2
+...
+---
+name: escaped_frameaddr
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r5, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r5 = FRAMEADDR %stack.0, 0
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r5, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $r5, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7
+...
+---
+name: volatile_slot
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (volatile store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (volatile load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (volatile store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (volatile load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (volatile store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7
+...
+---
+name: call_in_loop
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  hasCalls: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $r3, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r3, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    CALL $r3, csr_riscc, implicit-def $s7, implicit-def $r0
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7
+...
+---
+name: shared_exit
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1.preheader, %bb.3.bypass
+    BNEZ %bb.3.bypass, implicit $r0
+    JMP8 %bb.1.preheader
+  bb.1.preheader:
+    liveins: $r0, $r1, $s7
+    successors: %bb.2.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.loop
+  bb.2.loop:
+    liveins: $r0, $s7
+    successors: %bb.2.loop(0x7f000000), %bb.4.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.2.loop, implicit $r0
+    JMP8 %bb.4.exit
+  bb.3.bypass:
+    successors: %bb.4.exit
+    JMP8 %bb.4.exit
+  bb.4.exit:
+    liveins: $s7
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: optnone_loop
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7
+...
+---
+name: debug_slot
+tracksRegLiveness: true
+noVRegs: true
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1.loop
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $s7
+    successors: %bb.2.latch
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    DBG_VALUE %stack.0, 0, !5, !DIExpression(), debug-location !7
+    $r2 = ADDI killed $r2, 1
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    JMP8 %bb.2.latch
+  bb.2.latch:
+    liveins: $r0, $s7
+    successors: %bb.1.loop(0x7f000000), %bb.3.exit(0x01000000)
+    $r2 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r2 = ADDI killed $r2, 2
+    ST killed $r2, %stack.0, 0 :: (store (s16) into %stack.0)
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.3.exit
+  bb.3.exit:
+    RETS implicit $s7

@@ -42,28 +42,30 @@ define i16 @callee_saved_tail(i16 %x) {
   ret i16 %result
 }
 
-; The fourth argument is stack-passed, so this is a normal call rather than a
-; sibling call. Direct targets consistently use the caller-saved r0 scratch.
+; The fourth argument is already in the correct incoming stack slot. No frame,
+; stack copying or return-link preservation is needed to forward it unchanged.
 define i16 @direct_tail_four_args(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; CHECK-LABEL: direct_tail_four_args:
-; FULL:        jall s7, four_args
+; CHECK-NOT:   addi r7,
+; CHECK-NOT:   ld r
+; CHECK-NOT:   st r
+; FULL:        jall s0, four_args
 ; MIN:         ldi16 r0, four_args
-; MIN-NEXT:    jalr s7, r0
+; MIN-NEXT:    jalr s0, r0
 ; NANO:        ldi16 r0, four_args
-; NANO-NEXT:   jalr r6, r0
-; NANO:        jalr r0, r0
+; NANO-NEXT:   jalr r0, r0
   %result = tail call i16 @four_args(i16 %a, i16 %b, i16 %c, i16 %d)
   ret i16 %result
 }
 
-define i16 @reject_indirect_tail(ptr %callee_ptr, i16 %x) {
-; CHECK-LABEL: reject_indirect_tail:
-; FULL:        jalr s7, r{{[0-6]}}
-; MIN:         jalr s7, r{{[0-6]}}
-; NANO:        jalr r6, r{{[0-6]}}
-; SYS:         ret s7
-; MIN:         ret s7
-; NANO:        jalr r0, r{{[0-6]}}
+define i16 @indirect_tail(ptr %callee_ptr, i16 %x) {
+; CHECK-LABEL: indirect_tail:
+; CHECK:       mov r3, r1
+; CHECK:       mov r1, r2
+; FULL:        jalr s0, r3
+; MIN:         jalr s0, r3
+; NANO:        jalr r0, r3
+; CHECK-NOT:   ret
   %result = tail call i16 %callee_ptr(i16 %x)
   ret i16 %result
 }
@@ -102,22 +104,17 @@ define i16 @call_then_tail(i16 %x) {
   ret i16 %result
 }
 
-define i16 @reject_large_indirect_tail(ptr %callee_ptr, i16 %x) {
-; CHECK-LABEL: reject_large_indirect_tail:
-; CHECK:       ldi r{{[0-6]}}, 20{{[46]}}
+; r3 keeps the target live across the large epilogue's r0 scratch use.
+define i16 @large_indirect_tail(ptr %callee_ptr, i16 %x) {
+; CHECK-LABEL: large_indirect_tail:
+; CHECK:       ldi r0, 200
 ; CHECK:       sub r7, r7,
-; FULL:        jalr s7, r{{[0-6]}}
-; MIN:         jalr s7, r{{[0-6]}}
-; NANO:        jalr r6, r{{[0-6]}}
-; FULL:        ldi r{{[0-6]}}, 20{{[46]}}
-; FULL:        add r7, r7,
-; MIN:         ldi r{{[0-6]}}, 20{{[46]}}
-; MIN:         add r7, r7,
-; NANO:        ldi r6, 204
-; NANO-NEXT:   add r7, r7, r6
-; FULL-NEXT:   ret s7
-; MIN-NEXT:    ret s7
-; NANO-NEXT:   jalr r0, r{{[0-6]}}
+; CHECK:       mov r3, r1
+; CHECK:       ldi r0, 200
+; CHECK-NEXT:  add r7, r7, r0
+; FULL-NEXT:   jalr s0, r3
+; MIN-NEXT:    jalr s0, r3
+; NANO-NEXT:   jalr r0, r3
   %frame = alloca [100 x i16], align 2
   %slot = getelementptr [100 x i16], ptr %frame, i16 0, i16 99
   store volatile i16 %x, ptr %slot
@@ -126,14 +123,12 @@ define i16 @reject_large_indirect_tail(ptr %callee_ptr, i16 %x) {
   ret i16 %result
 }
 
-define i16 @reject_stack_tail(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e) {
-; CHECK-LABEL: reject_stack_tail:
-; FULL:        jall s7, five_args
-; FULL:        ret s7
-; MIN:         jalr s7,
-; MIN:         ret s7
-; NANO:        jalr r6,
-; NANO:        jalr r0, r{{[0-6]}}
+define i16 @forward_stack_tail(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e) {
+; CHECK-LABEL: forward_stack_tail:
+; CHECK-NOT:   addi r7,
+; FULL:        jall s0, five_args
+; MIN:         jalr s0, r0
+; NANO:        jalr r0, r0
   %result = tail call i16 @five_args(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e)
   ret i16 %result
 }
@@ -144,9 +139,31 @@ define i16 @reject_indirect_four_args(
 ; FULL:        jalr s7, r{{[0-6]}}
 ; MIN:         jalr s7, r{{[0-6]}}
 ; NANO:        jalr r6, r{{[0-6]}}
-; SYS:         ret s7
-; MIN:         ret s7
+; SYS:         jalr s0, r0
+; MIN:         jalr s0, r0
 ; NANO:        jalr r0, r{{[0-6]}}
   %result = tail call i16 %callee_ptr(i16 %a, i16 %b, i16 %c, i16 %d)
   ret i16 %result
+}
+
+define void @discard_return(i16 %x) {
+; CHECK-LABEL: discard_return:
+; FULL: jall s0, callee
+; MIN: jalr s0, r0
+; NANO: jalr r0, r0
+; CHECK-NOT: ret
+; CHECK: .Lfunc_end
+  %result = tail call i16 @callee(i16 %x)
+  ret void
+}
+
+; All three argument registers are occupied, so the indirect target cannot
+; use r3 across the epilogue and must remain an ordinary call.
+define i16 @reject_indirect_three_args(ptr %fn, i16 %a, i16 %b, i16 %c) {
+; CHECK-LABEL: reject_indirect_three_args:
+; FULL: jalr s7,
+; MIN: jalr s7,
+; NANO: jalr r6,
+  %r = tail call i16 %fn(i16 %a, i16 %b, i16 %c)
+  ret i16 %r
 }

@@ -1,0 +1,202 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -riscc-join-values -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/MOV32/MOV/g' -e 's/ADDI32/ADDI/g' -e 's/LDI32/LDI/g' -e 's/CALL32/CALL/g' -e 's/(s32)/(s16)/g' %s | \
+# RUN:   llc -x mir -mtriple=riscc-none-elf -mcpu=full -riscc-join-values -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+
+# Join propagation may use only facts available on every processed forward
+# predecessor.  Exact common values and equal base/offset relations are safe;
+# distinct definitions, clobbers, calls, and unknown backedges are not.
+
+# CHECK-LABEL: name: join_equal_source
+# CHECK:       bb.3:
+# CHECK-NOT:   $r5 = MOV{{(32)?}} $r4
+# CHECK:       RETS
+# CHECK-LABEL: name: join_equal_offset
+# CHECK:       bb.3:
+# CHECK:       $r4 = ADDI{{(32)?}} {{(killed )?}}$r4, -4
+# CHECK-NOT:   $r4 = MOV{{(32)?}} $r5
+# CHECK:       RETS
+# CHECK-LABEL: name: join_distinct_source
+# CHECK:       bb.3:
+# CHECK:       $r5 = MOV{{(32)?}} $r4
+# CHECK:       RETS
+# CHECK-LABEL: name: join_clobber
+# CHECK:       bb.3:
+# CHECK:       $r5 = MOV{{(32)?}} $r4
+# CHECK:       RETS
+# CHECK-LABEL: name: join_call
+# CHECK:       bb.3:
+# CHECK:       $r5 = MOV{{(32)?}} $r4
+# CHECK:       RETS
+# CHECK-LABEL: name: join_unknown_backedge
+# CHECK:       bb.1:
+# CHECK:       $r5 = MOV{{(32)?}} $r4
+# CHECK:       RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define i32 @join_equal_source() { ret i32 0 }
+  define i32 @join_equal_offset() { ret i32 0 }
+  define i32 @join_distinct_source() { ret i32 0 }
+  define i32 @join_clobber() { ret i32 0 }
+  define i32 @join_call() { ret i32 0 }
+  define i32 @join_unknown_backedge() { ret i32 0 }
+...
+---
+name: join_equal_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.2:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $r4, $r5, $s7
+    $r5 = MOV32 $r4
+    RETS implicit $s7, implicit $r4, implicit $r5
+...
+---
+name: join_equal_offset
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $r2, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $r2, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r4 = ADDI32 $r4, 4
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.2:
+    liveins: $r1, $r2, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r2
+    $r4 = ADDI32 $r4, 4
+    $r5 = MOV32 $r2
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $r2, $r4, $r5, $s7
+    $r4 = ADDI32 $r4, -4
+    $r4 = MOV32 $r5
+    RETS implicit $s7, implicit $r4, implicit $r5
+...
+---
+name: join_distinct_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $r2, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $r2, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r5 = MOV32 $r2
+    JMP8 %bb.3
+  bb.2:
+    liveins: $r1, $r2, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r2
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $r2, $r4, $r5, $s7
+    $r5 = MOV32 $r4
+    RETS implicit $s7, implicit $r4, implicit $r5
+...
+---
+name: join_clobber
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r4 = LDI32 9
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.2:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $r4, $r5, $s7
+    $r5 = MOV32 $r4
+    RETS implicit $s7, implicit $r4, implicit $r5
+...
+---
+name: join_call
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $r6, $s7
+    successors: %bb.1, %bb.2
+    BNEZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $r1, $r6, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    CALL32 $r6, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r4 = LDI32 7
+    $r5 = LDI32 8
+    JMP8 %bb.3
+  bb.2:
+    liveins: $r1, $s7
+    successors: %bb.3
+    $r4 = MOV32 $r1
+    $r5 = MOV32 $r1
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $r4, $r5, $s7
+    $r5 = MOV32 $r4
+    RETS implicit $s7, implicit $r4, implicit $r5
+...
+---
+name: join_unknown_backedge
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0:
+    liveins: $r0, $r1, $s7
+    successors: %bb.1
+    $r4 = MOV32 $r1
+    $r5 = MOV32 $r1
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r0, $r1, $r4, $r5, $s7
+    successors: %bb.1, %bb.2
+    $r5 = MOV32 $r4
+    BNEZ %bb.1, implicit $r0
+  bb.2:
+    liveins: $r4, $r5, $s7
+    RETS implicit $s7, implicit $r4, implicit $r5
+...

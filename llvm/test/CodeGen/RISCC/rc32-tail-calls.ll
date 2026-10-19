@@ -1,6 +1,7 @@
 ; REQUIRES: riscc-registered-target
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s --check-prefix=LONG
-; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s --check-prefixes=LONG,SYS
+; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -mattr=+rc32 -verify-machineinstrs < %s | FileCheck %s \
+; RUN:   --check-prefixes=LONG,SYS
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+rc32 -verify-machineinstrs < %s -o /dev/null
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=min -mattr=+rc32 -filetype=obj < %s -o %t
 ; RUN: llvm-readobj -r %t | FileCheck %s --check-prefix=MIN-RELOC
@@ -79,12 +80,13 @@ define i32 @callee_saved_tail(i32 %value) {
 
 ; The backend emits internal functions before externally visible ones.
 ; LONG:       local_callee:
-; LONG:       ret s7
-; LONG-NOT:   ret s3
+; LONG:       ret s3
+; LONG-NOT:   ret s7
 define i32 @local_call(i32 %value) {
 ; LONG-LABEL: local_call:
 ; LONG-DAG:   ldpc r0, [[LOCAL:.Ltmp[0-9]+]]
 ; SYS-DAG:    .reloc {{.*}}, R_RISCC_RELAX_CALL, [[LOCAL]]
+; LONG:       jalr s3, r0
 ; LONG:       [[LOCAL]]:
 ; LONG-NEXT:  .long call_target(local_callee)
   %result = call i32 @local_callee(i32 %value)

@@ -1,0 +1,214 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-synthesize-constants=false -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/LDI32/LDI/g' -e 's/ADDI32/ADDI/g' -e 's/CMPI32/CMPI/g' -e 's/ST32/ST/g' -e 's/CALL32/CALL/g' \
+# RUN:   -e 's/(s32)/(s16)/g' -e 's/i32 /i16 /g' %s | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -riscc-synthesize-constants=false -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# Both native widths can form a nearby literal without a second load.
+# CHECK-LABEL: name: update_destination
+# CHECK: $r1 = LDPC %const.0
+# CHECK: ST{{(32)?}} $r1
+# CHECK-NEXT: $r1 = ADDI{{(32)?}} {{(killed )?}}renamable $r1, 7
+# CHECK-NOT: LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: compare_destination
+# CHECK: $r2 = LDPC %const.0
+# CHECK-NEXT: CMPI{{(32)?}} {{(killed )?}}renamable $r2, -7, implicit-def $r0
+# CHECK-NOT: LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: compare_boundary
+# CHECK: $r2 = LDPC %const.0
+# CHECK-NEXT: CMPI{{(32)?}} {{(killed )?}}renamable $r2, -128, implicit-def $r0
+# CHECK: RETS
+
+# No extra copy may be introduced, and CMPI's negated delta must fit.
+# CHECK-LABEL: name: wrong_destination
+# CHECK-COUNT-2: LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: compare_out_of_range
+# CHECK-COUNT-2: LDPC
+# CHECK: RETS
+
+# Calls forget clobbered values. Ordered memory and frame setup are untouched.
+# CHECK-LABEL: name: call_boundary
+# CHECK: CALL{{(32)?}}
+# CHECK-NEXT: $r0 = LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: ordered_load
+# CHECK-COUNT-2: LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: frame_load
+# CHECK: $r1 = frame-setup LDPC
+# CHECK: RETS
+# CHECK-LABEL: name: speed_policy
+# CHECK-COUNT-2: LDPC
+# CHECK: RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @update_destination() optsize { ret void }
+  define void @compare_destination() optsize { ret void }
+  define void @compare_boundary() optsize { ret void }
+  define void @wrong_destination() optsize { ret void }
+  define void @compare_out_of_range() optsize { ret void }
+  define void @call_boundary() optsize { ret void }
+  define void @ordered_load() optsize { ret void }
+  define void @frame_load() optsize { ret void }
+  define void @speed_policy() { ret void }
+...
+---
+name: update_destination
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $r3, $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    ST32 $r1, $r3, 0 :: (store (s32))
+    $r1 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: compare_destination
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r0, implicit $r2
+...
+---
+name: compare_boundary
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 828'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r0, implicit $r2
+...
+---
+name: wrong_destination
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: compare_out_of_range
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 572'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r0, implicit $r2
+...
+---
+name: call_boundary
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $r1, $s7
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    CALL32 $r1, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r0
+...
+---
+name: ordered_load
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = LDPC %const.1 :: (volatile load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: frame_load
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r1 = frame-setup LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r1
+...
+---
+name: speed_policy
+tracksRegLiveness: true
+constants:
+  - id: 0
+    value: 'i32 700'
+    alignment: 4
+  - id: 1
+    value: 'i32 707'
+    alignment: 4
+body: |
+  bb.0:
+    liveins: $s7
+    $r2 = LDPC %const.0 :: (load (s32) from constant-pool)
+    $r0 = LDPC %const.1 :: (load (s32) from constant-pool)
+    RETS implicit $s7, implicit $r0, implicit $r2
+...

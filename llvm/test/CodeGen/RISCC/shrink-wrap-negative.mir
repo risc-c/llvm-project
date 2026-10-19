@@ -1,0 +1,85 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-shrink-wrap=true -run-pass=shrink-wrap -verify-machineinstrs %s \
+# RUN:   -o - | FileCheck %s
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-shrink-wrap=true -run-pass=shrink-wrap,prolog-epilog \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=PEI
+
+# A call block with R0 live-in is not a legal target-specific save point.  The
+# shrink-wrap pass must reject the opportunity, leaving PEI to use the entry.
+# CHECK-LABEL: name: r0_livein_save
+# CHECK-NOT:   savePoint:
+# CHECK:       bb.1:
+# CHECK-NOT:   restorePoint:
+
+# The same call is followed by a branch, so its block is not a valid restore
+# point.  The restore must be deferred to the post-dominating return block.
+# CHECK-LABEL: name: nonreturn_restore
+# CHECK:       savePoint:
+# CHECK-NEXT:    - point: '%bb.1'
+# CHECK:       restorePoint:
+# CHECK-NEXT:    - point: '%bb.2'
+
+# PEI-LABEL: name: r0_livein_save
+# PEI:       bb.0:
+# PEI:       $r7 = frame-setup ADDI $r7, -2
+# PEI:       $r0 = frame-setup MFS $s7
+# PEI:       frame-setup ST killed $r0, $r7, 0
+# PEI:       bb.1:
+# PEI:       CALL16 @callee
+# PEI:       $r0 = frame-destroy LD $r7, 0
+# PEI:       $r7 = frame-destroy ADDI $r7, 2
+# PEI:       RETS
+# PEI:       bb.2:
+# PEI:       $r0 = frame-destroy LD $r7, 0
+# PEI-NEXT:  $r7 = frame-destroy ADDI $r7, 2
+# PEI:       RETS
+
+--- |
+  declare void @callee()
+  define void @r0_livein_save() { ret void }
+  define void @nonreturn_restore() { ret void }
+---
+name: r0_livein_save
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  hasCalls: true
+  isCalleeSavedInfoValid: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r1, $s7
+    CMPI $r1, 0, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.1:
+    liveins: $r0, $r1, $s7
+    $r1 = COPY $r0
+    CALL16 @callee, csr_riscc, implicit-def $s7, implicit-def $r0
+    RETS implicit $s7
+  bb.2:
+    liveins: $r1, $s7
+    RETS implicit $s7
+...
+
+---
+name: nonreturn_restore
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  hasCalls: true
+  isCalleeSavedInfoValid: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $r1, $s7
+    JMP8 %bb.1
+  bb.1:
+    successors: %bb.3
+    liveins: $r1, $s7
+    CALL16 @callee, csr_riscc, implicit-def $s7, implicit-def $r0
+    JMP8 %bb.3
+  bb.3:
+    liveins: $r1, $s7
+    RETS implicit $s7
+...

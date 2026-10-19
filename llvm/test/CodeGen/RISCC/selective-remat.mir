@@ -1,0 +1,127 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=greedy,virtregrewriter -verify-machineinstrs %s -o - | FileCheck %s \
+# RUN:   --check-prefixes=ON,CHECK
+# RUN: llc -mtriple=riscc -mcpu=full -riscc-selective-remat=false -run-pass=greedy,virtregrewriter \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=OFF,CHECK
+# RUN: sed -e 's/\bgpr\b/gpr32/g' -e 's/\bFRAMEADDR\b/FRAMEADDR32/g' -e 's/\bCALL16\b/CALL32_LITERAL/g' \
+# RUN:   -e 's/alignment: 2/alignment: 4/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 \
+# RUN:   -run-pass=greedy,virtregrewriter -verify-machineinstrs -o - | FileCheck %s --check-prefixes=ON,CHECK
+# RUN: sed 's/FRAMEADDR %%stack.0, 0/LDI16 4660/g' %s | llc -x mir -mtriple=riscc -mcpu=full \
+# RUN:   -run-pass=greedy,virtregrewriter -verify-machineinstrs -o - | FileCheck %s --check-prefix=IMM
+
+# All preserved GPRs are occupied. Reconstructing one cheap address after the
+# call removes its store/reload and spill slot. No cheap-as-a-move promise is
+# needed: the final frame address still expands to MOV and possibly ADDI.
+# ON-LABEL: name: small_frame
+# ON-NOT: type: spill-slot
+# ON: body:
+# ON-NOT: FRAMEADDR
+# ON: CALL{{(16|32_LITERAL)}} @opaque
+# ON-NEXT: renamable $r1 = FRAMEADDR{{(32)?}} %stack.0, 0
+# OFF-LABEL: name: small_frame
+# OFF: type: spill-slot
+# OFF: FRAMEADDR %stack.0, 0
+# OFF-NEXT: ST
+# OFF-NEXT: CALL16 @opaque
+# OFF-NEXT: $r1 = LD
+# IMM-LABEL: name: small_frame
+# IMM-NOT: type: spill-slot
+# IMM: body:
+# IMM-NOT: LDI16
+# IMM: CALL16 @opaque
+# IMM-NEXT: renamable $r1 = LDI16 4660
+
+# A large frame can require more than two instructions, including an RC32
+# literal. Keep ordinary allocation and spill-cache handling in charge.
+# CHECK-LABEL: name: large_frame
+# CHECK: type: spill-slot
+# CHECK: FRAMEADDR{{(32)?}} %stack.0, 0
+# CHECK-NEXT: ST{{(32)?}}
+# CHECK-NEXT: CALL{{(16|32_LITERAL)}} @opaque
+# CHECK-NEXT: $r1 = LD{{(32)?}}
+
+# Do not replicate the address at several uses, or at a different frequency.
+# CHECK-LABEL: name: repeated_address
+# CHECK: FRAMEADDR{{(32)?}} %stack.0, 0
+# CHECK: CALL{{(16|32_LITERAL)}} @opaque
+# CHECK-NOT: FRAMEADDR
+# CHECK: RETS
+# CHECK-LABEL: name: different_block
+# CHECK: FRAMEADDR{{(32)?}} %stack.0, 0
+# CHECK: CALL{{(16|32_LITERAL)}} @opaque
+# CHECK: bb.1:
+# CHECK-NOT: FRAMEADDR
+# CHECK: RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  declare void @opaque()
+  define ptr @small_frame() { ret ptr null }
+  define ptr @large_frame() { ret ptr null }
+  define ptr @repeated_address() { ret ptr null }
+  define ptr @different_block() { ret ptr null }
+...
+---
+name: small_frame
+tracksRegLiveness: true
+frameInfo:
+  hasCalls: true
+stack:
+  - { id: 0, size: 8, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r4, $r5, $r6
+    %0:gpr = FRAMEADDR %stack.0, 0
+    CALL16 @opaque, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = COPY %0
+    RETS implicit $s7, implicit $r1, implicit $r4, implicit $r5, implicit $r6
+...
+---
+name: large_frame
+tracksRegLiveness: true
+frameInfo:
+  hasCalls: true
+stack:
+  - { id: 0, size: 512, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r4, $r5, $r6
+    %0:gpr = FRAMEADDR %stack.0, 0
+    CALL16 @opaque, csr_riscc, implicit-def $s7, implicit-def $r0
+    $r1 = COPY %0
+    RETS implicit $s7, implicit $r1, implicit $r4, implicit $r5, implicit $r6
+...
+---
+name: repeated_address
+tracksRegLiveness: true
+frameInfo:
+  hasCalls: true
+stack:
+  - { id: 0, size: 8, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r4, $r5, $r6
+    %0:gpr = FRAMEADDR %stack.0, 0
+    $r1 = COPY %0
+    CALL16 @opaque, csr_riscc, implicit-def $s7, implicit-def $r0, implicit $r1
+    $r1 = COPY %0
+    RETS implicit $s7, implicit $r1, implicit $r4, implicit $r5, implicit $r6
+...
+---
+name: different_block
+tracksRegLiveness: true
+frameInfo:
+  hasCalls: true
+stack:
+  - { id: 0, size: 8, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r4, $r5, $r6
+    %0:gpr = FRAMEADDR %stack.0, 0
+    CALL16 @opaque, csr_riscc, implicit-def $s7, implicit-def $r0
+    JMP8 %bb.1
+  bb.1:
+    liveins: $r4, $r5, $r6
+    $r1 = COPY %0
+    RETS implicit $s7, implicit $r1, implicit $r4, implicit $r5, implicit $r6
+...

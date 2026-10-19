@@ -1,0 +1,481 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-loop-branch-register -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=RC16
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -riscc-loop-branch-register=false -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' -e 's/\bADDI\b/ADDI32/g' -e 's/\bADD\b/ADD32/g' \
+# RUN:   -e 's/\bCALL\b/CALL32/g' -e 's/\bMOV\b/MOV32/g' -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc-none-elf \
+# RUN:   -mcpu=full -mattr=+rc32 -riscc-loop-branch-register -run-pass=riscc-postra-optimize -verify-machineinstrs \
+# RUN:   -o - | FileCheck %s --check-prefix=RC32
+
+# A carried branch value normally gets copied to R0 immediately before the
+# conditional branch.  The enabled pass swaps the carrier and R0 throughout
+# this loop, removes that copy, and puts one copy in the unique entry block.
+# The ADDI counter is tied, while the load/add/store sequence uses R0 as a
+# temporary and therefore exercises both directions of the swap.
+
+# RC16-LABEL: name: branch_register
+# RC16:       bb.0.entry:
+# RC16:       $r0 = MOV {{(killed )?}}$r2
+# RC16:       bb.1.loop:
+# RC16-NOT:   COPY
+# RC16:       {{(renamable )?}}$r0 = ADDI {{(killed )?}}{{(renamable )?}}$r0, 1
+# RC16:       {{(renamable )?}}$r2 = LD {{(killed )?}}{{(renamable )?}}$r4, 0
+# RC16:       {{(renamable )?}}$r2 = ADD {{(killed )?}}{{(renamable )?}}$r2, {{(killed )?}}{{(renamable )?}}$r0
+# RC16:       ST {{(killed )?}}{{(renamable )?}}$r2, {{(killed )?}}{{(renamable )?}}$r4, 0
+# RC16:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+
+# OFF-LABEL: name: branch_register
+# OFF:       bb.0.entry:
+# OFF-NOT:   COPY
+# OFF:       bb.1.loop:
+# OFF:       renamable $r2 = ADDI {{(killed )?}}renamable $r2, 1
+# OFF:       {{(renamable )?}}$r0 = MOV {{(killed )?}}{{(renamable )?}}$r2
+# OFF:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+
+# RC32-LABEL: name: branch_register
+# RC32:       bb.0.entry:
+# RC32:       $r0 = MOV32 {{(killed )?}}$r2
+# RC32:       bb.1.loop:
+# RC32-NOT:   COPY
+# RC32:       {{(renamable )?}}$r0 = ADDI32 {{(killed )?}}{{(renamable )?}}$r0, 1
+# RC32:       {{(renamable )?}}$r2 = LD32 {{(killed )?}}{{(renamable )?}}$r4, 0
+# RC32:       {{(renamable )?}}$r2 = ADD32 {{(killed )?}}{{(renamable )?}}$r2, {{(killed )?}}{{(renamable )?}}$r0
+# RC32:       ST32 {{(killed )?}}{{(renamable )?}}$r2, {{(killed )?}}{{(renamable )?}}$r4, 0
+# RC32:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+
+# The one-iteration-sized loop remains legal: one copy is removed and one is
+# added, so the total instruction count is unchanged.
+# RC16-LABEL: name: branch_register_size
+# RC16:       bb.0.entry:
+# RC16:       $r0 = MOV {{(killed )?}}$r2
+# RC16:       bb.1.loop:
+# RC16-NOT:   COPY
+# RC16:       {{(renamable )?}}$r0 = ADDI {{(killed )?}}{{(renamable )?}}$r0, 1
+# RC16:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+# RC32-LABEL: name: branch_register_size
+# RC32:       bb.0.entry:
+# RC32:       $r0 = MOV32 {{(killed )?}}$r2
+# RC32:       bb.1.loop:
+# RC32-NOT:   COPY
+# RC32:       {{(renamable )?}}$r0 = ADDI32 {{(killed )?}}{{(renamable )?}}$r0, 1
+# RC32:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+
+# All of these cases retain their loop copy because one of the conservative
+# eligibility conditions is violated.
+# RC16-LABEL: name: fixed_r0_op
+# RC16:       bb.0.entry:
+# RC16-NOT:   COPY
+# RC16:       bb.1.loop:
+# RC16:       {{.*}}ADD {{.*}}$r0, {{.*}}$r2
+# RC16:       $r0 = COPY
+# RC16-LABEL: name: carrier_liveout
+# RC16:       bb.0.entry:
+# RC16-NOT:   COPY
+# RC16:       bb.1.loop:
+# RC16:       $r0 = COPY
+# RC16-LABEL: name: r0_livein
+# RC16:       bb.0.entry:
+# RC16-NOT:   COPY
+# RC16:       bb.1.loop:
+# RC16:       $r0 = COPY
+# RC16-LABEL: name: multi_entry
+# RC16:       bb.0.entry:
+# RC16:       BNEZ %bb.3, implicit $r0
+# RC16:       JMP8 %bb.[[MULTI_PH:[0-9]+]]
+# RC16:       bb.[[MULTI_PH]]:
+# RC16:       $r0 = MOV {{(killed )?}}$r2
+# RC16:       bb.1.loop:
+# RC16-NOT:   MOV
+# RC16:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+# RC16:       bb.2.exit:
+# RC16:       liveins: $r4, $s7
+# RC16:       bb.3.alt:
+# RC16:       JMP8 %bb.2
+# RC16-LABEL: name: two_entries
+# RC16:       bb.0.entry:
+# RC16:       BNEZ %bb.3, implicit $r0
+# RC16:       JMP8 %bb.[[TWO_PH:[0-9]+]]
+# RC16:       bb.[[TWO_PH]]:
+# RC16:       $r0 = MOV {{(killed )?}}$r2
+# RC16:       bb.1.loop:
+# RC16-NOT:   MOV
+# RC16:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+# RC16:       bb.2.exit:
+# RC16:       bb.3.alt:
+# RC16:       JMP8 %bb.[[TWO_PH]]
+# RC16-LABEL: name: has_call
+# RC16:       bb.0.entry:
+# RC16-NOT:   COPY
+# RC16:       bb.1.loop:
+# RC16:       CALL
+# RC16:       $r0 = COPY
+# RC16-LABEL: name: undef_source
+# RC16:       bb.0.entry:
+# RC16-NOT:   COPY
+# RC16:       bb.1.loop:
+# RC16:       MOV
+
+# RC32-LABEL: name: fixed_r0_op
+# RC32:       bb.0.entry:
+# RC32-NOT:   COPY
+# RC32:       bb.1.loop:
+# RC32:       {{.*}}ADD32 {{.*}}$r0, {{.*}}$r2
+# RC32:       $r0 = COPY
+# RC32-LABEL: name: carrier_liveout
+# RC32:       bb.0.entry:
+# RC32-NOT:   COPY
+# RC32:       bb.1.loop:
+# RC32:       $r0 = COPY
+# RC32-LABEL: name: r0_livein
+# RC32:       bb.0.entry:
+# RC32-NOT:   COPY
+# RC32:       bb.1.loop:
+# RC32:       $r0 = COPY
+# RC32-LABEL: name: multi_entry
+# RC32:       bb.0.entry:
+# RC32:       BNEZ %bb.3, implicit $r0
+# RC32:       JMP8 %bb.[[MULTI_PH:[0-9]+]]
+# RC32:       bb.[[MULTI_PH]]:
+# RC32:       $r0 = MOV32 {{(killed )?}}$r2
+# RC32:       bb.1.loop:
+# RC32-NOT:   MOV32
+# RC32:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+# RC32:       bb.2.exit:
+# RC32:       liveins: $r4, $s7
+# RC32:       bb.3.alt:
+# RC32:       JMP8 %bb.2
+# RC32-LABEL: name: two_entries
+# RC32:       bb.0.entry:
+# RC32:       BNEZ %bb.3, implicit $r0
+# RC32:       JMP8 %bb.[[TWO_PH:[0-9]+]]
+# RC32:       bb.[[TWO_PH]]:
+# RC32:       $r0 = MOV32 {{(killed )?}}$r2
+# RC32:       bb.1.loop:
+# RC32-NOT:   MOV32
+# RC32:       BNEZ %bb.1, implicit {{(killed )?}}$r0
+# RC32:       bb.2.exit:
+# RC32:       bb.3.alt:
+# RC32:       JMP8 %bb.[[TWO_PH]]
+# RC32-LABEL: name: has_call
+# RC32:       bb.0.entry:
+# RC32-NOT:   COPY
+# RC32:       bb.1.loop:
+# RC32:       CALL32
+# RC32:       $r0 = COPY
+# RC32-LABEL: name: undef_source
+# RC32:       bb.0.entry:
+# RC32-NOT:   COPY
+# RC32:       bb.1.loop:
+# RC32:       MOV32
+
+# R4 has not been saved: the caller's value must survive even though the
+# exit's explicit live-in list omits it. Swapping R0 temporaries into R4
+# would introduce a new callee-saved clobber after prologue insertion.
+# RC16-LABEL: name: pristine_carrier
+# RC16:       bb.0.entry:
+# RC16-NOT:   MOV
+# RC16:       bb.1.loop:
+# RC16:       {{(renamable )?}}$r0 = LD
+# RC16:       {{(renamable )?}}$r0 = MOV {{(killed )?}}{{(renamable )?}}$r4
+# RC32-LABEL: name: pristine_carrier
+# RC32:       bb.0.entry:
+# RC32-NOT:   MOV32
+# RC32:       bb.1.loop:
+# RC32:       {{(renamable )?}}$r0 = LD32
+# RC32:       {{(renamable )?}}$r0 = MOV32 {{(killed )?}}{{(renamable )?}}$r4
+
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @branch_register() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @branch_register_size() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @fixed_r0_op() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @carrier_liveout() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @r0_livein() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @multi_entry() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  alt: br label %exit
+  }
+  define i16 @two_entries() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  alt: br label %loop
+  }
+  define i16 @has_call() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @undef_source() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+  define i16 @pristine_carrier() {
+  entry: br label %loop
+  loop: br label %exit
+  exit: ret i16 0
+  }
+...
+---
+name: branch_register
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    renamable $r0 = MOV killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7
+...
+---
+name: branch_register_size
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r2, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    $r0 = COPY killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: fixed_r0_op
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    renamable $r1 = ADD $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = COPY killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7
+...
+---
+name: carrier_liveout
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = COPY killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r2, $r4, $s7
+    RETS implicit $s7, implicit killed $r2
+...
+---
+name: r0_livein
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r0, $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = COPY killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7
+...
+---
+name: multi_entry
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.3.alt
+    BNEZ %bb.3.alt, implicit $r0
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = COPY killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7
+  bb.3.alt:
+    successors: %bb.2.exit
+    JMP8 %bb.2.exit
+...
+---
+name: two_entries
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r0, $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.3.alt
+    BNEZ %bb.3.alt, implicit $r0
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = COPY killed renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7
+  bb.3.alt:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+...
+---
+name: has_call
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r4, $r6, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r4, $r6, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r4 = ADDI renamable $r4, 1
+    CALL $r6, csr_riscc, implicit-def $s7, implicit-def $r0
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r4
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    $r0 = COPY killed renamable $r4
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: undef_source
+tracksRegLiveness: true
+noVRegs: true
+body: |
+  bb.0.entry:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r2 = ADDI renamable $r2, 1
+    renamable $r0 = LD renamable $r4, 0 :: (load (s16))
+    renamable $r0 = ADD renamable $r0, renamable $r2
+    ST killed renamable $r0, renamable $r4, 0 :: (store (s16))
+    renamable $r0 = MOV killed undef renamable $r2
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $r4, $s7
+    RETS implicit $s7
+...
+---
+name: pristine_carrier
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  isCalleeSavedInfoValid: true
+body: |
+  bb.0.entry:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop, %bb.2.exit
+    renamable $r0 = LD renamable $r2, 0 :: (load (s16))
+    renamable $r1 = ADD renamable $r0, renamable $r4
+    ST killed renamable $r1, renamable $r2, 0 :: (store (s16))
+    renamable $r0 = MOV killed renamable $r4
+    BNEZ %bb.1.loop, implicit killed $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...

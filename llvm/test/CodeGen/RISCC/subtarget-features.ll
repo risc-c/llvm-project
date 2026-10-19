@@ -18,14 +18,14 @@
 ; CHECK-LABEL: soft_mul:
 ; CHECK-NOT:   mul {{r[0-7]}}
 ; CHECK:       __mulhi3
-; CHECK:       ret s7
+; CHECK:       jalr s0, r0
 ; CHECK-LABEL: hard_mul:
 ; CHECK:       mul {{r[0-7]}}
 ; CHECK-NEXT:  ret s7
 ; CHECK-LABEL: min_mul:
 ; CHECK-NOT:   mul {{r[0-7]}}
 ; CHECK:       __mulhi3
-; CHECK:       ret s7
+; CHECK:       jalr s0, r0
 ; ABI: RISC-C function target attributes cannot change the ABI
 
 ;--- features.ll

@@ -1,0 +1,67 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-postra-optimize -verify-machineinstrs %s -o - | FileCheck %s \
+# RUN:   --check-prefix=RC16
+# RUN: sed 's/LDI16 32768/LDPC %const.0 :: (load (s32) from constant-pool)/' %s | llc -x mir -mtriple=riscc \
+# RUN:   -mcpu=full -mattr=+rc32 -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s \
+# RUN:   --check-prefix=RC32
+# RUN: sed -e 's/RETS implicit \$s7/RET_NANO $r6/g' -e 's/\$s7/\$r6/g' %s | llc -x mir -mtriple=riscc -mcpu=nano \
+# RUN:   -run-pass=riscc-postra-optimize -verify-machineinstrs -o - | FileCheck %s --check-prefix=RC16
+#
+# Bit 15 is the sign bit only on RC16. RC32 literal-pool values are interpreted
+# at their native width. An undefined branch use must not inherit a constant.
+# RC16-LABEL: name: bit15
+# RC16: bb.0:
+# RC16-NEXT: successors: %bb.2(0x80000000)
+# RC16-NOT: BLTZ
+# RC16: JMP8 %bb.2
+# RC32-LABEL: name: bit15
+# RC32: bb.0:
+# RC32-NEXT: successors: %bb.1(0x80000000)
+# RC32-NOT: BLTZ
+# RC32-NOT: JMP8
+# RC32: bb.1:
+# RC16-LABEL: name: undefined_condition
+# RC16: BLTZ %bb.2, implicit undef $r0
+# RC32-LABEL: name: undefined_condition
+# RC32: BLTZ %bb.2, implicit undef $r0
+--- |
+  target triple = "riscc-none-elf"
+  define void @bit15() { ret void }
+  define void @undefined_condition() { ret void }
+...
+---
+name: bit15
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 32768', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI16 32768
+    BLTZ %bb.2, implicit $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: undefined_condition
+tracksRegLiveness: true
+constants:
+  - { id: 0, value: 'i32 32768', alignment: 4 }
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $s7
+    $r0 = LDI16 32768
+    BLTZ %bb.2, implicit undef $r0
+  bb.1:
+    liveins: $s7
+    RETS implicit $s7
+  bb.2:
+    liveins: $s7
+    RETS implicit $s7
+...

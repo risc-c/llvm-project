@@ -8,9 +8,11 @@
 
 include "RISCCInstrFormats.td"
 
-let SchedModel = RISCCSchedModel in
+let SchedModel = RISCCSchedModel in {
 def : InstRW<[WriteRISCCLoad],
              (instregex "^(LD|LD32|LDX|LDX32|LDB|LDB32|LDBS|LDBS32|LDH|LDHS|LDPC|LDPC_BRANCH)$")>;
+def : InstRW<[WriteRISCCMul], (instregex "^(MUL|MUL32)$")>;
+}
 
 def : MnemonicAlias<"ldi8", "ldi">;
 def : MnemonicAlias<"lui8", "lui">;
@@ -24,6 +26,8 @@ def : MnemonicAlias<"jmp16", "jmpl">;
 
 def HasSysPred : Predicate<"Subtarget->hasSys()">,
                  AssemblerPredicate<(all_of FeatureSys)>;
+def HasWideShiftPred : Predicate<"Subtarget->hasWideShift()">,
+                      AssemblerPredicate<(all_of FeatureWideShift)>;
 def HasIFLUSHPred : Predicate<"Subtarget->hasSys() && Subtarget->hasIFLUSH() && "
                              "!Subtarget->isNano()">,
                   AssemblerPredicate<(all_of FeatureSys, FeatureIFLUSH,
@@ -59,10 +63,10 @@ def SDT_RISCCSetCC : SDTypeProfile<1, 3,
 def SDT_RISCCSelectCC : SDTypeProfile<1, 5,
   [SDTCisSameAs<0, 3>, SDTCisSameAs<1, 2>, SDTCisSameAs<3, 4>,
    SDTCisVT<5, i16>]>;
+// A single DAG opcode serves both widths. Keep its type generic so TableGen
+// emits type checks when choosing the native-width instruction/pseudo.
 def SDT_RISCCShift : SDTypeProfile<1, 2,
-  [SDTCisSameAs<0, 1>, SDTCisVT<0, i16>, SDTCisVT<2, i16>]>;
-def SDT_RISCCShift32 : SDTypeProfile<1, 2,
-  [SDTCisSameAs<0, 1>, SDTCisVT<0, i32>, SDTCisVT<2, i32>]>;
+  [SDTCisInt<0>, SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>]>;
 
 def RISCCcall : SDNode<"RISCCISD::CALL", SDT_RISCCCall,
   [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue, SDNPVariadic]>;
@@ -87,9 +91,6 @@ def RISCCselectccimm : SDNode<"RISCCISD::SELECT_CC_IMM", SDT_RISCCSelectCC>;
 def RISCCshl : SDNode<"RISCCISD::SHL", SDT_RISCCShift>;
 def RISCCsrl : SDNode<"RISCCISD::SRL", SDT_RISCCShift>;
 def RISCCsra : SDNode<"RISCCISD::SRA", SDT_RISCCShift>;
-def RISCCshl32 : SDNode<"RISCCISD::SHL", SDT_RISCCShift32>;
-def RISCCsrl32 : SDNode<"RISCCISD::SRL", SDT_RISCCShift32>;
-def RISCCsra32 : SDNode<"RISCCISD::SRA", SDT_RISCCShift32>;
 def RISCCfsl1 : SDNode<"RISCCISD::FSL1", SDTIntBinOp>;
 def RISCCfsr1 : SDNode<"RISCCISD::FSR1", SDTIntBinOp>;
 
@@ -130,38 +131,33 @@ def U16AsmOperand : AsmOperandClass {
   let DiagnosticType = "InvalidU16Imm";
 }
 
-def u8imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<8>(Imm); }]> {
+class RISCCU8Imm<ValueType vt>
+    : Operand<vt>, ImmLeaf<vt, [{ return isUInt<8>(Imm); }]> {
   let ParserMatchClass = U8AsmOperand;
 }
-def s8imm : Operand<i16>, ImmLeaf<i16, [{ return isInt<8>(Imm); }]> {
+class RISCCS8Imm<ValueType vt>
+    : Operand<vt>, ImmLeaf<vt, [{ return isInt<8>(Imm); }]> {
   let ParserMatchClass = S8AsmOperand;
   let DecoderMethod = "decodeSigned8";
 }
-def u8imm32 : Operand<i32>, ImmLeaf<i32, [{ return isUInt<8>(Imm); }]> {
-  let ParserMatchClass = U8AsmOperand;
-}
-def s8imm32 : Operand<i32>, ImmLeaf<i32, [{ return isInt<8>(Imm); }]> {
-  let ParserMatchClass = S8AsmOperand;
-  let DecoderMethod = "decodeSigned8";
-}
+def u8imm : RISCCU8Imm<i16>;
+def s8imm : RISCCS8Imm<i16>;
+def u8imm32 : RISCCU8Imm<i32>;
+def s8imm32 : RISCCS8Imm<i32>;
 def rc32worddisp : Operand<i32>, ImmLeaf<i32,
   [{ return isInt<9>(Imm) && !(Imm & 3); }]> {
   let ParserMatchClass = RC32WordDispAsmOperand;
   let EncoderMethod = "getRC32WordDispEncoding";
   let DecoderMethod = "decodeRC32WordDisp";
 }
-def shiftimm : Operand<i16>, ImmLeaf<i16,
+class RISCCShiftImm<ValueType vt> : Operand<vt>, ImmLeaf<vt,
   [{ return Imm >= 1 && Imm <= 8; }]> {
   let ParserMatchClass = ShiftAsmOperand;
   let EncoderMethod = "getShiftAmountEncoding";
   let DecoderMethod = "decodeShiftAmount";
 }
-def shiftimm32 : Operand<i32>, ImmLeaf<i32,
-  [{ return Imm >= 1 && Imm <= 8; }]> {
-  let ParserMatchClass = ShiftAsmOperand;
-  let EncoderMethod = "getShiftAmountEncoding";
-  let DecoderMethod = "decodeShiftAmount";
-}
+def shiftimm : RISCCShiftImm<i16>;
+def shiftimm32 : RISCCShiftImm<i32>;
 def u16imm : Operand<i16>, ImmLeaf<i16, [{ return isUInt<16>(Imm); }]> {
   let ParserMatchClass = U16AsmOperand;
 }
@@ -184,42 +180,73 @@ def codeaddr : Operand<i16> {
 def cpaddr32 : Operand<i32>;
 def condcode : Operand<i16>;
 
+// LLVM needs distinct native-width register classes and instruction records,
+// but their encodings, operands and selection patterns have one definition.
+// Keep the width-specific types and feature predicates here. Instructions
+// unique to a width or profile (LUI, LDPC, halfword accesses, Nano) stay explicit.
+class NativeType<bit is32> {
+  bit Is32 = is32;
+  string Suffix = !if(is32, "32", "");
+  ValueType VT = !if(is32, i32, i16);
+  RegisterClass RC = !if(is32, GPR32, GPR);
+  Operand SImm = !if(is32, s8imm32, s8imm);
+  Operand UImm = !if(is32, u8imm32, u8imm);
+  Operand ShiftImm = !if(is32, shiftimm32, shiftimm);
+  Operand WordDisp = !if(is32, rc32worddisp, s8imm);
+  list<Predicate> Predicates = !if(is32, [IsRC32Pred], []);
+  list<Predicate> WidthPredicates = !if(is32, [IsRC32Pred], [IsRC16Pred]);
+  list<Predicate> MainlinePredicates = !if(is32, [IsRC32Pred], [NoNanoPred]);
+  string DecoderNamespace = !if(is32, "RC32", "");
+}
+def Native16 : NativeType<0>;
+def Native32 : NativeType<1>;
+
+// The same pairs also supply the C++ opcode mapping used by shared lowering
+// and machine passes. An instruction's RC16 name is the width-neutral key.
+class NativeInst<string opcode, NativeType w> {
+  string NativeOpcode = opcode;
+  bit IsRC32 = w.Is32;
+}
+def getRC32Opcode : InstrMapping {
+  let FilterClass = "NativeInst";
+  let RowFields = ["NativeOpcode"];
+  let ColFields = ["IsRC32"];
+  let KeyCol = ["0"];
+  let ValueCols = [["1"]];
+}
+
 // Data operations have no effects beyond their explicit registers and memory
 // operands. Custom-selected instructions need these flags too: without a DAG
 // pattern TableGen otherwise treats them as unknown side effects.
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
 
-// Loads and stores.  Word displacements are signed bytes.
-let Predicates = [NoNanoPred, IsRC16Pred], DecoderNamespace = "RC16",
-    mayLoad = 1 in
-def LD : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
-                    "ld\t$rd, [$base + $disp]">;
-let Predicates = [NoNanoPred, IsRC16Pred], DecoderNamespace = "RC16",
-    mayStore = 1 in
-def ST : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
-                    "st\t$rd, [$base + $disp]">;
+// Loads and stores. Displacement ranges and scaling follow the native width.
+foreach W = [Native16, Native32] in {
+let Predicates = !if(W.Is32, [IsRC32Pred], [NoNanoPred, IsRC16Pred]),
+    DecoderNamespace = !if(W.Is32, "RC32", "RC16") in {
+let mayLoad = 1 in
+def "LD"#W.Suffix : CompactRM<0, (outs W.RC:$rd),
+    (ins W.RC:$base, W.WordDisp:$disp), "ld\t$rd, [$base + $disp]">,
+    NativeInst<"LD", W>;
+let mayStore = 1 in
+def "ST"#W.Suffix : CompactRM<1, (outs),
+    (ins W.RC:$rd, W.RC:$base, W.WordDisp:$disp),
+    "st\t$rd, [$base + $disp]">, NativeInst<"ST", W>;
+}
+}
 let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayLoad = 1 in
 def LD_NANO : CompactRM<0, (outs GPR:$rd), (ins GPR:$base, s8imm:$disp),
                         "ld\t$rd, [$base + $disp]">;
 let Predicates = [IsNanoPred], DecoderNamespace = "Nano", mayStore = 1 in
 def ST_NANO : CompactRM<1, (outs), (ins GPR:$rd, GPR:$base, s8imm:$disp),
                         "st\t$rd, [$base + $disp]">;
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in
-def LD32 : CompactRM<0, (outs GPR32:$rd),
-                        (ins GPR32:$base, rc32worddisp:$disp),
-                        "ld\t$rd, [$base + $disp]">;
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayStore = 1 in
-def ST32 : CompactRM<1, (outs),
-                        (ins GPR32:$rd, GPR32:$base, rc32worddisp:$disp),
-                        "st\t$rd, [$base + $disp]">;
 
 // Immediate operations.
 let isReMaterializable = 1, isAsCheapAsAMove = 1 in {
-def LDI : RI<0b000, (outs GPR:$rd), (ins u8imm:$imm),
-             "ldi\t$rd, $imm">;
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in
-def LDI32 : RI<0b000, (outs GPR32:$rd), (ins u8imm32:$imm),
-                "ldi\t$rd, $imm">;
+foreach W = [Native16, Native32] in
+let Predicates = W.Predicates, DecoderNamespace = W.DecoderNamespace in
+def "LDI"#W.Suffix : RI<0b000, (outs W.RC:$rd), (ins W.UImm:$imm),
+                       "ldi\t$rd, $imm">, NativeInst<"LDI", W>;
 let Predicates = [IsRC16Pred] in
 def LUI : RI<0b001, (outs GPR:$rd), (ins u8imm:$imm),
              "lui\t$rd, $imm">;
@@ -228,38 +255,27 @@ let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1,
     mayStore = 0, hasSideEffects = 0, isReMaterializable = 1 in
 def LDPC : RIPC<0b001, (outs GPR32:$rd), (ins pcrel8word:$target),
                  "ldpc\t$rd, $target">;
-let Constraints = "$rd = $src" in {
-def ADDI : RI<0b010, (outs GPR:$rd), (ins GPR:$src, s8imm:$imm),
-              "addi\t$rd, $imm", [(set i16:$rd, (add i16:$src, s8imm:$imm))]>;
-def ANDI : RI<0b100, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
-              "andi\t$rd, $imm", [(set i16:$rd, (and i16:$src, u8imm:$imm))]>;
-def ORI : RI<0b101, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
-             "ori\t$rd, $imm", [(set i16:$rd, (or i16:$src, u8imm:$imm))]>;
-def XORI : RI<0b110, (outs GPR:$rd), (ins GPR:$src, u8imm:$imm),
-              "xori\t$rd, $imm", [(set i16:$rd, (xor i16:$src, u8imm:$imm))]>;
-}
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32",
+foreach W = [Native16, Native32] in {
+let Predicates = W.Predicates, DecoderNamespace = W.DecoderNamespace,
     Constraints = "$rd = $src" in {
-def ADDI32 : RI<0b010, (outs GPR32:$rd), (ins GPR32:$src, s8imm32:$imm),
-                "addi\t$rd, $imm",
-                [(set i32:$rd, (add i32:$src, s8imm32:$imm))]>;
-def ANDI32 : RI<0b100, (outs GPR32:$rd), (ins GPR32:$src, u8imm32:$imm),
-                "andi\t$rd, $imm",
-                [(set i32:$rd, (and i32:$src, u8imm32:$imm))]>;
-def ORI32 : RI<0b101, (outs GPR32:$rd), (ins GPR32:$src, u8imm32:$imm),
-               "ori\t$rd, $imm",
-               [(set i32:$rd, (or i32:$src, u8imm32:$imm))]>;
-def XORI32 : RI<0b110, (outs GPR32:$rd), (ins GPR32:$src, u8imm32:$imm),
-                "xori\t$rd, $imm",
-                [(set i32:$rd, (xor i32:$src, u8imm32:$imm))]>;
+def "ADDI"#W.Suffix : RI<0b010, (outs W.RC:$rd), (ins W.RC:$src, W.SImm:$imm),
+    "addi\t$rd, $imm", [(set W.VT:$rd, (add W.VT:$src, W.SImm:$imm))]>,
+    NativeInst<"ADDI", W>;
+def "ANDI"#W.Suffix : RI<0b100, (outs W.RC:$rd), (ins W.RC:$src, W.UImm:$imm),
+    "andi\t$rd, $imm", [(set W.VT:$rd, (and W.VT:$src, W.UImm:$imm))]>,
+    NativeInst<"ANDI", W>;
+def "ORI"#W.Suffix : RI<0b101, (outs W.RC:$rd), (ins W.RC:$src, W.UImm:$imm),
+    "ori\t$rd, $imm", [(set W.VT:$rd, (or W.VT:$src, W.UImm:$imm))]>,
+    NativeInst<"ORI", W>;
+def "XORI"#W.Suffix : RI<0b110, (outs W.RC:$rd), (ins W.RC:$src, W.UImm:$imm),
+    "xori\t$rd, $imm", [(set W.VT:$rd, (xor W.VT:$src, W.UImm:$imm))]>,
+    NativeInst<"XORI", W>;
 }
-let Predicates = [IsRC16Pred, NoNanoPred], Defs = [R0] in
-def CMPI : RI<0b011, (outs), (ins GPR:$rd, s8imm:$imm),
-              "cmpi\t$rd, $imm">;
-
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", Defs = [R0] in
-def CMPI32 : RI<0b011, (outs), (ins GPR32:$rd, s8imm32:$imm),
-                "cmpi\t$rd, $imm">;
+let Predicates = !if(W.Is32, [IsRC32Pred], [IsRC16Pred, NoNanoPred]),
+    DecoderNamespace = W.DecoderNamespace, Defs = [R0] in
+def "CMPI"#W.Suffix : RI<0b011, (outs), (ins W.RC:$rd, W.SImm:$imm),
+                        "cmpi\t$rd, $imm">, NativeInst<"CMPI", W>;
+}
 
 // Branches explicitly consume r0 so scheduling cannot separate a comparison
 // from its branch with an r0-clobbering instruction.
@@ -274,134 +290,96 @@ def JMP8 : RB<0b100, (outs), (ins brtarget:$target), "jmp8\t$target",
               [(br bb:$target)]>;
 
 // Three-register ALU operations.
+foreach W = [Native16, Native32] in {
+let Predicates = W.Predicates, DecoderNamespace = W.DecoderNamespace in {
 let isCommutable = 1 in
-def ADD : RR<0x00, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "add\t$rd, $ra, $rb", [(set i16:$rd, (add i16:$ra, i16:$rb))]>;
-def SUB : RR<0x01, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "sub\t$rd, $ra, $rb", [(set i16:$rd, (sub i16:$ra, i16:$rb))]>;
-let Predicates = [NoNanoPred] in
-def SLT : RR<0x02, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "slt\t$rd, $ra, $rb">;
-def SLTU : RR<0x03, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-              "sltu\t$rd, $ra, $rb">;
+def "ADD"#W.Suffix : RR<0x00, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "add\t$rd, $ra, $rb", [(set W.VT:$rd, (add W.VT:$ra, W.VT:$rb))]>,
+    NativeInst<"ADD", W>;
+def "SUB"#W.Suffix : RR<0x01, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "sub\t$rd, $ra, $rb", [(set W.VT:$rd, (sub W.VT:$ra, W.VT:$rb))]>,
+    NativeInst<"SUB", W>;
+let Predicates = W.MainlinePredicates in
+def "SLT"#W.Suffix : RR<0x02, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "slt\t$rd, $ra, $rb">, NativeInst<"SLT", W>;
+def "SLTU"#W.Suffix : RR<0x03, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "sltu\t$rd, $ra, $rb">, NativeInst<"SLTU", W>;
 let isCommutable = 1 in {
-def AND : RR<0x04, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "and\t$rd, $ra, $rb", [(set i16:$rd, (and i16:$ra, i16:$rb))]>;
-def OR : RR<0x05, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-            "or\t$rd, $ra, $rb", [(set i16:$rd, (or i16:$ra, i16:$rb))]>;
-def XOR : RR<0x06, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "xor\t$rd, $ra, $rb", [(set i16:$rd, (xor i16:$ra, i16:$rb))]>;
-let Predicates = [HasMulPred] in
-def MUL : RR<0x07, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-             "mul\t$rd, $ra, $rb", [(set i16:$rd, (mul i16:$ra, i16:$rb))]>;
+def "AND"#W.Suffix : RR<0x04, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "and\t$rd, $ra, $rb", [(set W.VT:$rd, (and W.VT:$ra, W.VT:$rb))]>,
+    NativeInst<"AND", W>;
+def "OR"#W.Suffix : RR<0x05, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "or\t$rd, $ra, $rb", [(set W.VT:$rd, (or W.VT:$ra, W.VT:$rb))]>,
+    NativeInst<"OR", W>;
+def "XOR"#W.Suffix : RR<0x06, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "xor\t$rd, $ra, $rb", [(set W.VT:$rd, (xor W.VT:$ra, W.VT:$rb))]>,
+    NativeInst<"XOR", W>;
+let Predicates = !listconcat(W.Predicates, [HasMulPred]) in
+def "MUL"#W.Suffix : RR<0x07, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "mul\t$rd, $ra, $rb", [(set W.VT:$rd, (mul W.VT:$ra, W.VT:$rb))]>,
+    NativeInst<"MUL", W>;
 }
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in {
-let isCommutable = 1 in
-def ADD32 : RR<0x00, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-               "add\t$rd, $ra, $rb",
-               [(set i32:$rd, (add i32:$ra, i32:$rb))]>;
-def SUB32 : RR<0x01, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-               "sub\t$rd, $ra, $rb",
-               [(set i32:$rd, (sub i32:$ra, i32:$rb))]>;
-def SLT32 : RR<0x02, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-               "slt\t$rd, $ra, $rb">;
-def SLTU32 : RR<0x03, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-                "sltu\t$rd, $ra, $rb">;
-let isCommutable = 1 in {
-def AND32 : RR<0x04, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-               "and\t$rd, $ra, $rb",
-               [(set i32:$rd, (and i32:$ra, i32:$rb))]>;
-def OR32 : RR<0x05, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-              "or\t$rd, $ra, $rb",
-              [(set i32:$rd, (or i32:$ra, i32:$rb))]>;
-def XOR32 : RR<0x06, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-               "xor\t$rd, $ra, $rb",
-               [(set i32:$rd, (xor i32:$ra, i32:$rb))]>;
-let Predicates = [IsRC32Pred, HasMulPred] in
-def MUL32 : RR<0x07, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-               "mul\t$rd, $ra, $rb",
-               [(set i32:$rd, (mul i32:$ra, i32:$rb))]>;
 }
 }
 
 // MDU writes architecturally paired results. The corresponding target DAG
 // nodes select these directly; the tied inputs model the input register values
 // that the ISA overwrites with the two results.
-let Predicates = [IsRC16Pred, HasMduPred] in
-def DIVU : RRMdu<0x10, (outs GPR:$rr, GPR:$rq),
-             (ins GPR:$rr_in, GPR:$rq_in, GPR:$rb),
-             "divu\t$rr, $rq, $rb"> {
+foreach W = [Native16, Native32] in {
+let DecoderNamespace = W.DecoderNamespace in {
+let Predicates = !listconcat(W.WidthPredicates, [HasMduPred]) in
+def "DIVU"#W.Suffix : RRMdu<0x10, (outs W.RC:$rr, W.RC:$rq),
+    (ins W.RC:$rr_in, W.RC:$rq_in, W.RC:$rb), "divu\t$rr, $rq, $rb">,
+    NativeInst<"DIVU", W> {
   let Constraints = "$rr = $rr_in,$rq = $rq_in,@earlyclobber $rr,@earlyclobber $rq";
 }
-let Predicates = [IsRC16Pred, HasMulhuPred] in
-def MULHU : RRMdu<0x14, (outs GPR:$rr, GPR:$rq),
-              (ins GPR:$rq_in, GPR:$rb), "mulhu\t$rr, $rq, $rb"> {
+let Predicates = !listconcat(W.WidthPredicates, [HasMulhuPred]) in
+def "MULHU"#W.Suffix : RRMdu<0x14, (outs W.RC:$rr, W.RC:$rq),
+    (ins W.RC:$rq_in, W.RC:$rb), "mulhu\t$rr, $rq, $rb">,
+    NativeInst<"MULHU", W> {
   let Constraints = "$rq = $rq_in,@earlyclobber $rr";
 }
-let Predicates = [IsRC32Pred, HasMduPred], DecoderNamespace = "RC32" in
-def DIVU32 : RRMdu<0x10, (outs GPR32:$rr, GPR32:$rq),
-               (ins GPR32:$rr_in, GPR32:$rq_in, GPR32:$rb),
-               "divu\t$rr, $rq, $rb"> {
-  let Constraints = "$rr = $rr_in,$rq = $rq_in,@earlyclobber $rr,@earlyclobber $rq";
 }
-let Predicates = [IsRC32Pred, HasMulhuPred], DecoderNamespace = "RC32" in
-def MULHU32 : RRMdu<0x14, (outs GPR32:$rr, GPR32:$rq),
-                (ins GPR32:$rq_in, GPR32:$rb), "mulhu\t$rr, $rq, $rb"> {
-  let Constraints = "$rq = $rq_in,@earlyclobber $rr";
 }
 
 // Compact funnel shifts destructively shift rd while ra supplies the endpoint.
 // They share f5=10_001; ooo=000 selects left and ooo=001 selects right.
-let Predicates = [NoNanoPred, IsRC16Pred], Constraints = "$rd = $rd_in" in {
-def FSL1 : RR<0x11, (outs GPR:$rd), (ins GPR:$rd_in, GPR:$ra),
-              "fsl1\t$rd, $ra",
-              [(set i16:$rd, (RISCCfsl1 GPR:$rd_in, GPR:$ra))]> {
+foreach W = [Native16, Native32] in {
+let Predicates = !if(W.Is32, [IsRC32Pred], [NoNanoPred, IsRC16Pred]),
+    DecoderNamespace = W.DecoderNamespace, Constraints = "$rd = $rd_in" in {
+def "FSL1"#!if(W.Is32, "_32", "")
+    : RR<0x11, (outs W.RC:$rd), (ins W.RC:$rd_in, W.RC:$ra),
+         "fsl1\t$rd, $ra",
+         [(set W.VT:$rd, (RISCCfsl1 W.RC:$rd_in, W.RC:$ra))]>,
+      NativeInst<"FSL1", W> {
   let rb = 0b000;
 }
-def FSR1 : RR<0x11, (outs GPR:$rd), (ins GPR:$rd_in, GPR:$ra),
-              "fsr1\t$rd, $ra",
-              [(set i16:$rd, (RISCCfsr1 GPR:$rd_in, GPR:$ra))]> {
+def "FSR1"#!if(W.Is32, "_32", "")
+    : RR<0x11, (outs W.RC:$rd), (ins W.RC:$rd_in, W.RC:$ra),
+         "fsr1\t$rd, $ra",
+         [(set W.VT:$rd, (RISCCfsr1 W.RC:$rd_in, W.RC:$ra))]>,
+      NativeInst<"FSR1", W> {
   let rb = 0b001;
 }
 }
-
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32",
-    Constraints = "$rd = $rd_in" in {
-def FSL1_32 : RR<0x11, (outs GPR32:$rd), (ins GPR32:$rd_in, GPR32:$ra),
-                 "fsl1\t$rd, $ra",
-                 [(set i32:$rd, (RISCCfsl1 GPR32:$rd_in, GPR32:$ra))]> {
-  let rb = 0b000;
-}
-def FSR1_32 : RR<0x11, (outs GPR32:$rd), (ins GPR32:$rd_in, GPR32:$ra),
-                 "fsr1\t$rd, $ra",
-                 [(set i32:$rd, (RISCCfsr1 GPR32:$rd_in, GPR32:$ra))]> {
-  let rb = 0b001;
-}
 }
 
+foreach W = [Native16, Native32] in {
+let Predicates = W.Predicates, DecoderNamespace = W.DecoderNamespace in {
 let mayLoad = 1 in {
-def LDX : RR<0x08, (outs GPR:$rd), (ins GPR:$ra, GPR:$rb),
-              "ldx\t$rd, [$ra + $rb]">;
-def LDB : RRDirectA<0x0a, 0b000, (outs GPR:$rd), (ins GPR:$ra),
-                    "ldb\t$rd, [$ra]">;
-let Predicates = [NoNanoPred] in
-def LDBS : RRDirectA<0x0e, 0b000, (outs GPR:$rd), (ins GPR:$ra),
-                     "ldbs\t$rd, [$ra]">;
-}
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayLoad = 1 in {
-def LDX32 : RR<0x08, (outs GPR32:$rd), (ins GPR32:$ra, GPR32:$rb),
-                "ldx\t$rd, [$ra + $rb]">;
-def LDB32 : RRDirectA<0x0a, 0b000, (outs GPR32:$rd), (ins GPR32:$ra),
-                     "ldb\t$rd, [$ra]">;
-def LDBS32 : RRDirectA<0x0e, 0b000, (outs GPR32:$rd), (ins GPR32:$ra),
-                      "ldbs\t$rd, [$ra]">;
+def "LDX"#W.Suffix : RR<0x08, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
+    "ldx\t$rd, [$ra + $rb]">, NativeInst<"LDX", W>;
+def "LDB"#W.Suffix : RRDirectA<0x0a, 0b000, (outs W.RC:$rd), (ins W.RC:$ra),
+    "ldb\t$rd, [$ra]">, NativeInst<"LDB", W>;
+let Predicates = W.MainlinePredicates in
+def "LDBS"#W.Suffix : RRDirectA<0x0e, 0b000, (outs W.RC:$rd), (ins W.RC:$ra),
+    "ldbs\t$rd, [$ra]">, NativeInst<"LDBS", W>;
 }
 let mayStore = 1 in
-def STB : RRDirectA<0x0b, 0b000, (outs), (ins GPR:$rd, GPR:$ra),
-                    "stb\t$rd, [$ra]">;
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32", mayStore = 1 in
-def STB32 : RRDirectA<0x0b, 0b000, (outs), (ins GPR32:$rd, GPR32:$ra),
-                     "stb\t$rd, [$ra]">;
+def "STB"#W.Suffix : RRDirectA<0x0b, 0b000, (outs), (ins W.RC:$rd, W.RC:$ra),
+    "stb\t$rd, [$ra]">, NativeInst<"STB", W>;
+}
+}
 let Predicates = [IsRC32Pred], mayLoad = 1 in {
 def LDH : RRDirectA<0x0a, 0b010, (outs GPR32:$rd), (ins GPR32:$ra),
                     "ldh\t$rd, [$ra]">;
@@ -412,48 +390,30 @@ let Predicates = [IsRC32Pred], mayStore = 1 in
 def STH : RRDirectA<0x0b, 0b010, (outs), (ins GPR32:$rd, GPR32:$ra),
                     "sth\t$rd, [$ra]">;
 
-let Predicates = [IsRC16Pred] in
-def SRLI : RR<0x0c, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
-              "srli\t$rd, $ra, $amount",
-              [(set i16:$rd, (RISCCsrl GPR:$ra, shiftimm:$amount))]> {
+foreach W = [Native16, Native32] in {
+let Predicates = W.WidthPredicates, DecoderNamespace = W.DecoderNamespace in {
+def "SRLI"#W.Suffix : RR<0x0c, (outs W.RC:$rd),
+    (ins W.RC:$ra, W.ShiftImm:$amount), "srli\t$rd, $ra, $amount",
+    [(set W.VT:$rd, (RISCCsrl W.RC:$ra, W.ShiftImm:$amount))]>,
+    NativeInst<"SRLI", W> {
   bits<3> amount;
   let rb = amount;
 }
-let Predicates = [IsRC16Pred] in
-def SRAI : RR<0x0d, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
-              "srai\t$rd, $ra, $amount",
-              [(set i16:$rd, (RISCCsra GPR:$ra, shiftimm:$amount))]> {
+def "SRAI"#W.Suffix : RR<0x0d, (outs W.RC:$rd),
+    (ins W.RC:$ra, W.ShiftImm:$amount), "srai\t$rd, $ra, $amount",
+    [(set W.VT:$rd, (RISCCsra W.RC:$ra, W.ShiftImm:$amount))]>,
+    NativeInst<"SRAI", W> {
   bits<3> amount;
   let rb = amount;
 }
-let Predicates = [IsRC16Pred, NoNanoPred] in
-def SLLI : RR<0x0f, (outs GPR:$rd), (ins GPR:$ra, shiftimm:$amount),
-              "slli\t$rd, $ra, $amount",
-              [(set i16:$rd, (RISCCshl GPR:$ra, shiftimm:$amount))]> {
+let Predicates = !if(W.Is32, [IsRC32Pred], [IsRC16Pred, NoNanoPred]) in
+def "SLLI"#W.Suffix : RR<0x0f, (outs W.RC:$rd),
+    (ins W.RC:$ra, W.ShiftImm:$amount), "slli\t$rd, $ra, $amount",
+    [(set W.VT:$rd, (RISCCshl W.RC:$ra, W.ShiftImm:$amount))]>,
+    NativeInst<"SLLI", W> {
   bits<3> amount;
   let rb = amount;
 }
-let Predicates = [IsRC32Pred], DecoderNamespace = "RC32" in {
-def SRLI32 : RR<0x0c, (outs GPR32:$rd),
-                (ins GPR32:$ra, shiftimm32:$amount), "srli\t$rd, $ra, $amount",
-                [(set i32:$rd, (RISCCsrl32 GPR32:$ra,
-                                             shiftimm32:$amount))]> {
-  bits<3> amount;
-  let rb = amount;
-}
-def SRAI32 : RR<0x0d, (outs GPR32:$rd),
-                (ins GPR32:$ra, shiftimm32:$amount), "srai\t$rd, $ra, $amount",
-                [(set i32:$rd, (RISCCsra32 GPR32:$ra,
-                                             shiftimm32:$amount))]> {
-  bits<3> amount;
-  let rb = amount;
-}
-def SLLI32 : RR<0x0f, (outs GPR32:$rd),
-                (ins GPR32:$ra, shiftimm32:$amount), "slli\t$rd, $ra, $amount",
-                [(set i32:$rd, (RISCCshl32 GPR32:$ra,
-                                             shiftimm32:$amount))]> {
-  bits<3> amount;
-  let rb = amount;
 }
 }
 
@@ -494,7 +454,7 @@ def JMP : MCPseudo<(outs), (ins GPR:$ra), "jmp\t$ra", 2>;
 let Predicates = [HasSysPred], isReturn = 1, isTerminator = 1, isBarrier = 1 in
 def RETI : SYS<0, (outs), (ins SREG:$ra), "reti\t$ra"> { let sd = 5; }
 
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isReMaterializable = 1 in
 def LDI16 : MCPseudo<(outs GPR:$rd), (ins u16imm:$imm),
                      "ldi16\t$rd, $imm", 4>;
 let Predicates = [IsRC32Pred], mayLoad = 1, mayStore = 0,
@@ -551,15 +511,10 @@ let Predicates = [IsNanoPred], isCall = 1, isCodeGenOnly = 1,
 def CALL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
-let Predicates = [NoNanoPred], isCall = 1,
-    Defs = [S7, R0] in
-def CALL : Pseudo<(outs), (ins GPR:$target), [(RISCCcall GPR:$target)]> {
-  let Size = 2;
-}
-let Predicates = [IsRC32Pred], isCall = 1,
-    Defs = [S7, R0] in
-def CALL32 : Pseudo<(outs), (ins GPR32:$target),
-                    [(RISCCcall GPR32:$target)]> {
+foreach W = [Native16, Native32] in
+let Predicates = W.MainlinePredicates, isCall = 1, Defs = [S7, R0] in
+def "CALL"#W.Suffix : Pseudo<(outs), (ins W.RC:$target),
+                            [(RISCCcall W.RC:$target)]>, NativeInst<"CALL", W> {
   let Size = 2;
 }
 let Predicates = [IsRC32Pred], isCall = 1,
@@ -574,7 +529,7 @@ def CALL_NANO_REG : Pseudo<(outs), (ins GPR:$target),
   let Size = 2;
 }
 
-// Direct-only private functions use S3 instead of the public S7 ABI link.
+// Direct-only private functions can use S3 instead of the public S7 ABI link.
 // Keep that physical link in the instruction descriptor so ordinary
 // call/return liveness remains exact.
 multiclass PrivateLink<Register link> {
@@ -588,6 +543,11 @@ multiclass PrivateLink<Register link> {
   def _CALL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 6;
   }
+  let Predicates = [IsRC32Pred], isCall = 1, isCodeGenOnly = 1,
+      Defs = [link, R0] in
+  def _CALL32_LITERAL : Pseudo<(outs), (ins cpaddr32:$target)> {
+    let Size = 4;
+  }
   let Predicates = [HasLongJallPred], isCall = 1, isReturn = 1,
       isTerminator = 1, isBarrier = 1, isCodeGenOnly = 1,
       Uses = [link] in
@@ -599,6 +559,12 @@ multiclass PrivateLink<Register link> {
       Uses = [link] in
   def _TAIL_MIN : Pseudo<(outs), (ins codeaddr:$target)> {
     let Size = 6;
+  }
+  let Predicates = [IsRC32Pred], isCall = 1, isReturn = 1,
+      isTerminator = 1, isBarrier = 1, isCodeGenOnly = 1,
+      Uses = [link], Defs = [R0, S0] in
+  def _TAIL32_LITERAL : Pseudo<(outs), (ins cpaddr32:$target)> {
+    let Size = 4;
   }
   let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
       isBarrier = 1, isCodeGenOnly = 1, Uses = [link] in
@@ -620,11 +586,13 @@ let Predicates = [IsNanoPred], Uses = [R6], isCodeGenOnly = 1 in
 def TAIL_NANO : Pseudo<(outs), (ins codeaddr:$target)> {
   let Size = 6;
 }
-let Predicates = [NoNanoPred], Uses = [S7] in
-def TAIL_REG : Pseudo<(outs), (ins GPR:$target)> { let Size = 2; }
-let Predicates = [IsRC32Pred], Uses = [S7] in
-def TAIL32 : Pseudo<(outs), (ins GPR32:$target),
-                    [(RISCCTail GPR32:$target)]> { let Size = 2; }
+foreach W = [Native16, Native32] in
+let Predicates = W.MainlinePredicates, Uses = [S7] in
+def "TAIL"#!if(W.Is32, "32", "_REG")
+    : Pseudo<(outs), (ins W.RC:$target), [(RISCCTail W.RC:$target)]>,
+      NativeInst<"TAIL_REG", W> {
+  let Size = 2;
+}
 let Predicates = [IsRC32Pred], Uses = [S7], Defs = [R0, S0],
     isCodeGenOnly = 1 in
 def TAIL32_LITERAL : Pseudo<(outs), (ins cpaddr32:$target)> {
@@ -633,7 +601,8 @@ def TAIL32_LITERAL : Pseudo<(outs), (ins cpaddr32:$target)> {
   let Size = 4;
 }
 let Predicates = [IsNanoPred], Uses = [R6] in
-def TAIL_NANO_REG : Pseudo<(outs), (ins GPR:$target)> { let Size = 2; }
+def TAIL_NANO_REG : Pseudo<(outs), (ins GPR:$target),
+                          [(RISCCTail GPR:$target)]> { let Size = 2; }
 }
 
 let Predicates = [HasLongJallPred], isBranch = 1, isTerminator = 1,
@@ -644,16 +613,23 @@ let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
 def RETS : Pseudo<(outs), (ins), [(RISCCret)]> {
   let Size = 2;
 }
+// Keep return semantics and the target's liveness until final emission. A
+// reloaded/computed return address need not be copied through an S register.
+let Predicates = [NoNanoPred], isReturn = 1, isTerminator = 1,
+    isBarrier = 1, isCodeGenOnly = 1 in
+def RET_REG : Pseudo<(outs), (ins GPR:$ra)> {
+  let Size = 2;
+}
 let Predicates = [IsNanoPred], isReturn = 1, isTerminator = 1,
     isBarrier = 1 in
 def RET_NANO : Pseudo<(outs), (ins GPR:$ra), [(RISCCret GPR:$ra)]> {
   let Size = 2;
 }
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isMoveReg = 1 in {
-let Predicates = [IsRC16Pred] in
-def MOV : MCPseudo<(outs GPR:$rd), (ins GPR:$rs), "mov\t$rd, $rs", 2>;
-let Predicates = [IsRC32Pred] in
-def MOV32 : MCPseudo<(outs GPR32:$rd), (ins GPR32:$rs), "mov\t$rd, $rs", 2>;
+foreach W = [Native16, Native32] in
+let Predicates = W.WidthPredicates in
+def "MOV"#W.Suffix : MCPseudo<(outs W.RC:$rd), (ins W.RC:$rs),
+                             "mov\t$rd, $rs", 2>, NativeInst<"MOV", W>;
 }
 def NOP : MCPseudo<(outs), (ins), "nop", 2>;
 let isTerminator = 1, isBarrier = 1 in
@@ -667,90 +643,79 @@ def ADJCALLSTACKUP : Pseudo<(outs), (ins i16imm:$amt1, i16imm:$amt2),
   [(callseq_end timm:$amt1, timm:$amt2)]>;
 }
 // A small frame address expands to MOV and, when needed, ADDI.
-let Size = 4, hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
-def FRAMEADDR : Pseudo<(outs GPR:$dst), (ins i16imm:$fi, i16imm:$offset)>;
-def FRAMEADDR32 : Pseudo<(outs GPR32:$dst),
-                         (ins i16imm:$fi, i16imm:$offset)>;
+// Eligibility and expansion cost are checked by isReMaterializableImpl.
+let Size = 4, hasSideEffects = 0, mayLoad = 0, mayStore = 0,
+    isReMaterializable = 1 in {
+foreach W = [Native16, Native32] in
+def "FRAMEADDR"#W.Suffix : Pseudo<(outs W.RC:$dst),
+                                (ins i16imm:$fi, i16imm:$offset)>,
+                           NativeInst<"FRAMEADDR", W>;
 }
 
-// RC16 register byte values need sign extension even when signed loads exist.
+// Register byte values need sign extension even when signed loads exist.
 // Keep it tied until after register allocation, then use ordinary immediates.
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
-let Predicates = [IsRC16Pred], Constraints = "$dst = $src" in
-def SEXT8_RC16 : Pseudo<(outs GPR:$dst), (ins GPR:$src),
-  [(set i16:$dst, (sext_inreg GPR:$src, i8))]> {
+foreach W = [Native16, Native32] in
+let Predicates = W.WidthPredicates, Constraints = "$dst = $src" in
+def "SEXT8_RC"#!if(W.Is32, "32", "16")
+    : Pseudo<(outs W.RC:$dst), (ins W.RC:$src),
+             !if(W.Is32, [], [(set W.VT:$dst, (sext_inreg W.RC:$src, i8))])>,
+      NativeInst<"SEXT8_RC16", W> {
   let Size = 6;
 }
 
-let Predicates = [IsRC32Pred], Constraints = "$dst = $src" in
-def SEXT8_RC32 : Pseudo<(outs GPR32:$dst), (ins GPR32:$src)> {
-  let Size = 6;
-}
 let Predicates = [IsRC32Pred], Constraints = "$dst = $src", Defs = [R0] in
 def SEXT16_RC32 : Pseudo<(outs GPR32:$dst), (ins GPR32:$src)> {
   let Size = 10;
 }
+let Predicates = [IsRC32Pred, HasWideShiftPred] in
+def SEXT16_SHIFT_RC32 : Pseudo<(outs GPR32:$dst), (ins GPR32:$src)> {
+  let Size = 8;
+}
 }
 
-let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
-def PseudoBRCC : Pseudo<(outs),
-  (ins GPR:$lhs, GPR:$rhs, condcode:$cc, brtarget:$target),
-  [(RISCCbrcc GPR:$lhs, GPR:$rhs, timm:$cc, bb:$target)]>;
-let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
-def PseudoBRCCImm : Pseudo<(outs),
-  (ins GPR:$lhs, s8imm:$rhs, condcode:$cc, brtarget:$target),
-  [(RISCCbrccimm GPR:$lhs, timm:$rhs, timm:$cc, bb:$target)]>;
-let usesCustomInserter = 1 in
-def PseudoSETCC : Pseudo<(outs GPR:$dst),
-  (ins GPR:$lhs, GPR:$rhs, condcode:$cc),
-  [(set i16:$dst, (RISCCsetcc GPR:$lhs, GPR:$rhs, timm:$cc))]>;
-let usesCustomInserter = 1 in
-def PseudoSETCCImm : Pseudo<(outs GPR:$dst),
-  (ins GPR:$lhs, u8imm:$rhs, condcode:$cc),
-  [(set i16:$dst, (RISCCsetccimm GPR:$lhs, timm:$rhs, timm:$cc))]>;
-let usesCustomInserter = 1 in
-def PseudoSELECTCCImm : Pseudo<(outs GPR:$dst),
-  (ins GPR:$lhs, s8imm:$rhs, GPR:$truev, GPR:$falsev, condcode:$cc),
-  [(set i16:$dst, (RISCCselectccimm GPR:$lhs, timm:$rhs, GPR:$truev,
-                                        GPR:$falsev, timm:$cc))]>;
-let usesCustomInserter = 1 in
-def PseudoSELECTCC : Pseudo<(outs GPR:$dst),
-  (ins GPR:$lhs, GPR:$rhs, GPR:$truev, GPR:$falsev, condcode:$cc),
-  [(set i16:$dst, (RISCCselectcc GPR:$lhs, GPR:$rhs, GPR:$truev,
-                                     GPR:$falsev, timm:$cc))]>;
-let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
-def PseudoBRCC32 : Pseudo<(outs),
-  (ins GPR32:$lhs, GPR32:$rhs, condcode:$cc, brtarget:$target),
-  [(RISCCbrcc GPR32:$lhs, GPR32:$rhs, timm:$cc, bb:$target)]>;
-let usesCustomInserter = 1, isBranch = 1, isTerminator = 1 in
-def PseudoBRCCImm32 : Pseudo<(outs),
-  (ins GPR32:$lhs, s8imm32:$rhs, condcode:$cc, brtarget:$target),
-  [(RISCCbrccimm GPR32:$lhs, timm:$rhs, timm:$cc, bb:$target)]>;
-let usesCustomInserter = 1 in
-def PseudoSETCCImm32 : Pseudo<(outs GPR32:$dst),
-  (ins GPR32:$lhs, u8imm32:$rhs, condcode:$cc),
-  [(set i32:$dst, (RISCCsetccimm GPR32:$lhs, timm:$rhs, timm:$cc))]>;
-let usesCustomInserter = 1 in
-def PseudoSETCC32 : Pseudo<(outs GPR32:$dst),
-  (ins GPR32:$lhs, GPR32:$rhs, condcode:$cc),
-  [(set i32:$dst, (RISCCsetcc GPR32:$lhs, GPR32:$rhs, timm:$cc))]>;
-let usesCustomInserter = 1 in
-def PseudoSELECTCCImm32 : Pseudo<(outs GPR32:$dst),
-  (ins GPR32:$lhs, s8imm32:$rhs, GPR32:$truev, GPR32:$falsev, condcode:$cc),
-  [(set i32:$dst, (RISCCselectccimm GPR32:$lhs, timm:$rhs, GPR32:$truev,
-                                        GPR32:$falsev, timm:$cc))]>;
-let usesCustomInserter = 1 in
-def PseudoSELECTCC32 : Pseudo<(outs GPR32:$dst),
-  (ins GPR32:$lhs, GPR32:$rhs, GPR32:$truev, GPR32:$falsev, condcode:$cc),
-  [(set i32:$dst, (RISCCselectcc GPR32:$lhs, GPR32:$rhs, GPR32:$truev,
-                                     GPR32:$falsev, timm:$cc))]>;
+foreach W = [Native16, Native32] in {
 let usesCustomInserter = 1 in {
-def PseudoSHL : Pseudo<(outs GPR:$dst), (ins GPR:$src, GPR:$amount),
-  [(set i16:$dst, (RISCCshl GPR:$src, GPR:$amount))]>;
-def PseudoSRL : Pseudo<(outs GPR:$dst), (ins GPR:$src, GPR:$amount),
-  [(set i16:$dst, (RISCCsrl GPR:$src, GPR:$amount))]>;
-def PseudoSRA : Pseudo<(outs GPR:$dst), (ins GPR:$src, GPR:$amount),
-  [(set i16:$dst, (RISCCsra GPR:$src, GPR:$amount))]>;
+let isBranch = 1, isTerminator = 1 in {
+def "PseudoBRCC"#W.Suffix : Pseudo<(outs),
+    (ins W.RC:$lhs, W.RC:$rhs, condcode:$cc, brtarget:$target),
+    [(RISCCbrcc W.RC:$lhs, W.RC:$rhs, timm:$cc, bb:$target)]>,
+    NativeInst<"PseudoBRCC", W>;
+def "PseudoBRCCImm"#W.Suffix : Pseudo<(outs),
+    (ins W.RC:$lhs, W.SImm:$rhs, condcode:$cc, brtarget:$target),
+    [(RISCCbrccimm W.RC:$lhs, timm:$rhs, timm:$cc, bb:$target)]>,
+    NativeInst<"PseudoBRCCImm", W>;
+}
+def "PseudoSETCC"#W.Suffix : Pseudo<(outs W.RC:$dst),
+    (ins W.RC:$lhs, W.RC:$rhs, condcode:$cc),
+    [(set W.VT:$dst, (RISCCsetcc W.RC:$lhs, W.RC:$rhs, timm:$cc))]>,
+    NativeInst<"PseudoSETCC", W>;
+def "PseudoSETCCImm"#W.Suffix : Pseudo<(outs W.RC:$dst),
+    (ins W.RC:$lhs, W.UImm:$rhs, condcode:$cc),
+    [(set W.VT:$dst, (RISCCsetccimm W.RC:$lhs, timm:$rhs, timm:$cc))]>,
+    NativeInst<"PseudoSETCCImm", W>;
+def "PseudoSELECTCCImm"#W.Suffix : Pseudo<(outs W.RC:$dst),
+    (ins W.RC:$lhs, W.SImm:$rhs, W.RC:$truev, W.RC:$falsev, condcode:$cc),
+    [(set W.VT:$dst, (RISCCselectccimm W.RC:$lhs, timm:$rhs, W.RC:$truev,
+                                     W.RC:$falsev, timm:$cc))]>,
+    NativeInst<"PseudoSELECTCCImm", W>;
+def "PseudoSELECTCC"#W.Suffix : Pseudo<(outs W.RC:$dst),
+    (ins W.RC:$lhs, W.RC:$rhs, W.RC:$truev, W.RC:$falsev, condcode:$cc),
+    [(set W.VT:$dst, (RISCCselectcc W.RC:$lhs, W.RC:$rhs, W.RC:$truev,
+                                  W.RC:$falsev, timm:$cc))]>,
+    NativeInst<"PseudoSELECTCC", W>;
+let Predicates = W.Predicates in {
+def "PseudoSHL"#W.Suffix : Pseudo<(outs W.RC:$dst), (ins W.RC:$src, W.RC:$amount),
+    [(set W.VT:$dst, (RISCCshl W.RC:$src, W.RC:$amount))]>,
+    NativeInst<"PseudoSHL", W>;
+def "PseudoSRL"#W.Suffix : Pseudo<(outs W.RC:$dst), (ins W.RC:$src, W.RC:$amount),
+    [(set W.VT:$dst, (RISCCsrl W.RC:$src, W.RC:$amount))]>,
+    NativeInst<"PseudoSRL", W>;
+def "PseudoSRA"#W.Suffix : Pseudo<(outs W.RC:$dst), (ins W.RC:$src, W.RC:$amount),
+    [(set W.VT:$dst, (RISCCsra W.RC:$src, W.RC:$amount))]>,
+    NativeInst<"PseudoSRA", W>;
+}
+}
 }
 
 def : Pat<(i16 (RISCCWrapper tglobaladdr:$addr)), (LDI16 tglobaladdr:$addr)>;
@@ -809,4 +774,8 @@ def : Pat<(RISCCTail (i32 tglobaladdr:$target)),
           (TAIL32_LITERAL tglobaladdr:$target)>;
 def : Pat<(RISCCTail (i32 texternalsym:$target)),
           (TAIL32_LITERAL texternalsym:$target)>;
+def : Pat<(RISCCcallPrivate (i32 tglobaladdr:$target)),
+          (LINK_S3_CALL32_LITERAL tglobaladdr:$target)>;
+def : Pat<(RISCCTailPrivate (i32 tglobaladdr:$target)),
+          (LINK_S3_TAIL32_LITERAL tglobaladdr:$target)>;
 }
