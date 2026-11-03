@@ -20,6 +20,25 @@
 // RUN:   --check-prefixes=COMMON,FULL,MDU --implicit-check-not=__RISCC_MIN__ \
 // RUN:   --implicit-check-not=__RISCC_SYS__
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu full -target-feature +mulhu < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL,MULHU --implicit-check-not=__RISCC_MDU__ \
+// RUN:   --implicit-check-not=__RISCC_DIVU__
+// RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
+// RUN:   -mmdu -mno-mulhu -x c /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL --implicit-check-not=__RISCC_MDU__ \
+// RUN:   --implicit-check-not=__RISCC_MULHU__ --implicit-check-not=__RISCC_DIVU__
+// RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
+// RUN:   -mno-mulhu -mmdu -x c /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL,MDU
+// RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
+// RUN:   -mmdu -mmulhu -mno-mdu -x c /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL,MULHU --implicit-check-not=__RISCC_MDU__ \
+// RUN:   --implicit-check-not=__RISCC_DIVU__
+// RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
+// RUN:   -mmdu -mno-mdu -x c /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL --implicit-check-not=__RISCC_MDU__ \
+// RUN:   --implicit-check-not=__RISCC_MULHU__ --implicit-check-not=__RISCC_DIVU__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
 // RUN:   -target-cpu min -target-feature +rc32 < /dev/null | FileCheck %s \
 // RUN:   --check-prefix=RC32
 
@@ -44,6 +63,7 @@
 // MDU-DAG: #define __RISCC_MDU__ 1
 // MDU-DAG: #define __RISCC_MULHU__ 1
 // MDU-DAG: #define __RISCC_DIVU__ 1
+// MULHU-DAG: #define __RISCC_MULHU__ 1
 // RC32-DAG: #define __RISCC_RC32__ 1
 // RC32-DAG: #define __RISCC_XLEN__ 32
 // RC32-DAG: #define __POINTER_WIDTH__ 32

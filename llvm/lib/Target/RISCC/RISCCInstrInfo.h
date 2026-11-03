@@ -28,6 +28,9 @@ public:
   // Select a native-width opcode using the RC16 member of a NativeInst pair.
   // This maps types, not feature availability (including Nano restrictions).
   unsigned getNativeOpcode(unsigned RC16Opcode) const;
+  bool verifyInstruction(const MachineInstr &, StringRef &) const override;
+  MachineInstr *commuteInstructionImpl(MachineInstr &, bool, unsigned,
+                                       unsigned) const override;
   unsigned getTailMergeSize(const MachineFunction &) const override;
   bool enableSizeAwareBlockPlacement(const MachineFunction &) const override;
   static bool isConditionalBranchOpcode(unsigned Opcode);

@@ -26,6 +26,47 @@
 
 using namespace llvm;
 
+bool RISCCInstrInfo::verifyInstruction(const MachineInstr &MI,
+                                       StringRef &Error) const {
+  if ((MI.getOpcode() == RISCC::MULHU || MI.getOpcode() == RISCC::MULHU32) &&
+      MI.getOperand(0).getReg() == MI.getOperand(1).getReg()) {
+    Error = "MULHU requires distinct low/high result registers";
+    return false;
+  }
+  return true;
+}
+
+MachineInstr *RISCCInstrInfo::commuteInstructionImpl(MachineInstr &MI,
+                                                     bool NewMI, unsigned Idx1,
+                                                     unsigned Idx2) const {
+  if (MI.getOpcode() != RISCC::MULHU && MI.getOpcode() != RISCC::MULHU32)
+    return TargetInstrInfo::commuteInstructionImpl(MI, NewMI, Idx1, Idx2);
+
+  // Coalescing can choose either multiplier input for the tied high result.
+  // The generic commutator only handles a tie to definition zero; MULHU's
+  // tie is to definition one. Leave physical-register scheduling unchanged.
+  for (unsigned I = 0; I != 4; ++I)
+    if (MI.getOperand(I).getReg().isPhysical())
+      return nullptr;
+  Register High = MI.getOperand(1).getReg();
+  unsigned HighSub = MI.getOperand(1).getSubReg();
+  bool Retie = High == MI.getOperand(2).getReg();
+  if (Retie) {
+    High = MI.getOperand(3).getReg();
+    HighSub = MI.getOperand(3).getSubReg();
+    if (High == MI.getOperand(0).getReg())
+      return nullptr;
+  }
+  MachineInstr *Result =
+      TargetInstrInfo::commuteInstructionImpl(MI, NewMI, Idx1, Idx2);
+  if (Result && Retie) {
+    Result->getOperand(1).setReg(High);
+    Result->getOperand(1).setSubReg(HighSub);
+    Result->getOperand(2).setIsKill(false);
+  }
+  return Result;
+}
+
 static cl::opt<bool> EnableSizeLayout(
     "riscc-size-layout", cl::Hidden, cl::init(true),
     cl::desc("Refine size-optimized RISC-C block layout when it saves bytes"));

@@ -3074,14 +3074,26 @@ def PPCSystemLibrary
 // RISC-C Runtime Libcalls
 //===----------------------------------------------------------------------===//
 
-// RC16 and RC32 use the standard compiler-rt/libgcc names, including the
-// combined i32 divide/remainder helpers selected by their shared lowering.
+// Native divide/remainder pairs return both results in registers, unlike the
+// pointer-result compiler-rt helpers. Keep their abstract operations distinct
+// so generic libcall selection cannot substitute the incompatible ABI.
+def RISCC_SDIVREM_I16 : RuntimeLibcall;
+def RISCC_UDIVREM_I16 : RuntimeLibcall;
+def RISCC_SDIVREM_I32 : RuntimeLibcall;
+def RISCC_UDIVREM_I32 : RuntimeLibcall;
+def __riscc_divmodhi : RuntimeLibcallImpl<RISCC_SDIVREM_I16>;
+def __riscc_udivmodhi : RuntimeLibcallImpl<RISCC_UDIVREM_I16>;
+def __riscc_divmodsi : RuntimeLibcallImpl<RISCC_SDIVREM_I32>;
+def __riscc_udivmodsi : RuntimeLibcallImpl<RISCC_UDIVREM_I32>;
+
 // Register them here so LTO extracts bitcode implementations before codegen
 // introduces calls that are not present in the input IR.
 def isRISCC : RuntimeLibcallPredicate<"TT.getArch() == Triple::riscc">;
 def RISCCSystemLibrary
     : SystemRuntimeLibrary<isRISCC,
-      (add DefaultRuntimeLibcallImpls, __divmodsi4, __udivmodsi4)>;
+      (add DefaultRuntimeLibcallImpls, __divmodsi4, __udivmodsi4,
+           __riscc_divmodhi, __riscc_udivmodhi,
+           __riscc_divmodsi, __riscc_udivmodsi)>;
 
 //===----------------------------------------------------------------------===//
 // RISCV Runtime Libcalls

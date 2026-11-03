@@ -1,0 +1,16 @@
+# REQUIRES: riscc-registered-target
+# RUN: not --crash llc -mtriple=riscc -mcpu=full -mattr=+mulhu -run-pass=none -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s
+# RUN: sed 's/MULHU /MULHU32 /' %s | not --crash llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32,+mulhu -run-pass=none -verify-machineinstrs -o /dev/null 2>&1 | FileCheck %s
+# CHECK: MULHU requires distinct low/high result registers
+--- |
+  define void @duplicate_results() { ret void }
+...
+---
+name: duplicate_results
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    $r1, $r1 = MULHU $r1, $r2
+    RETS implicit $s7, implicit $r1
+...

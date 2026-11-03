@@ -6143,6 +6143,10 @@ def msoft_float : Flag<["-"], "msoft-float">, Group<m_Group>,
   HelpText<"Use software floating point">,
   MarshallingInfoFlag<CodeGenOpts<"SoftFloat">>;
 let Flags = [TargetSpecific] in {
+def mmulhu : Flag<["-"], "mmulhu">, Group<m_Group>,
+  HelpText<"Enable RISC-C paired unsigned multiply-high/low">;
+def mno_mulhu : Flag<["-"], "mno-mulhu">, Group<m_Group>,
+  HelpText<"Disable RISC-C paired unsigned multiply-high/low">;
 def mmdu : Flag<["-"], "mmdu">, Group<m_Group>,
   HelpText<"Enable the RISC-C multiply-divide extension">;
 def mno_mdu : Flag<["-"], "mno-mdu">, Group<m_Group>,

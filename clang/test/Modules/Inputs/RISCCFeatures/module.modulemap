@@ -6,6 +6,9 @@ module RISCCFeatures {
   module system { requires system }
   module jal16 { requires jal16 }
   module mul { requires mul }
+  module mulhu { requires mulhu }
+  module divu { requires divu }
+  module mdu { requires mdu }
   module full { requires full }
   module iflush { requires iflush }
 }

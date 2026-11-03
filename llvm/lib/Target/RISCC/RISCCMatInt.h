@@ -19,6 +19,7 @@ namespace RISCCMatInt {
 
 struct Inst {
   unsigned Opcode;
+  // Unused for ADD, which doubles the previous value.
   int64_t Immediate;
 };
 

@@ -889,10 +889,22 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   case llvm::Triple::riscv64be:
     riscv::getRISCVTargetFeatures(D, Triple, Args, Features);
     break;
-  case llvm::Triple::riscc:
-    if (const Arg *A = Args.getLastArg(options::OPT_mmdu, options::OPT_mno_mdu))
-      Features.push_back(A->getOption().matches(options::OPT_mmdu) ? "+mdu"
-                                                                   : "-mdu");
+  case llvm::Triple::riscc: {
+    const Arg *Mdu = Args.getLastArg(options::OPT_mmdu, options::OPT_mno_mdu);
+    const Arg *Mulhu =
+        Args.getLastArg(options::OPT_mmulhu, options::OPT_mno_mulhu);
+    // Preserve the order of the last setting for each option family: MDU
+    // implies MULHU, and disabling MULHU also disables its dependent MDU.
+    for (const Arg *A :
+         Args.filtered(options::OPT_mmdu, options::OPT_mno_mdu,
+                       options::OPT_mmulhu, options::OPT_mno_mulhu)) {
+      if (A == Mdu)
+        Features.push_back(A->getOption().matches(options::OPT_mmdu) ? "+mdu"
+                                                                     : "-mdu");
+      else if (A == Mulhu)
+        Features.push_back(
+            A->getOption().matches(options::OPT_mmulhu) ? "+mulhu" : "-mulhu");
+    }
     if (const Arg *A =
             Args.getLastArg(options::OPT_mrc32, options::OPT_mno_rc32))
       Features.push_back(A->getOption().matches(options::OPT_mrc32) ? "+rc32"
@@ -902,6 +914,7 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       Features.push_back(
           A->getOption().matches(options::OPT_mrc32x) ? "+rc32x" : "-rc32x");
     break;
+  }
   case llvm::Triple::systemz:
     systemz::getSystemZTargetFeatures(D, Args, Features);
     break;

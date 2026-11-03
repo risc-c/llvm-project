@@ -10,7 +10,7 @@
 
 target triple = "riscc-none-elf"
 
-; Counts masked to three or one are known to fit the native word.  All three
+; Counts masked to seven, three or one fit a short inline loop. All three
 ; directions must remain inline, including RC32 where a general variable shift
 ; otherwise uses a helper.
 define i16 @shl16_b3(i16 %value, i16 %count) {
@@ -109,10 +109,17 @@ define i16 @ashr16_b1(i16 %value, i16 %count) {
   ret i16 %result
 }
 
-; Larger and unbounded RC16 counts retain the existing fast helper policy.
+; Counts bounded by seven also avoid helper calls in speed builds.
 define i16 @shl16_b7(i16 %value, i16 %count) {
 ; RC16-LABEL: shl16_b7:
-; RC16:       __riscc_shlhi_fast
+; RC16:       andi {{r[0-6]}}, 7
+; RC16-NOT:   jal
+; RC16:       beqz
+; RC16:       {{slli|add}} r{{[0-6]}}, r{{[0-6]}}, {{1|r[0-6]}}
+; RC16:       bnez
+; RC16-NOT:   jal
+; RC16:       ret
+; RC16:       .size shl16_b7,
   %bounded = and i16 %count, 7
   %result = shl i16 %value, %bounded
   ret i16 %result
@@ -120,7 +127,14 @@ define i16 @shl16_b7(i16 %value, i16 %count) {
 
 define i16 @lshr16_b7(i16 %value, i16 %count) {
 ; RC16-LABEL: lshr16_b7:
-; RC16:       __riscc_lshrhi_fast
+; RC16:       andi {{r[0-6]}}, 7
+; RC16-NOT:   jal
+; RC16:       beqz
+; RC16:       srli r{{[0-6]}}, r{{[0-6]}}, {{1|r[0-6]}}
+; RC16:       bnez
+; RC16-NOT:   jal
+; RC16:       ret
+; RC16:       .size lshr16_b7,
   %bounded = and i16 %count, 7
   %result = lshr i16 %value, %bounded
   ret i16 %result
@@ -128,7 +142,14 @@ define i16 @lshr16_b7(i16 %value, i16 %count) {
 
 define i16 @ashr16_b7(i16 %value, i16 %count) {
 ; RC16-LABEL: ashr16_b7:
-; RC16:       __riscc_ashrhi_fast
+; RC16:       andi {{r[0-6]}}, 7
+; RC16-NOT:   jal
+; RC16:       beqz
+; RC16:       srai r{{[0-6]}}, r{{[0-6]}}, {{1|r[0-6]}}
+; RC16:       bnez
+; RC16-NOT:   jal
+; RC16:       ret
+; RC16:       .size ashr16_b7,
   %bounded = and i16 %count, 7
   %result = ashr i16 %value, %bounded
   ret i16 %result
@@ -255,7 +276,14 @@ define i32 @ashr32_b1(i32 %value, i32 %count) {
 
 define i32 @shl32_b7(i32 %value, i32 %count) {
 ; RC32-LABEL: shl32_b7:
-; RC32:       __riscc_shlsi_fast
+; RC32:       andi {{r[0-6]}}, 7
+; RC32-NOT:   jal
+; RC32:       beqz
+; RC32:       {{slli|add}} r{{[0-6]}}, r{{[0-6]}}, {{1|r[0-6]}}
+; RC32:       bnez
+; RC32-NOT:   jal
+; RC32:       ret
+; RC32:       .size shl32_b7,
   %bounded = and i32 %count, 7
   %result = shl i32 %value, %bounded
   ret i32 %result
@@ -263,7 +291,14 @@ define i32 @shl32_b7(i32 %value, i32 %count) {
 
 define i32 @lshr32_b7(i32 %value, i32 %count) {
 ; RC32-LABEL: lshr32_b7:
-; RC32:       __riscc_lshrsi_fast
+; RC32:       andi {{r[0-6]}}, 7
+; RC32-NOT:   jal
+; RC32:       beqz
+; RC32:       srli r{{[0-6]}}, r{{[0-6]}}, {{1|r[0-6]}}
+; RC32:       bnez
+; RC32-NOT:   jal
+; RC32:       ret
+; RC32:       .size lshr32_b7,
   %bounded = and i32 %count, 7
   %result = lshr i32 %value, %bounded
   ret i32 %result
@@ -271,7 +306,14 @@ define i32 @lshr32_b7(i32 %value, i32 %count) {
 
 define i32 @ashr32_b7(i32 %value, i32 %count) {
 ; RC32-LABEL: ashr32_b7:
-; RC32:       __riscc_ashrsi_fast
+; RC32:       andi {{r[0-6]}}, 7
+; RC32-NOT:   jal
+; RC32:       beqz
+; RC32:       srai r{{[0-6]}}, r{{[0-6]}}, {{1|r[0-6]}}
+; RC32:       bnez
+; RC32-NOT:   jal
+; RC32:       ret
+; RC32:       .size ashr32_b7,
   %bounded = and i32 %count, 7
   %result = ashr i32 %value, %bounded
   ret i32 %result
@@ -417,5 +459,46 @@ define i32 @shl32_b3_minsize(i32 %value, i32 %count) minsize {
 ; RC32OS:       .size shl32_b3_minsize,
   %bounded = and i32 %count, 3
   %result = shl i32 %value, %bounded
+  ret i32 %result
+}
+
+; Os can use a small loop instead of setting up a shared compact helper.
+; Speed builds retain the staircase helper for the same larger count range.
+define i32 @lshr32_b15_os(i32 %value, i32 %count) optsize {
+; RC32OS-LABEL: lshr32_b15_os:
+; RC32OS:       andi {{r[0-6]}}, 15
+; RC32OS:       beqz
+; RC32OS:       srli
+; RC32OS:       bnez
+; RC32OS-NOT:   jal
+; RC32OS:       ret
+; RC32OS:       .size lshr32_b15_os,
+  %bounded = and i32 %count, 15
+  %result = lshr i32 %value, %bounded
+  ret i32 %result
+}
+
+define i32 @lshr32_b15_speed(i32 %value, i32 %count) {
+; RC32-LABEL: lshr32_b15_speed:
+; RC32:       __riscc_lshrsi_fast
+  %bounded = and i32 %count, 15
+  %result = lshr i32 %value, %bounded
+  ret i32 %result
+}
+
+define i32 @ashr32_b31_os(i32 %value, i32 %count) optsize {
+; RC32OS-LABEL: ashr32_b31_os:
+; RC32OS:       __ashrsi3
+  %bounded = and i32 %count, 31
+  %result = ashr i32 %value, %bounded
+  ret i32 %result
+}
+
+; Oz retains the stricter shared-helper policy for ranges above three.
+define i32 @lshr32_b7_minsize(i32 %value, i32 %count) minsize {
+; RC32OS-LABEL: lshr32_b7_minsize:
+; RC32OS:       __lshrsi3
+  %bounded = and i32 %count, 7
+  %result = lshr i32 %value, %bounded
   ret i32 %result
 }

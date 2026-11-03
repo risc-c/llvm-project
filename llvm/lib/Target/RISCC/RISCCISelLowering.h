@@ -54,6 +54,7 @@ class RISCCTargetLowering final : public TargetLowering {
   SDValue lowerShift(SDValue, SelectionDAG &) const;
   SDValue lowerFunnelShift(SDValue, SelectionDAG &) const;
   SDValue lowerShiftLibCall(SDValue, SelectionDAG &) const;
+  SDValue lowerRotateLibCall(SDValue, SelectionDAG &) const;
   SDValue lowerMULLOHI(SDValue, SelectionDAG &, bool Signed) const;
   SDValue lowerMul(SDValue, SelectionDAG &) const;
   SDValue lowerUDivRem(SDValue, SelectionDAG &) const;
@@ -94,6 +95,14 @@ public:
   bool isLegalAddImmediate(int64_t) const override;
   bool isLegalICmpImmediate(int64_t) const override;
   bool shouldConvertConstantLoadToIntImm(const APInt &, Type *) const override;
+  bool isIntDivCheap(EVT, AttributeList) const override;
+  // Size builds still use shifts/masks for power-of-two divisors. Only the
+  // software high-product expansion is too large to duplicate at each site.
+  SDValue BuildSDIVPow2(SDNode *, const APInt &, SelectionDAG &,
+                        SmallVectorImpl<SDNode *> &) const override {
+    return {};
+  }
+  bool decomposeMulByConstant(LLVMContext &, EVT, SDValue) const override;
   MVT getScalarShiftAmountTy(const DataLayout &, EVT) const override;
   MVT::SimpleValueType getCmpLibcallReturnType() const override;
   ConstraintType getConstraintType(StringRef) const override;

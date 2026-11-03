@@ -15,6 +15,7 @@
 #include "RISCCSubtarget.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -525,6 +526,76 @@ static unsigned getExtensionWidth(unsigned Opcode) {
   }
 }
 
+struct CopyPhiCycle {
+  SmallVector<Register, 4> Registers;
+  SmallVector<const MachineOperand *, 4> Inputs;
+};
+
+// Copies and PHIs cannot introduce new bits. A cycle consisting only of these
+// instructions therefore has the union of its external inputs' widths. Treat
+// it as one equation; starting every member at full width cannot discover this
+// fixed point by narrowing the members separately.
+static SmallVector<CopyPhiCycle, 4> getCopyPhiCycles(MachineFunction &MF) {
+  struct Node {
+    MachineInstr *MI = nullptr;
+    SmallVector<Node *, 2> Inputs;
+  };
+  struct Graph {
+    using NodeRef = Node *;
+    using ChildIteratorType = SmallVectorImpl<Node *>::iterator;
+    static NodeRef getEntryNode(Node *N) { return N; }
+    static ChildIteratorType child_begin(Node *N) { return N->Inputs.begin(); }
+    static ChildIteratorType child_end(Node *N) { return N->Inputs.end(); }
+  };
+  SmallVector<Node, 16> Nodes;
+  // Keep pointers into Nodes stable, including the synthetic entry node.
+  Nodes.reserve(MF.getRegInfo().getNumVirtRegs() + 1);
+  Nodes.emplace_back();
+  DenseMap<Register, Node *> Defs;
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &MI : MBB) {
+      if ((!MI.isPHI() && !MI.isCopy()) || MI.isBundled() ||
+          MI.getNumImplicitOperands() ||
+          !MI.getOperand(0).getReg().isVirtual() ||
+          llvm::any_of(MI.operands(), [](const MachineOperand &MO) {
+            return MO.isReg() &&
+                   (MO.isUndef() || MO.getSubReg() || !MO.getReg().isVirtual());
+          }))
+        continue;
+      Node &N = Nodes.emplace_back();
+      N.MI = &MI;
+      Defs[MI.getOperand(0).getReg()] = &N;
+      Nodes.front().Inputs.push_back(&N);
+    }
+  for (Node &N : drop_begin(Nodes))
+    for (unsigned I = 1, Step = N.MI->isPHI() ? 2 : 1;
+         I < N.MI->getNumOperands(); I += Step)
+      if (auto It = Defs.find(N.MI->getOperand(I).getReg()); It != Defs.end())
+        N.Inputs.push_back(It->second);
+
+  SmallVector<CopyPhiCycle, 4> Cycles;
+  for (auto It = scc_iterator<Node *, Graph>::begin(&Nodes.front());
+       !It.isAtEnd(); ++It) {
+    if (!It.hasCycle())
+      continue;
+    SmallPtrSet<Node *, 8> Members(It->begin(), It->end());
+    CopyPhiCycle Cycle;
+    for (Node *N : *It) {
+      Cycle.Registers.push_back(N->MI->getOperand(0).getReg());
+      for (unsigned I = 1, Step = N->MI->isPHI() ? 2 : 1;
+           I < N->MI->getNumOperands(); I += Step) {
+        const MachineOperand &MO = N->MI->getOperand(I);
+        if (!Members.contains(Defs.lookup(MO.getReg())))
+          Cycle.Inputs.push_back(&MO);
+      }
+    }
+    // A closed, unseeded cycle establishes no range fact.
+    if (!Cycle.Inputs.empty())
+      Cycles.push_back(std::move(Cycle));
+  }
+  return Cycles;
+}
+
 static bool removeRedundantExtensions(MachineFunction &MF) {
   const RISCCSubtarget &STI = MF.getSubtarget<RISCCSubtarget>();
   if (!MF.getRegInfo().isSSA())
@@ -572,6 +643,7 @@ static bool removeRedundantExtensions(MachineFunction &MF) {
     return MO.isUndef() || MO.getSubReg() ? FullWidth
                                           : UnsignedWidth(MO.getReg());
   };
+  auto CopyPhiCycles = getCopyPhiCycles(MF);
   // Apart from the entry facts, start with unknown values. Each iteration
   // only narrows widths, so cycles without a known defining value remain
   // conservatively unknown.
@@ -726,6 +798,23 @@ static bool removeRedundantExtensions(MachineFunction &MF) {
           Progress = true;
         }
       }
+    for (const CopyPhiCycle &Cycle : CopyPhiCycles) {
+      unsigned Bits = 1, UnsignedBits = 0;
+      for (const MachineOperand *MO : Cycle.Inputs) {
+        Bits = std::max(Bits, OperandWidth(*MO));
+        UnsignedBits = std::max(UnsignedBits, OperandUnsignedWidth(*MO));
+      }
+      for (Register Reg : Cycle.Registers) {
+        if (Bits < Width(Reg)) {
+          Widths[Reg] = Bits;
+          Progress = true;
+        }
+        if (UnsignedBits < UnsignedWidth(Reg)) {
+          UnsignedWidths[Reg] = UnsignedBits;
+          Progress = true;
+        }
+      }
+    }
   } while (Progress);
 
   bool Changed = false;
@@ -1781,9 +1870,13 @@ static bool synthesizeUnsharedConstants(MachineFunction &MF) {
         const auto &Inst = Sequence[Index];
         auto New = BuildMI(MBB, MI, MI.getDebugLoc(),
                            TII.get(TII.getNativeOpcode(Inst.Opcode)), Dst);
-        if (Index)
-          New.addReg(Dst, RegState::Kill);
-        New.addImm(Inst.Immediate);
+        if (Inst.Opcode == RISCC::ADD)
+          New.addReg(Dst).addReg(Dst, RegState::Kill);
+        else {
+          if (Index)
+            New.addReg(Dst, RegState::Kill);
+          New.addImm(Inst.Immediate);
+        }
         New->getOperand(0).setIsDead(Index + 1 == Sequence.size() &&
                                      MI.getOperand(0).isDead());
       }

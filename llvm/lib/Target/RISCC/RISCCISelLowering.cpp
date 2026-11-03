@@ -36,6 +36,15 @@ static cl::opt<bool> EnableWideMultiplyCost(
 static cl::opt<bool> EnableStackArgumentTailCalls(
     "riscc-stack-argument-tail-calls", cl::Hidden, cl::init(true),
     cl::desc("Reuse unchanged incoming stack arguments for RISC-C tail calls"));
+static cl::opt<bool> EnableSignBitCompare(
+    "riscc-sign-bit-compare", cl::Hidden, cl::init(true),
+    cl::desc("Extract the native sign bit with a comparison against zero"));
+static cl::opt<bool> EnableSizeSignMask(
+    "riscc-size-sign-mask", cl::Hidden, cl::init(true),
+    cl::desc("Use compare-and-negate for size when shorter than sign shifts"));
+static cl::opt<bool> EnableConstantDivRem(
+    "riscc-constant-divrem", cl::Hidden, cl::init(true),
+    cl::desc("Lower native constant division pairs using multiply-high"));
 
 static SDValue loadRC32Literal(SDValue Address, const SDLoc &DL,
                                SelectionDAG &DAG) {
@@ -78,14 +87,11 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA})
     setOperationAction(Op, XLenVT, Custom);
   for (unsigned Op :
-       {ISD::ROTL, ISD::ROTR, ISD::BSWAP, ISD::CTLZ, ISD::CTTZ, ISD::CTPOP,
-        ISD::SHL_PARTS, ISD::SRL_PARTS, ISD::SRA_PARTS, ISD::MULHS})
+       {ISD::BSWAP, ISD::CTLZ, ISD::CTTZ, ISD::CTPOP, ISD::SHL_PARTS,
+        ISD::SRL_PARTS, ISD::SRA_PARTS, ISD::MULHS})
     setOperationAction(Op, XLenVT, Expand);
-  setOperationAction(
-      ISD::UMUL_LOHI, XLenVT,
-      STI.hasMulhu() || (!STI.isRC32() && STI.hasMul()) ? Custom : Expand);
-  setOperationAction(ISD::SMUL_LOHI, XLenVT,
-                     !STI.isRC32() && STI.hasMul() ? Custom : Expand);
+  setOperationAction(ISD::UMUL_LOHI, XLenVT, STI.hasMul() ? Custom : Expand);
+  setOperationAction(ISD::SMUL_LOHI, XLenVT, STI.hasMul() ? Custom : Expand);
   setOperationAction(ISD::MULHU, XLenVT, STI.hasMulhu() ? Custom : Expand);
   setOperationAction(ISD::SIGN_EXTEND_INREG, XLenVT,
                      STI.isNano() || STI.isRC32() ? Custom : Expand);
@@ -94,14 +100,15 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
     setOperationAction(Op, XLenVT, LibCall);
   for (unsigned Op : {ISD::UDIV, ISD::UREM})
     setOperationAction(Op, XLenVT, STI.hasDivu() ? Custom : LibCall);
-  setOperationAction(ISD::SDIVREM, XLenVT, Expand);
-  setOperationAction(ISD::UDIVREM, XLenVT, STI.hasDivu() ? Custom : Expand);
+  setOperationAction(ISD::SDIVREM, XLenVT, Custom);
+  setOperationAction(ISD::UDIVREM, XLenVT, Custom);
 
   for (unsigned Op : {ISD::SHL, ISD::SRL, ISD::SRA, ISD::SDIV, ISD::UDIV,
                       ISD::SREM, ISD::UREM})
     setOperationAction(Op, MVT::i64, LibCall);
   setOperationAction(ISD::MUL, MVT::i64,
-                     STI.isRC32() && STI.hasMulhu() ? Expand : LibCall);
+                     STI.isRC32() ? (STI.hasMulhu() ? Expand : Custom)
+                                  : LibCall);
   setOperationAction(ISD::SDIVREM, MVT::i64, Expand);
   setOperationAction(ISD::UDIVREM, MVT::i64, Expand);
 
@@ -117,6 +124,10 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
     setOperationAction(Op, MVT::Other, Expand);
   setOperationAction(ISD::VASTART, MVT::Other, Custom);
 
+  // Booleans occupy a byte in memory. Promote their extending loads before
+  // instruction selection, including loads introduced by global shrinking.
+  for (unsigned Op : {ISD::EXTLOAD, ISD::ZEXTLOAD, ISD::SEXTLOAD})
+    setLoadExtAction(Op, XLenVT, MVT::i1, Promote);
   setLoadExtAction(ISD::EXTLOAD, XLenVT, MVT::i8, Legal);
   setLoadExtAction(ISD::ZEXTLOAD, XLenVT, MVT::i8, Legal);
   setLoadExtAction(ISD::SEXTLOAD, XLenVT, MVT::i8,
@@ -124,13 +135,15 @@ RISCCTargetLowering::RISCCTargetLowering(const TargetMachine &TM,
   setTruncStoreAction(XLenVT, MVT::i8, Legal);
 
   // Use the compact native funnel instructions for rotates and wide shifts.
-  for (unsigned Op : {ISD::FSHL, ISD::FSHR})
+  for (unsigned Op : {ISD::FSHL, ISD::FSHR, ISD::ROTL, ISD::ROTR})
     setOperationAction(Op, XLenVT, STI.isNano() ? Expand : Custom);
 
   // Keep 32-bit div/rem pairs together for the __{u}divmodsi4 helpers.
   setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
   setTargetDAGCombine(ISD::STORE);
+  setTargetDAGCombine(ISD::ADD);
+  setTargetDAGCombine(ISD::SREM);
   setTargetDAGCombine(ISD::MUL);
   setTargetDAGCombine(ISD::AND);
   setTargetDAGCombine(ISD::OR);
@@ -165,6 +178,33 @@ MVT RISCCTargetLowering::getScalarShiftAmountTy(const DataLayout &, EVT) const {
 
 MVT::SimpleValueType RISCCTargetLowering::getCmpLibcallReturnType() const {
   return STI.getXLenVT().SimpleTy;
+}
+
+bool RISCCTargetLowering::isIntDivCheap(EVT VT, AttributeList Attr) const {
+  // A software high product is worthwhile for speed, but expanding it at
+  // every constant divide costs more space than the shared division helper.
+  return STI.isRC32() && !STI.hasMulhu() && VT == MVT::i32 &&
+         (Attr.hasFnAttr(Attribute::OptimizeForSize) ||
+          Attr.hasFnAttr(Attribute::MinSize));
+}
+
+bool RISCCTargetLowering::decomposeMulByConstant(LLVMContext &, EVT VT,
+                                                 SDValue C) const {
+  if (STI.isNano() || VT != (STI.isRC32() ? MVT::i64 : MVT::i32))
+    return false;
+  auto *Constant = dyn_cast<ConstantSDNode>(C);
+  if (!Constant)
+    return false;
+  // One small shift and an add/subtract beat a wide multiply call in both
+  // instructions and call-site size. A native-word shift is also cheap:
+  // legalization simply moves the low word into the high result word.
+  int64_t Value = Constant->getSExtValue();
+  APInt WordPower =
+      APInt::getOneBitSet(VT.getSizeInBits(), STI.getXLenVT().getSizeInBits());
+  APInt Magnitude = Constant->getAPIntValue().abs();
+  return Value == 3 || Value == 5 || Value == 7 || Value == -3 || Value == -5 ||
+         Value == -7 || Magnitude == WordPower - 1 ||
+         Magnitude == WordPower + 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -315,6 +355,27 @@ static SDValue combineNarrowableShiftedLoad(SDNode *N, SelectionDAG &DAG) {
   return DAG.getNode(ISD::SHL, DL, VT, Narrow, Shift.getOperand(1));
 }
 
+// A shifted byte mask needs a literal on RC32. Masking the register first
+// uses ANDI instead, while keeping the same shift and the same result.
+static SDValue combineShiftedByteMask(SDNode *N, SelectionDAG &DAG) {
+  SDValue Shift = N->getOperand(0);
+  auto *Mask = dyn_cast<ConstantSDNode>(N->getOperand(1));
+  if (!Mask || Shift.getOpcode() != ISD::SHL || !Shift.hasOneUse() ||
+      isa<LoadSDNode>(Shift.getOperand(0)))
+    return {};
+  auto *Amount = dyn_cast<ConstantSDNode>(Shift.getOperand(1));
+  if (!Amount || Amount->isZero() ||
+      Amount->getZExtValue() >= N->getValueType(0).getSizeInBits() ||
+      Mask->getAPIntValue().lshr(Amount->getZExtValue()) != 0xff)
+    return {};
+
+  SDLoc DL(N);
+  EVT VT = N->getValueType(0);
+  SDValue Narrow = DAG.getNode(ISD::AND, DL, VT, Shift.getOperand(0),
+                               DAG.getConstant(0xff, DL, VT));
+  return DAG.getNode(ISD::SHL, DL, VT, Narrow, Shift.getOperand(1));
+}
+
 // C - (a == b) becomes (a != b) + (C - 1), so ADDI replaces loading C
 // and subtracting. For C == 1 the inverse comparison is the whole result.
 static SDValue combineSubOfEquality(SDNode *N, SelectionDAG &DAG) {
@@ -401,6 +462,48 @@ static SDValue removeOverwrittenStore(StoreSDNode *Store,
   return {};
 }
 
+// IR reassociation can turn acc + ((x << n) | (x >> (XLEN - n))) into
+// (acc + (x << n)) + (x >> (XLEN - n)). Recover the disjoint shift pair
+// before either variable shift becomes a separate runtime call.
+static SDValue combineRotateAdd(SDNode *N, SelectionDAG &DAG) {
+  EVT VT = N->getValueType(0);
+  unsigned Bits = VT.getSizeInBits();
+  auto IsComplement = [&](SDValue A, SDValue B) {
+    return A.getOpcode() == ISD::SUB && A.getOperand(1) == B &&
+           isa<ConstantSDNode>(A.getOperand(0)) &&
+           A.getConstantOperandVal(0) == Bits;
+  };
+  for (unsigned Outer = 0; Outer != 2; ++Outer) {
+    SDValue Sum = N->getOperand(Outer), Other = N->getOperand(1 - Outer);
+    if (Sum.getOpcode() != ISD::ADD || !Sum.hasOneUse())
+      continue;
+    for (unsigned Inner = 0; Inner != 2; ++Inner) {
+      SDValue Left = Sum.getOperand(Inner), Right = Other;
+      if (Left.getOpcode() == ISD::SRL)
+        std::swap(Left, Right);
+      if (Left.getOpcode() != ISD::SHL || Right.getOpcode() != ISD::SRL ||
+          !Left.hasOneUse() || !Right.hasOneUse() ||
+          Left.getOperand(0) != Right.getOperand(0))
+        continue;
+      SDValue Count;
+      unsigned Opcode;
+      if (IsComplement(Right.getOperand(1), Left.getOperand(1))) {
+        Opcode = ISD::ROTL;
+        Count = Left.getOperand(1);
+      } else if (IsComplement(Left.getOperand(1), Right.getOperand(1))) {
+        Opcode = ISD::ROTR;
+        Count = Right.getOperand(1);
+      } else {
+        continue;
+      }
+      SDLoc DL(N);
+      SDValue Rotate = DAG.getNode(Opcode, DL, VT, Left.getOperand(0), Count);
+      return DAG.getNode(ISD::ADD, DL, VT, Sum.getOperand(1 - Inner), Rotate);
+    }
+  }
+  return {};
+}
+
 SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
                                                DAGCombinerInfo &DCI) const {
   if (N->getOpcode() == ISD::STORE)
@@ -409,6 +512,19 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
   SDLoc DL(N);
   const MVT VT = STI.getXLenVT();
   const unsigned Bits = VT.getSizeInBits();
+
+  if (N->getOpcode() == ISD::SREM && STI.isRC32() && N->getValueType(0) == VT) {
+    auto *C = dyn_cast<ConstantSDNode>(N->getOperand(1));
+    if (C && (C->getAPIntValue().isPowerOf2() ||
+              C->getAPIntValue().isNegatedPowerOf2())) {
+      SDValue Pair = DAG.getNode(ISD::SDIVREM, DL, DAG.getVTList(VT, VT),
+                                 N->getOperand(0), N->getOperand(1));
+      return lowerDivRem(Pair, DAG).getValue(1);
+    }
+  }
+
+  if (N->getOpcode() == ISD::ADD && !STI.isNano() && N->getValueType(0) == VT)
+    return combineRotateAdd(N, DAG);
 
   // Overflow legalization can produce SETCC, an i1 mask, then a comparison
   // just to branch. Fold after legalization, when the predicate is available.
@@ -439,8 +555,34 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
     }
   }
 
-  if (N->getOpcode() == ISD::AND && N->getValueType(0) == VT)
-    return combineNarrowableShiftedLoad(N, DAG);
+  if (N->getOpcode() == ISD::AND && N->getValueType(0) == VT) {
+    // A bounded bit extraction needs only a mask test, not the other bits of
+    // the shifted value. Reuse the byte-mask table for variable byte indices.
+    // Keep shared shifts intact and retain the short-count/Nano/Oz policies.
+    SDValue Shift = N->getOperand(0);
+    if (!STI.isNano() && !DAG.getMachineFunction().getFunction().hasMinSize() &&
+        isOneConstant(N->getOperand(1)) && Shift.hasOneUse() &&
+        (Shift.getOpcode() == ISD::SRL || Shift.getOpcode() == RISCCISD::SRL ||
+         Shift.getOpcode() == ISD::SRA || Shift.getOpcode() == RISCCISD::SRA)) {
+      SDValue Count = Shift.getOperand(1);
+      APInt Max = DAG.computeKnownBits(Count).getMaxValue();
+      if (!isa<ConstantSDNode>(Count) && Max.uge(5) && Max.ule(7)) {
+        SDValue Mask = lowerShift(
+            DAG.getNode(ISD::SHL, DL, VT, DAG.getConstant(1, DL, VT), Count),
+            DAG);
+        SDValue Bit = DAG.getNode(ISD::AND, DL, VT, Shift.getOperand(0), Mask);
+        // A target comparison keeps generic combining from recreating SRL.
+        return DAG.getNode(RISCCISD::SET_CC_IMM, DL, VT, Bit,
+                           DAG.getTargetConstant(0, DL, VT),
+                           DAG.getTargetConstant(ISD::SETNE, DL, MVT::i16));
+      }
+    }
+    if (SDValue Result = combineNarrowableShiftedLoad(N, DAG))
+      return Result;
+    if (STI.isRC32())
+      return combineShiftedByteMask(N, DAG);
+    return {};
+  }
   if (N->getOpcode() == ISD::SUB && N->getValueType(0) == VT)
     if (SDValue Result = combineSubOfEquality(N, DAG))
       return Result;
@@ -521,7 +663,7 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
   // Recover div/rem pairs from x - (x / y) * y so both results share a divide.
   if (N->getOpcode() == ISD::SUB && N->getValueType(0).isSimple() &&
       (N->getValueType(0).getSimpleVT() == MVT::i32 ||
-       (N->getValueType(0).getSimpleVT() == MVT::i16 && STI.hasDivu()))) {
+       N->getValueType(0).getSimpleVT() == STI.getXLenVT())) {
     MVT VT = N->getValueType(0).getSimpleVT();
     SDValue Dividend = N->getOperand(0);
     SDValue Product = N->getOperand(1);
@@ -533,10 +675,6 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
       }
       if ((Div.getOpcode() == ISD::SDIV || Div.getOpcode() == ISD::UDIV) &&
           Div.getOperand(0) == Dividend && Div.getOperand(1) == Divisor) {
-        // The MDU has only unsigned division. Keep signed i16 division on
-        // the normal helper path; i32 retains its existing paired libcall.
-        if (VT == MVT::i16 && Div.getOpcode() != ISD::UDIV)
-          return {};
         unsigned Opcode =
             Div.getOpcode() == ISD::SDIV ? ISD::SDIVREM : ISD::UDIVREM;
         SDValue DivRem =
@@ -575,6 +713,8 @@ SDValue RISCCTargetLowering::LowerOperation(SDValue Op,
     return lowerShift(Op, DAG);
   case ISD::FSHL:
   case ISD::FSHR:
+  case ISD::ROTL:
+  case ISD::ROTR:
     return lowerFunnelShift(Op, DAG);
   case ISD::SIGN_EXTEND_INREG: {
     MVT FromVT = cast<VTSDNode>(Op.getOperand(1))->getVT().getSimpleVT();
@@ -642,22 +782,48 @@ SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
                                               SelectionDAG &DAG) const {
   MVT VT = STI.getXLenVT();
   const unsigned Bits = VT.getSizeInBits();
-  bool IsLeft = Op.getOpcode() == ISD::FSHL;
+  bool IsRotate = Op.getOpcode() == ISD::ROTL || Op.getOpcode() == ISD::ROTR;
+  bool IsLeft = Op.getOpcode() == ISD::FSHL || Op.getOpcode() == ISD::ROTL;
   SDValue High = Op.getOperand(0);
-  SDValue Low = Op.getOperand(1);
-  SDValue Amount = Op.getOperand(2);
+  SDValue Low = IsRotate ? High : Op.getOperand(1);
+  SDValue Amount = Op.getOperand(IsRotate ? 1 : 2);
   SDLoc DL(Op);
   if (Amount.getValueType() != VT)
     Amount = DAG.getZExtOrTrunc(Amount, DL, VT);
 
   auto Shift = [&](unsigned Opcode, SDValue Value, SDValue Count) {
-    return lowerShift(DAG.getNode(Opcode, DL, VT, Value, Count), DAG);
+    SDValue Result = DAG.getNode(Opcode, DL, VT, Value, Count);
+    // Constant incoming bits or a zero count can fold the shift immediately.
+    // Only an actual shift node has the operands expected by lowerShift.
+    return Result.getOpcode() == Opcode ? lowerShift(Result, DAG) : Result;
   };
 
   if (const auto *C = dyn_cast<ConstantSDNode>(Amount)) {
     unsigned Count = C->getZExtValue() & (Bits - 1);
     if (Count == 0)
       return IsLeft ? High : Low;
+
+    // A rotate feeds each funnel step from its own result. This avoids the
+    // independent incoming-word shifts needed by a two-input funnel, and
+    // keeps a short rotation in one register. Choose the shorter direction
+    // whenever it uses no more instructions than two shifts and an OR.
+    if (High == Low) {
+      unsigned Distance = std::min(Count, Bits - Count);
+      unsigned ShiftStep = STI.hasWideShift() ? 8 : 1;
+      unsigned SplitCost = divideCeil(Count, ShiftStep) +
+                           divideCeil(Bits - Count, ShiftStep) + 1;
+      // With other uses of the input, leave equal-cost forms as shifts: they
+      // can share partial shifts with those uses and need no initial copy.
+      if (Distance < SplitCost || (Distance == SplitCost && High.hasOneUse())) {
+        bool Left = IsLeft == (Count <= Bits / 2);
+        unsigned Funnel = Left ? RISCCISD::FSL1 : RISCCISD::FSR1;
+        SDValue Result = High;
+        for (unsigned I = 0; I != Distance; ++I)
+          Result = DAG.getNode(Funnel, DL, VT, Result, Result);
+        return Result;
+      }
+    }
+
     if (Count == 1)
       return DAG.getNode(IsLeft ? RISCCISD::FSL1 : RISCCISD::FSR1, DL, VT,
                          IsLeft ? High : Low, IsLeft ? Low : High);
@@ -684,6 +850,9 @@ SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
     SDValue ShiftedLow = Shift(ISD::SRL, Low, IsLeft ? Inverse : CountValue);
     return DAG.getNode(ISD::OR, DL, VT, ShiftedHigh, ShiftedLow);
   }
+
+  if (High == Low)
+    return lowerRotateLibCall(Op, DAG);
 
   // Mask both variable counts to the word width. The two-step side of
   // each expansion avoids ever shifting by the full word width.
@@ -720,78 +889,156 @@ SDValue RISCCTargetLowering::lowerMULLOHI(SDValue Op, SelectionDAG &DAG,
   SDLoc DL(Op);
   SDValue LHS = Op.getOperand(0), RHS = Op.getOperand(1);
   MVT VT = Op.getValueType().getSimpleVT();
-  if (!Signed && STI.hasMulhu()) {
+  SDValue Lo, Hi;
+  const unsigned HalfBits = VT.getSizeInBits() / 2;
+  SDValue HalfShift = DAG.getConstant(HalfBits, DL, VT);
+  SDValue SignShift = DAG.getConstant(VT.getSizeInBits() - 1, DL, VT);
+  SDValue HalfMask = DAG.getConstant((1u << HalfBits) - 1, DL, VT);
+
+  if (STI.hasMulhu()) {
     SDValue Product =
         DAG.getNode(RISCCISD::MULHU, DL, DAG.getVTList(VT, VT), LHS, RHS);
-    return DAG.getMergeValues({Product.getValue(0), Product.getValue(1)}, DL);
+    Lo = Product.getValue(0);
+    Hi = Product.getValue(1);
+  } else {
+    // Half-width operands keep each partial product within a native word.
+    // Keep all nodes legal: introducing a wider integer here would violate
+    // operation legalization's phase ordering.
+    // Signed high limbs and arithmetic carries directly produce a signed
+    // high word. The cross sums fit in a signed native word, so a separate
+    // correction for each operand's sign is unnecessary.
+    unsigned HighShift = Signed ? ISD::SRA : ISD::SRL;
+    SDValue LL = DAG.getNode(ISD::AND, DL, VT, LHS, HalfMask);
+    SDValue LH = DAG.getNode(HighShift, DL, VT, LHS, HalfShift);
+    SDValue RL = DAG.getNode(ISD::AND, DL, VT, RHS, HalfMask);
+    SDValue RH = DAG.getNode(HighShift, DL, VT, RHS, HalfShift);
+    SDValue P0 = DAG.getNode(ISD::MUL, DL, VT, LL, RL);
+    SDValue P1 = DAG.getNode(ISD::MUL, DL, VT, LL, RH);
+    SDValue P2 = DAG.getNode(ISD::MUL, DL, VT, LH, RL);
+    SDValue P3 = DAG.getNode(ISD::MUL, DL, VT, LH, RH);
+
+    // Accumulate one cross product at a time. Each sum fits in a word;
+    // carrying between the sums avoids extracting both halves of P1/P2.
+    SDValue Mid = DAG.getNode(ISD::ADD, DL, VT, P2,
+                              DAG.getNode(ISD::SRL, DL, VT, P0, HalfShift));
+    SDValue Carry = DAG.getNode(HighShift, DL, VT, Mid, HalfShift);
+    Mid = DAG.getNode(ISD::ADD, DL, VT, P1,
+                      DAG.getNode(ISD::AND, DL, VT, Mid, HalfMask));
+    Lo = DAG.getNode(ISD::OR, DL, VT,
+                     DAG.getNode(ISD::AND, DL, VT, P0, HalfMask),
+                     DAG.getNode(ISD::SHL, DL, VT, Mid, HalfShift));
+
+    Hi = DAG.getNode(ISD::ADD, DL, VT, P3, Carry);
+    Hi = DAG.getNode(ISD::ADD, DL, VT, Hi,
+                     DAG.getNode(HighShift, DL, VT, Mid, HalfShift));
   }
 
-  assert(VT == MVT::i16 &&
-         "software paired multiplication is only used by RC16");
-
-  SDValue C8 = DAG.getConstant(8, DL, MVT::i16);
-  SDValue C15 = DAG.getConstant(15, DL, MVT::i16);
-  SDValue ByteMask = DAG.getConstant(0xff, DL, MVT::i16);
-
-  // Compute the full unsigned product from four 8x8 products.  Every node is
-  // i16: introducing an illegal i32 from custom operation legalization would
-  // violate LegalizeDAG's phase ordering.  Byte operands ensure each native
-  // low-half MUL contains the complete partial product.
-  SDValue LL = DAG.getNode(ISD::AND, DL, MVT::i16, LHS, ByteMask);
-  SDValue LH = DAG.getNode(ISD::SRL, DL, MVT::i16, LHS, C8);
-  SDValue RL = DAG.getNode(ISD::AND, DL, MVT::i16, RHS, ByteMask);
-  SDValue RH = DAG.getNode(ISD::SRL, DL, MVT::i16, RHS, C8);
-  SDValue P0 = DAG.getNode(ISD::MUL, DL, MVT::i16, LL, RL);
-  SDValue P1 = DAG.getNode(ISD::MUL, DL, MVT::i16, LL, RH);
-  SDValue P2 = DAG.getNode(ISD::MUL, DL, MVT::i16, LH, RL);
-  SDValue P3 = DAG.getNode(ISD::MUL, DL, MVT::i16, LH, RH);
-
-  SDValue Mid = DAG.getNode(ISD::ADD, DL, MVT::i16,
-                            DAG.getNode(ISD::SRL, DL, MVT::i16, P0, C8),
-                            DAG.getNode(ISD::AND, DL, MVT::i16, P1, ByteMask));
-  Mid = DAG.getNode(ISD::ADD, DL, MVT::i16, Mid,
-                    DAG.getNode(ISD::AND, DL, MVT::i16, P2, ByteMask));
-  SDValue Lo = DAG.getNode(
-      ISD::OR, DL, MVT::i16, DAG.getNode(ISD::AND, DL, MVT::i16, P0, ByteMask),
-      DAG.getNode(ISD::SHL, DL, MVT::i16,
-                  DAG.getNode(ISD::AND, DL, MVT::i16, Mid, ByteMask), C8));
-
-  SDValue Hi = DAG.getNode(ISD::ADD, DL, MVT::i16, P3,
-                           DAG.getNode(ISD::SRL, DL, MVT::i16, P1, C8));
-  Hi = DAG.getNode(ISD::ADD, DL, MVT::i16, Hi,
-                   DAG.getNode(ISD::SRL, DL, MVT::i16, P2, C8));
-  Hi = DAG.getNode(ISD::ADD, DL, MVT::i16, Hi,
-                   DAG.getNode(ISD::SRL, DL, MVT::i16, Mid, C8));
-
-  if (Signed) {
+  if (Signed && STI.hasMulhu()) {
     // Convert unsigned high-half multiplication to signed high-half:
     // hi -= (lhs < 0 ? rhs : 0) + (rhs < 0 ? lhs : 0).
-    SDValue LSign = DAG.getNode(ISD::SRA, DL, MVT::i16, LHS, C15);
-    SDValue RSign = DAG.getNode(ISD::SRA, DL, MVT::i16, RHS, C15);
-    Hi = DAG.getNode(ISD::SUB, DL, MVT::i16, Hi,
-                     DAG.getNode(ISD::AND, DL, MVT::i16, LSign, RHS));
-    Hi = DAG.getNode(ISD::SUB, DL, MVT::i16, Hi,
-                     DAG.getNode(ISD::AND, DL, MVT::i16, RSign, LHS));
+    SDValue LSign = DAG.getNode(ISD::SRA, DL, VT, LHS, SignShift);
+    SDValue RSign = DAG.getNode(ISD::SRA, DL, VT, RHS, SignShift);
+    Hi = DAG.getNode(ISD::SUB, DL, VT, Hi,
+                     DAG.getNode(ISD::AND, DL, VT, LSign, RHS));
+    Hi = DAG.getNode(ISD::SUB, DL, VT, Hi,
+                     DAG.getNode(ISD::AND, DL, VT, RSign, LHS));
   }
   SDValue Results[] = {Lo, Hi};
   return DAG.getMergeValues(Results, DL);
 }
 
 SDValue RISCCTargetLowering::lowerMul(SDValue Op, SelectionDAG &DAG) const {
-  assert(Op.getOpcode() == ISD::MUL && Op.getValueType() == MVT::i32);
-
-  Type *I32 = Type::getInt32Ty(*DAG.getContext());
-  ArgListTy Args;
-  for (SDValue Value : Op->op_values())
-    Args.emplace_back(Value, I32);
+  assert(Op.getOpcode() == ISD::MUL &&
+         Op.getValueType() == (STI.isRC32() ? MVT::i64 : MVT::i32));
 
   SDLoc DL(Op);
+  EVT NativeVT = STI.getXLenVT();
+  unsigned WordBits = NativeVT.getSizeInBits();
+  bool NarrowUnsigned = false, NarrowSigned = false;
+  if (STI.hasMul()) {
+    APInt HighMask = APInt::getHighBitsSet(2 * WordBits, WordBits);
+    NarrowUnsigned = llvm::all_of(Op->op_values(), [&](SDValue V) {
+      return DAG.MaskedValueIsZero(V, HighMask);
+    });
+    NarrowSigned =
+        !NarrowUnsigned && llvm::all_of(Op->op_values(), [&](SDValue V) {
+          return DAG.ComputeNumSignBits(V) > WordBits;
+        });
+  }
+
+  // Native operands need only four half-word products. Passing them in
+  // registers also avoids the stack argument of the general wide helper.
+  bool Narrow = NarrowUnsigned || NarrowSigned;
+  if (Narrow && (STI.hasMulhu() ||
+                 (!DAG.getMachineFunction().getFunction().hasOptSize() &&
+                  (isa<ConstantSDNode>(Op.getOperand(0)) ||
+                   isa<ConstantSDNode>(Op.getOperand(1)))))) {
+    // A native widening product maps directly to MULHU when available.
+    // Software partial products remain worthwhile for speed constants: the
+    // DAG can fold their limbs and discard unused result bits before isel.
+    SDValue LHS = DAG.getNode(ISD::TRUNCATE, DL, NativeVT, Op.getOperand(0));
+    SDValue RHS = DAG.getNode(ISD::TRUNCATE, DL, NativeVT, Op.getOperand(1));
+    SDValue Product =
+        DAG.getNode(NarrowSigned ? ISD::SMUL_LOHI : ISD::UMUL_LOHI, DL,
+                    DAG.getVTList(NativeVT, NativeVT), LHS, RHS);
+    return DAG.getNode(ISD::BUILD_PAIR, DL, Op.getValueType(),
+                       Product.getValue(0), Product.getValue(1));
+  }
+  Type *Ty =
+      IntegerType::get(*DAG.getContext(), Op.getValueType().getSizeInBits());
+  Type *ArgTy = Narrow ? IntegerType::get(*DAG.getContext(), WordBits) : Ty;
+  bool Square = Narrow && Op.getOperand(0) == Op.getOperand(1);
+  SmallVector<SDValue, 2> Values(Op->op_values());
+  if (Narrow) {
+    for (SDValue &Value : Values)
+      Value = DAG.getNode(ISD::TRUNCATE, DL, NativeVT, Value);
+    // DAG canonicalization may reverse a commutative product's arguments.
+    // Retain their incoming ABI registers when that avoids a parallel swap.
+    // Preserve a proven-small second operand for the helper's short paths.
+    const MachineRegisterInfo &MRI = DAG.getMachineFunction().getRegInfo();
+    auto IncomingRegister = [&](SDValue Value) -> MCRegister {
+      while (Value.getOpcode() == ISD::AssertSext ||
+             Value.getOpcode() == ISD::AssertZext)
+        Value = Value.getOperand(0);
+      if (Value.getOpcode() != ISD::CopyFromReg)
+        return MCRegister();
+      Register Reg = cast<RegisterSDNode>(Value.getOperand(1))->getReg();
+      return Reg.isVirtual() ? MRI.getLiveInPhysReg(Reg) : Reg.asMCReg();
+    };
+    if (!Square && IncomingRegister(Values[0]) == RISCC::R2 &&
+        IncomingRegister(Values[1]) == RISCC::R1 &&
+        !DAG.computeKnownBits(Values[1]).getMaxValue().ule(3))
+      std::swap(Values[0], Values[1]);
+  }
+  ArgListTy Args;
+  for (SDValue Value : Values) {
+    Args.emplace_back(Value, ArgTy);
+    if (Square)
+      break;
+  }
+
+  // Keep full-width products shared rather than duplicating a much larger
+  // software partial-product sequence at every call site.
+  // Equal native operands need three half-word products and only one input.
+  // A proven-large second operand can bypass the helper's 0/1/2/3 dispatch.
+  // Its entry shares the arithmetic body, so unused dispatch can be collected.
+  bool LargeSecond =
+      Narrow && !Square && DAG.computeKnownBits(Values[1]).getMinValue().uge(4);
+  const char *Name;
+  if (!Narrow)
+    Name = STI.isRC32() ? "__muldi3" : "__mulsi3";
+  else if (Square)
+    Name = NarrowUnsigned ? "__riscc_usquarewide" : "__riscc_ssquarewide";
+  else if (LargeSecond)
+    Name = NarrowUnsigned ? "__riscc_umulwide_large" : "__riscc_smulwide_large";
+  else
+    Name = NarrowUnsigned ? "__riscc_umulwide" : "__riscc_smulwide";
   SDValue Callee =
-      DAG.getExternalSymbol("__mulsi3", getPointerTy(DAG.getDataLayout()));
+      DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
   CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(DL)
       .setChain(DAG.getEntryNode())
-      .setLibCallee(CallingConv::C, I32, Callee, std::move(Args));
+      .setLibCallee(CallingConv::C, Ty, Callee, std::move(Args));
   return LowerCallTo(CLI).first;
 }
 
@@ -829,18 +1076,32 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
     SDValue V = Op.getOperand(0);
     const Function &Fn = DAG.getMachineFunction().getFunction();
 
-    // A sign mask needs a compare and negation, not fifteen or thirty-one
-    // iterative shift clocks. The extra live zero can increase register
-    // pressure, so size builds retain Full's compact immediate shifts.
-    // Min/Sys otherwise need fifteen or thirty-one one-bit instructions.
+    // A zero, comparison and negation cost three compact instructions.
+    // Full RC16's two immediate shifts remain smaller in size builds; RC32's
+    // four shifts are larger even after materializing the extra live zero.
     if (!STI.isNano() && Op.getOpcode() == ISD::SRA &&
         Amount == VT.getSizeInBits() - 1 &&
-        (!Fn.hasOptSize() || !STI.hasWideShift())) {
+        (!Fn.hasOptSize() || !STI.hasWideShift() ||
+         (EnableSizeSignMask && divideCeil(Amount, 8u) > 3))) {
       SDValue Zero = DAG.getConstant(0, DL, VT);
       SDValue Negative = DAG.getNode(
           RISCCISD::SET_CC, DL, VT, V, Zero,
           DAG.getTargetConstant(ISD::SETLT, DL, MVT::i16));
       return DAG.getNode(ISD::SUB, DL, VT, Zero, Negative);
+    }
+
+    // The top bit is exactly the signed-less-than-zero predicate. Unlike an
+    // unsigned comparison with 0x7fff/0x7fffffff, this needs no large literal.
+    // Keep OR users intact for the later funnel-shift combine.
+    if (EnableSignBitCompare && !STI.isNano() && Op.getOpcode() == ISD::SRL &&
+        Amount == VT.getSizeInBits() - 1 &&
+        (!Fn.hasOptSize() || !STI.hasWideShift() ||
+         divideCeil(Amount, 8u) > 2) &&
+        llvm::none_of(Op->users(),
+                      [](SDNode *U) { return U->getOpcode() == ISD::OR; })) {
+      return DAG.getNode(RISCCISD::SET_CC, DL, VT, V,
+                         DAG.getConstant(0, DL, VT),
+                         DAG.getTargetConstant(ISD::SETLT, DL, MVT::i16));
     }
 
     // Extracting the highest possible set bit is a range test. Leave OR
@@ -898,8 +1159,39 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
     return V;
   }
   const Function &Fn = DAG.getMachineFunction().getFunction();
+  // Byte-sized single-bit masks can use a shared eight-byte lookup instead of
+  // a variable-count loop. Preserve short-count loops and the Oz policy, and
+  // require every possible index to stay within the table. Nano has no byte
+  // loads. Offsetting the index also covers masks starting at other byte bits.
+  if (!STI.isNano() && !Fn.hasMinSize() && Op.getOpcode() != ISD::SRA) {
+    if (auto *Mask = dyn_cast<ConstantSDNode>(Op.getOperand(0));
+        Mask && Mask->getAPIntValue().isPowerOf2() &&
+        Mask->getAPIntValue().ule(128)) {
+      APInt Max = DAG.computeKnownBits(Op.getOperand(1)).getMaxValue();
+      unsigned Bit = Mask->getAPIntValue().logBase2();
+      bool Left = Op.getOpcode() == ISD::SHL;
+      unsigned Limit = Left ? 7 - Bit : Bit;
+      if (Max.uge(4) && Max.ule(Limit)) {
+        const char *Symbol = Left ? "__riscc_bitmask_l8" : "__riscc_bitmask_r8";
+        SDValue Base =
+            lowerExternalSymbol(DAG.getExternalSymbol(Symbol, VT), DAG);
+        unsigned Offset = Left ? Bit : 7 - Bit;
+        SDValue Index = Op.getOperand(1);
+        if (Offset)
+          Index = DAG.getNode(ISD::ADD, DL, VT, Index,
+                              DAG.getConstant(Offset, DL, VT));
+        SDValue Address = DAG.getNode(ISD::ADD, DL, VT, Base, Index);
+        return DAG.getExtLoad(ISD::ZEXTLOAD, DL, VT, DAG.getEntryNode(),
+                              Address, MachinePointerInfo(), MVT::i8, Align(1),
+                              MachineMemOperand::MOInvariant);
+      }
+    }
+  }
   // A short inline loop avoids helper-call overhead for a bounded count.
-  if (DAG.computeKnownBits(Op.getOperand(1)).getMaxValue().ule(3))
+  // Os can replace the compact helper for a larger range. Keep Oz's stricter
+  // limit so several shift sites can still share a single out-of-line loop.
+  unsigned InlineLimit = Fn.hasMinSize() ? 3 : Fn.hasOptSize() ? 15 : 7;
+  if (DAG.computeKnownBits(Op.getOperand(1)).getMaxValue().ule(InlineLimit))
     return DAG.getNode(TOpc, DL, VT, Op.getOperand(0), Op.getOperand(1));
   if (STI.isRC32() || useFastShiftHelper(DAG) ||
       (!STI.hasWideShift() && Fn.hasMinSize()))
@@ -955,15 +1247,101 @@ SDValue RISCCTargetLowering::lowerShiftLibCall(SDValue Op,
   return LowerCallTo(CLI).first;
 }
 
+SDValue RISCCTargetLowering::lowerRotateLibCall(SDValue Op,
+                                                SelectionDAG &DAG) const {
+  MVT VT = STI.getXLenVT();
+  SDLoc DL(Op);
+  bool IsRotate = Op.getOpcode() == ISD::ROTL || Op.getOpcode() == ISD::ROTR;
+  SDValue Count = Op.getOperand(IsRotate ? 1 : 2);
+  if (Op.getOpcode() == ISD::FSHR || Op.getOpcode() == ISD::ROTR)
+    Count = DAG.getNode(ISD::SUB, DL, VT, DAG.getConstant(0, DL, VT), Count);
+  Count = DAG.getNode(ISD::AND, DL, VT, Count,
+                      DAG.getConstant(VT.getSizeInBits() - 1, DL, VT));
+  std::string Name = STI.isRC32() ? "__riscc_rotlsi" : "__riscc_rotlhi";
+  if (useFastShiftHelper(DAG))
+    Name += "_fast";
+  Type *Ty = IntegerType::get(*DAG.getContext(), VT.getSizeInBits());
+  ArgListTy Args;
+  Args.emplace_back(Op.getOperand(0), Ty);
+  Args.emplace_back(Count, Ty);
+  const char *Symbol = DAG.getMachineFunction().createExternalSymbolName(Name);
+  SDValue Callee =
+      DAG.getTargetExternalSymbol(Symbol, getPointerTy(DAG.getDataLayout()),
+                                  RISCCII::MO_SREG_PRESERVING_CALL);
+  CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, Ty, Callee, std::move(Args))
+      .setIsPostTypeLegalization(true);
+  return LowerCallTo(CLI).first;
+}
+
 SDValue RISCCTargetLowering::lowerDivRem(SDValue Op, SelectionDAG &DAG) const {
   bool IsSigned = Op.getOpcode() == ISD::SDIVREM;
+  EVT VT = Op.getValueType();
   assert((IsSigned || Op.getOpcode() == ISD::UDIVREM) &&
-         Op.getValueType() == MVT::i32);
+         (VT == MVT::i32 || VT == STI.getXLenVT()));
 
-  Type *I32 = Type::getInt32Ty(*DAG.getContext());
+  // The size policy combines constant remainders into DIVREM before their
+  // power-of-two simplification. Keep these inexpensive cases inline.
+  if (IsSigned && VT == STI.getXLenVT()) {
+    auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(1));
+    if (C && (C->getAPIntValue().isPowerOf2() ||
+              C->getAPIntValue().isNegatedPowerOf2())) {
+      SDLoc DL(Op);
+      SDValue Value = Op.getOperand(0);
+      SDValue Zero = DAG.getConstant(0, DL, VT);
+      APInt Magnitude = C->getAPIntValue().abs();
+      SDValue Mask = DAG.getConstant(Magnitude - 1, DL, VT);
+      SDValue Negative = DAG.getSetCC(DL, VT, Value, Zero, ISD::SETLT);
+      SDValue Sign = DAG.getNode(ISD::SUB, DL, VT, Zero, Negative);
+      SDValue Bias = DAG.getNode(ISD::AND, DL, VT, Sign, Mask);
+      SDValue Adjusted = DAG.getNode(ISD::ADD, DL, VT, Value, Bias);
+      SDValue Quotient =
+          DAG.getNode(ISD::SRA, DL, VT, Adjusted,
+                      DAG.getConstant(Magnitude.countr_zero(), DL, VT));
+      if (C->getAPIntValue().isNegative())
+        Quotient = DAG.getNode(ISD::SUB, DL, VT, Zero, Quotient);
+      SDValue Remainder =
+          DAG.getNode(ISD::SUB, DL, VT,
+                      DAG.getNode(ISD::AND, DL, VT, Adjusted, Mask), Bias);
+      return DAG.getMergeValues({Quotient, Remainder}, DL);
+    }
+  }
+
+  // Recovering a quotient/remainder pair must not hide a constant divisor
+  // from reciprocal-multiply lowering. Compute the quotient once using
+  // LLVM's generic magic-number expansion, then derive the remainder.
+  if (EnableConstantDivRem && STI.hasMulhu() && VT == STI.getXLenVT()) {
+    if (auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(1));
+        C && !C->isZero()) {
+      SDLoc DL(Op);
+      unsigned DivOpcode = IsSigned ? ISD::SDIV : ISD::UDIV;
+      SDValue Div =
+          DAG.getNode(DivOpcode, DL, VT, Op.getOperand(0), Op.getOperand(1));
+      SmallVector<SDNode *, 8> Created;
+      SDValue Quotient = Div;
+      if (Div.getOpcode() == DivOpcode)
+        Quotient = IsSigned ? BuildSDIV(Div.getNode(), DAG,
+                                        /*IsAfterLegalization=*/false,
+                                        /*IsAfterLegalTypes=*/true, Created)
+                            : BuildUDIV(Div.getNode(), DAG,
+                                        /*IsAfterLegalization=*/false,
+                                        /*IsAfterLegalTypes=*/true, Created);
+      if (Quotient) {
+        SDValue Product =
+            DAG.getNode(ISD::MUL, DL, VT, Quotient, Op.getOperand(1));
+        SDValue Remainder =
+            DAG.getNode(ISD::SUB, DL, VT, Op.getOperand(0), Product);
+        return DAG.getMergeValues({Quotient, Remainder}, DL);
+      }
+    }
+  }
+
+  Type *IntTy = IntegerType::get(*DAG.getContext(), VT.getSizeInBits());
   ArgListTy Args;
   for (SDValue Value : Op->op_values()) {
-    ArgListEntry Entry(Value, I32);
+    ArgListEntry Entry(Value, IntTy);
     Entry.IsSExt = IsSigned;
     Entry.IsZExt = !IsSigned;
     Args.push_back(Entry);
@@ -971,12 +1349,34 @@ SDValue RISCCTargetLowering::lowerDivRem(SDValue Op, SelectionDAG &DAG) const {
 
   bool QuotientUnused = Op.getValue(0).use_empty();
   bool RemainderUnused = Op.getValue(1).use_empty();
+  SDLoc DL(Op);
+  if (VT == STI.getXLenVT() && !QuotientUnused && !RemainderUnused) {
+    // The native helpers already compute both words. Return them in R1/R2
+    // instead of making the caller allocate, pass and reload a remainder slot.
+    // An aggregate of legal words avoids creating a wide integer after type
+    // legalization; its register assignment matches a twice-native return.
+    Type *PairTy = StructType::get(*DAG.getContext(), {IntTy, IntTy});
+    const char *Name =
+        STI.isRC32() ? (IsSigned ? "__riscc_divmodsi" : "__riscc_udivmodsi")
+                     : (IsSigned ? "__riscc_divmodhi" : "__riscc_udivmodhi");
+    SDValue Callee =
+        DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
+    CallLoweringInfo CLI(DAG);
+    CLI.setDebugLoc(DL)
+        .setChain(DAG.getEntryNode())
+        .setLibCallee(CallingConv::C, PairTy, Callee, std::move(Args))
+        .setIsPostTypeLegalization(true);
+    return LowerCallTo(CLI).first;
+  }
+
   SDValue RemPtr;
   const char *Name;
   if (QuotientUnused)
-    Name = IsSigned ? "__modsi3" : "__umodsi3";
+    Name = VT == MVT::i16 ? (IsSigned ? "__modhi3" : "__umodhi3")
+                          : (IsSigned ? "__modsi3" : "__umodsi3");
   else if (RemainderUnused)
-    Name = IsSigned ? "__divsi3" : "__udivsi3";
+    Name = VT == MVT::i16 ? (IsSigned ? "__divhi3" : "__udivhi3")
+                          : (IsSigned ? "__divsi3" : "__udivsi3");
   else {
     Name = IsSigned ? "__divmodsi4" : "__udivmodsi4";
     RemPtr = DAG.CreateStackTemporary(MVT::i32);
@@ -985,17 +1385,16 @@ SDValue RISCCTargetLowering::lowerDivRem(SDValue Op, SelectionDAG &DAG) const {
 
   SDValue Callee =
       DAG.getExternalSymbol(Name, getPointerTy(DAG.getDataLayout()));
-  SDLoc DL(Op);
   CallLoweringInfo CLI(DAG);
   CLI.setDebugLoc(DL)
       .setChain(DAG.getEntryNode())
-      .setLibCallee(CallingConv::C, I32, Callee, std::move(Args))
+      .setLibCallee(CallingConv::C, IntTy, Callee, std::move(Args))
       .setSExtResult(IsSigned)
       .setZExtResult(!IsSigned);
   std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
 
   if (!RemPtr) {
-    SDValue Unused = DAG.getPOISON(MVT::i32);
+    SDValue Unused = DAG.getPOISON(VT);
     return QuotientUnused ? DAG.getMergeValues({Unused, CallInfo.first}, DL)
                           : DAG.getMergeValues({CallInfo.first, Unused}, DL);
   }
@@ -1307,6 +1706,59 @@ SDValue RISCCTargetLowering::lowerSELECTCC(SDValue Op,
   if (isa<ConstantSDNode>(LHS) && !isa<ConstantSDNode>(RHS)) {
     std::swap(LHS, RHS);
     CC = ISD::getSetCCSwappedOperands(CC);
+  }
+  // A power-of-two difference needs only a shifted boolean and an immediate
+  // add. Account for every shift step, since multi-bit shifts can be iterative,
+  // before replacing a control-flow diamond with arithmetic.
+  if (auto *True = dyn_cast<ConstantSDNode>(Op.getOperand(2))) {
+    if (auto *False = dyn_cast<ConstantSDNode>(Op.getOperand(3))) {
+      APInt Base = False->getAPIntValue();
+      APInt Difference = True->getAPIntValue() - Base;
+      ISD::CondCode MathCC = CC;
+      if (!Difference.isPowerOf2()) {
+        Base = True->getAPIntValue();
+        Difference = -Difference;
+        MathCC = ISD::getSetCCInverse(CC, LHS.getValueType());
+      }
+      if (Difference.isPowerOf2() && Base.isSignedIntN(8)) {
+        unsigned Shift = Difference.logBase2();
+        bool Equality = MathCC == ISD::SETEQ || MathCC == ISD::SETNE;
+        bool Invert = MathCC == ISD::SETLE || MathCC == ISD::SETGE ||
+                      MathCC == ISD::SETULE || MathCC == ISD::SETUGE;
+        auto *Bound = dyn_cast<ConstantSDNode>(RHS);
+        unsigned CompareCost = Equality ? 3 - (Bound && Bound->isZero())
+                                        : 1 + Invert + bool(Bound);
+        if (Bound && !Bound->getAPIntValue().isIntN(8))
+          CompareCost += Equality ? 2 : 1;
+        if (STI.isNano() && ISD::isSignedIntSetCC(MathCC))
+          CompareCost += 4; // Bias both operands before unsigned comparison.
+        unsigned MathCost = CompareCost + Shift + !Base.isZero();
+        // A select often needs just a compare, a branch and two loads. If
+        // both constants are negative, materializing the first also needs
+        // an adjustment. Size builds keep equal-cost forms available for
+        // branch merging; speed builds can avoid the conditional branch.
+        unsigned SelectCost = 4 + (True->getAPIntValue().isNegative() &&
+                                   False->getAPIntValue().isNegative());
+        if (MathCost < SelectCost ||
+            (MathCost == SelectCost &&
+             !DAG.getMachineFunction().getFunction().hasOptSize())) {
+          EVT VT = Op.getValueType();
+          SDValue Condition = DAG.getSetCC(DL, VT, LHS, RHS, MathCC);
+          if (Condition.getOpcode() == ISD::SETCC)
+            Condition = lowerSETCC(Condition, DAG);
+          if (Shift) {
+            if (STI.hasWideShift() && Shift > 1)
+              Condition = DAG.getNode(RISCCISD::SHL, DL, VT, Condition,
+                                      DAG.getConstant(Shift, DL, VT));
+            else
+              for (unsigned I = 0; I != Shift; ++I)
+                Condition = DAG.getNode(ISD::ADD, DL, VT, Condition, Condition);
+          }
+          return DAG.getNode(ISD::ADD, DL, VT, Condition,
+                             DAG.getConstant(Base, DL, VT));
+        }
+      }
+    }
   }
   unsigned Opcode = RISCCISD::SELECT_CC;
   if (auto *C = dyn_cast<ConstantSDNode>(RHS);

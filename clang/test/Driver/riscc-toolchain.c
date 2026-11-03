@@ -12,10 +12,22 @@
 // RUN:   FileCheck %s --check-prefix=RC32
 // RUN: %clang -### --target=riscc-none-elf -mcpu=full -mno-mdu -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=NO-MDU
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mmulhu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=MULHU --implicit-check-not='"+mdu"'
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mmulhu -mno-mulhu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=NO-MULHU --implicit-check-not='"+mulhu"'
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mno-mulhu -mmulhu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=MULHU --implicit-check-not='"-mulhu"'
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mmdu -mno-mulhu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=MDU-NO-MULHU
+// RUN: %clang -### --target=riscc-none-elf -mcpu=full -mno-mulhu -mmdu -c %s 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=NO-MULHU-MDU
 // RUN: %clang -### --target=riscc-none-elf -c %s 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=DEFAULT
 // RUN: not %clang --target=riscc-none-elf -mcpu=invalid -c %s -o %t.o 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=INVALID-CPU
+// RUN: not %clang --target=riscc-none-elf -mcpu=min -mmulhu -c %s -o %t.o 2>&1 | \
+// RUN:   FileCheck %s --check-prefix=INVALID-MULHU
 // RUN: not %clang --target=riscc-none-elf -mcpu=nano -mrc32 -c %s -o %t.o 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=RC32-NANO
 // RUN: not %clang --target=riscc-none-elf -mcpu=min -mrc32x -c %s -o %t.o 2>&1 | \
@@ -47,6 +59,18 @@
 // NO-MDU: "-cc1"
 // NO-MDU-SAME: "-target-cpu" "full"
 // NO-MDU-SAME: "-target-feature" "-mdu"
+
+// MULHU: "-cc1"
+// MULHU-SAME: "-target-feature" "+mulhu"
+// NO-MULHU: "-cc1"
+// NO-MULHU-SAME: "-target-feature" "-mulhu"
+// MDU-NO-MULHU: "-cc1"
+// MDU-NO-MULHU-SAME: "-target-feature" "+mdu"
+// MDU-NO-MULHU-SAME: "-target-feature" "-mulhu"
+// NO-MULHU-MDU: "-cc1"
+// NO-MULHU-MDU-SAME: "-target-feature" "-mulhu"
+// NO-MULHU-MDU-SAME: "-target-feature" "+mdu"
+// INVALID-MULHU: error: invalid feature combination: mulhu requires -mcpu=full
 
 // RC32: "-target-cpu" "min"
 // RC32-SAME: "-target-feature" "+rc32"

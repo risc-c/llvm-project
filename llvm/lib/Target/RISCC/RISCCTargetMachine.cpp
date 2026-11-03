@@ -137,6 +137,9 @@ static cl::opt<bool> EnableArithmeticCallCost(
 static cl::opt<bool> EnablePipelineCost(
     "riscc-pipeline-costs", cl::Hidden, cl::init(true),
     cl::desc("Use RISC-C scheduling latencies for native multiply and loads"));
+static cl::opt<bool> EnableFunnelCost(
+    "riscc-funnel-cost", cl::Hidden, cl::init(true),
+    cl::desc("Cost RISC-C funnels and rotates using their lowered sequences"));
 
 class RISCCTTIImpl final : public BasicTTIImpl {
   using TTI = TargetTransformInfo;
@@ -166,6 +169,79 @@ class RISCCTTIImpl final : public BasicTTIImpl {
       return ST->isRC32() ? 4 : (ST->hasLongJall() ? 2 : 3);
     SmallVector<Type *, 2> ArgTys{Ty, Ty};
     return getCallInstrCost(nullptr, Ty, ArgTys, CostKind);
+  }
+
+  std::optional<InstructionCost>
+  getConstantWideningMulCost(Type *Ty, TTI::TargetCostKind CostKind,
+                             ArrayRef<const Value *> Args,
+                             const Instruction *CxtI) const {
+    if (OptimizeForSize || !ST->hasMul() || ST->hasMulhu() ||
+        !Ty->isIntegerTy(2 * NativeBits) || Args.size() != 2)
+      return std::nullopt;
+    const auto *C = dyn_cast<ConstantInt>(Args[1]);
+    const Value *V = Args[0];
+    if (!C) {
+      C = dyn_cast<ConstantInt>(Args[0]);
+      V = Args[1];
+    }
+    if (!C)
+      return std::nullopt;
+    const APInt &Value = C->getValue();
+    APInt Magnitude = Value.abs();
+    APInt Word = APInt::getOneBitSet(2 * NativeBits, NativeBits);
+    // These products are decomposed into shifts and additions before the
+    // software widening expansion. Keep their existing legalization costs.
+    if (Magnitude.isZero() || Magnitude.isPowerOf2() || Magnitude == 3 ||
+        Magnitude == 5 || Magnitude == 7 || Magnitude == Word - 1 ||
+        Magnitude == Word + 1)
+      return std::nullopt;
+    bool Unsigned =
+        Value.getActiveBits() <= NativeBits &&
+        computeKnownBits(V, DL, nullptr, CxtI).countMinLeadingZeros() >=
+            NativeBits;
+    bool Signed = !Unsigned && Value.isSignedIntN(NativeBits) &&
+                  ComputeNumSignBits(V, DL, nullptr, CxtI) > NativeBits;
+    if (!Unsigned && !Signed)
+      return std::nullopt;
+
+    // Match lowerMULLOHI's half-word partial products. BasicTTI's single
+    // custom operation undercounts this expansion, encouraging unrolling and
+    // inlining that duplicate the entire software multiply sequence.
+    unsigned HalfBits = NativeBits / 2;
+    unsigned ShiftStep = ST->hasWideShift() ? 8u : 1u;
+    unsigned HalfShiftCost = divideCeil(HalfBits, ShiftStep);
+    APInt Low = Value.trunc(HalfBits).zext(NativeBits);
+    APInt High = Signed ? Value.trunc(NativeBits).ashr(HalfBits)
+                        : Value.trunc(NativeBits).lshr(HalfBits);
+    auto ProductCost = [&](const APInt &Limb) -> InstructionCost {
+      if (Limb.isZero() || Limb.isOne())
+        return 0;
+      if (Limb.isAllOnes())
+        return 1;
+      if (Limb.isPowerOf2())
+        return divideCeil(Limb.logBase2(), ShiftStep);
+      return CostKind == TTI::TCK_CodeSize
+                 ? InstructionCost(1)
+                 : getNativeExecutionCost(RISCC::MUL, CostKind);
+    };
+    // Constants use LDI, or a literal load (including its word for size).
+    auto Materialize = [&](const APInt &Limb) -> unsigned {
+      if (Limb.isZero() || Limb.isOne() || Limb.isAllOnes() ||
+          Limb.isPowerOf2())
+        return 0;
+      if (CostKind != TTI::TCK_CodeSize || Limb.ule(255))
+        return 1;
+      return ST->isRC32() ? 3 : 2;
+    };
+    unsigned MaskCost = CostKind == TTI::TCK_CodeSize && ST->isRC32() ? 3 : 1;
+    if (High.isZero()) {
+      // Two products, four half-word shifts, two masks, an add and an OR.
+      return 2 * ProductCost(Low) + 4 * HalfShiftCost + 4 + MaskCost +
+             Materialize(Low);
+    }
+    // Four products, five half-word shifts, three masks, four adds and an OR.
+    return 2 * ProductCost(Low) + 2 * ProductCost(High) + 5 * HalfShiftCost +
+           8 + MaskCost + Materialize(Low) + Materialize(High);
   }
 
 public:
@@ -217,6 +293,9 @@ public:
       TTI::OperandValueInfo Op2Info = {TTI::OK_AnyValue, TTI::OP_None},
       ArrayRef<const Value *> Args = {},
       const Instruction *CxtI = nullptr) const override {
+    if (EnableArithmeticCallCost && Opcode == Instruction::Mul)
+      if (auto Cost = getConstantWideningMulCost(Ty, CostKind, Args, CxtI))
+        return *Cost;
     // A native multiply occupies Execute, unlike a one-cycle ALU operation.
     // Keep code size in instruction units and let constants retain their
     // separate folding/strength-reduction costs. Query the scheduling model
@@ -253,13 +332,17 @@ public:
         // sign mask can instead use a zero, comparison and negation.
         if (!ST->isNano() && Opcode == Instruction::AShr &&
             Shift == NativeBits - 1 &&
-            (!OptimizeForSize || !ST->hasWideShift()))
+            (!OptimizeForSize || !ST->hasWideShift() ||
+             divideCeil(Shift, 8u) > 3))
           return 3;
+        if (!ST->isNano() && Opcode == Instruction::LShr &&
+            Shift == NativeBits - 1)
+          return 2;
         return divideCeil(Shift, ST->hasWideShift() ? 8u : 1u);
       }
-      // Match lowerShift's helper choice so speculation and duplication pay
-      // for a call. Constant shifts and bounded (0..3) inline loops retain
-      // their existing costs.
+      // Charge larger variable shifts for call or loop overhead, preserving
+      // the existing costs of constants and very short (0..3) inline loops.
+      // Moderately bounded loops must not be treated as single ALU ops.
       if (EnableShiftCallCost && UseShiftHelper && !isa<Constant>(Args[1]) &&
           !computeKnownBits(Args[1], DL, nullptr, CxtI).getMaxValue().ule(3)) {
         return getBinaryHelperCost(Ty, CostKind);
@@ -287,6 +370,52 @@ public:
       return getNativeExecutionCost(RISCC::LD, CostKind);
     return BasicTTIImpl::getMemoryOpCost(Opcode, Ty, Alignment, AddressSpace,
                                          CostKind, OpInfo, I);
+  }
+
+  InstructionCost
+  getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
+                        TTI::TargetCostKind CostKind) const override {
+    Intrinsic::ID ID = ICA.getID();
+    Type *Ty = ICA.getReturnType();
+    ArrayRef<const Value *> Args = ICA.getArgs();
+    if (!EnableFunnelCost || ST->isNano() ||
+        (ID != Intrinsic::fshl && ID != Intrinsic::fshr) ||
+        !Ty->isIntegerTy(NativeBits) || Args.size() != 3)
+      return BasicTTIImpl::getIntrinsicInstrCost(ICA, CostKind);
+
+    bool IsRotate = Args[0] == Args[1];
+    if (const auto *C = dyn_cast<ConstantInt>(Args[2])) {
+      unsigned Count = C->getValue().urem(NativeBits);
+      if (!Count)
+        return 0;
+      unsigned Step = ST->hasWideShift() ? 8 : 1;
+      unsigned SplitCost =
+          divideCeil(Count, Step) + divideCeil(NativeBits - Count, Step) + 1;
+      // Mirror lowerFunnelShift: short self-rotates use one-bit funnels in
+      // the shorter direction; other constants use immediate shifts and OR.
+      // Generic TTI counts each custom shift as one instruction here and
+      // loses the actual constant before querying getArithmeticInstrCost.
+      if (IsRotate)
+        return std::min(std::min(Count, NativeBits - Count), SplitCost);
+      if (Count == 1 || Count == NativeBits - 1)
+        return 1;
+      if (Count == 2 || Count == NativeBits - 2)
+        return 3;
+      return SplitCost;
+    }
+
+    if (!IsRotate)
+      return BasicTTIImpl::getIntrinsicInstrCost(ICA, CostKind);
+
+    // Variable self-funnels become one shared rotate helper, including in
+    // size builds. Charge its call site separately from count preparation;
+    // the helper body is shared and must not be replicated in size costs.
+    InstructionCost HelperCost = getBinaryHelperCost(Ty, CostKind);
+    bool IsRight = ID == Intrinsic::fshr;
+    bool NeedsMask =
+        IsRight || !computeKnownBits(Args[2], DL).getMaxValue().ult(NativeBits);
+    // Negation requires materializing zero and subtracting the count.
+    return HelperCost + NeedsMask + 2 * IsRight;
   }
 
   bool isLSRCostLess(const TargetTransformInfo::LSRCost &A,

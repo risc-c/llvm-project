@@ -1,0 +1,173 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bgpr\b/gpr32/g' -e 's/\bLDB\b/LDB32/g' -e 's/\bLDBS\b/LDBS32/g' \
+# RUN:   -e 's/\bLDI\b/LDI32/g' -e 's/\bANDI\b/ANDI32/g' -e 's/\bADDI\b/ADDI32/g' \
+# RUN:   -e 's/\bSEXT8_RC16\b/SEXT8_RC32/g' %s | llc -x mir -mtriple=riscc -mcpu=full -mattr=+rc32 \
+# RUN:   -run-pass=riscc-machine-optimize -verify-machineinstrs -o - | FileCheck %s
+
+# A mutually recursive PHI/COPY component receives only byte loads. Neither
+# PHI can be refined on its own when the other starts with unknown width.
+# CHECK-LABEL: name: byte_cycle
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = COPY %2
+# CHECK-NOT: ANDI
+
+# Signed byte inputs establish signed, but not unsigned, byte width.
+# CHECK-LABEL: name: signed_cycle
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = COPY %2
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = ANDI{{(32)?}} %2, 255
+
+# Every external input participates in the join, including full-width values.
+# CHECK-LABEL: name: unknown_input
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = ANDI{{(32)?}} %2, 255
+
+# Arithmetic inside a cycle can introduce new bits and must not be treated as
+# a PHI/COPY identity. This increment can wrap past the byte range.
+# CHECK-LABEL: name: increment_cycle
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = ANDI{{(32)?}} %2, 255
+
+# An undef incoming operand does not establish a narrow value.
+# CHECK-LABEL: name: undef_input
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = ANDI{{(32)?}} %2, 255
+
+# A closed unreachable cycle has no seed from which to infer a range.
+# CHECK-LABEL: name: unseeded_cycle
+# CHECK: %{{[0-9]+}}:{{gpr(32)?}} = ANDI{{(32)?}} %{{[0-9]+}}, 255
+
+--- |
+  target triple = "riscc-none-elf"
+  define i16 @byte_cycle() { ret i16 0 }
+  define i16 @signed_cycle() { ret i16 0 }
+  define i16 @unknown_input() { ret i16 0 }
+  define i16 @increment_cycle() { ret i16 0 }
+  define i16 @undef_input() { ret i16 0 }
+  define i16 @unseeded_cycle() { ret i16 0 }
+...
+---
+name: byte_cycle
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr = LDB $r1 :: (load (s8))
+    %1:gpr = COPY $r2
+    JMP8 %bb.1
+  bb.1:
+    %2:gpr = PHI %0, %bb.0, %5, %bb.2
+    %3:gpr = PHI %0, %bb.0, %2, %bb.2
+    %4:gpr = ANDI %2, 255
+    $r0 = COPY %1
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.2:
+    %5:gpr = COPY %3
+    JMP8 %bb.1
+  bb.3:
+    $r1 = COPY %4
+    RETS implicit $s7, implicit $r1
+...
+---
+name: signed_cycle
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr = LDBS $r1 :: (load (s8))
+    %1:gpr = COPY $r2
+    JMP8 %bb.1
+  bb.1:
+    %2:gpr = PHI %0, %bb.0, %5, %bb.2
+    %3:gpr = PHI %0, %bb.0, %2, %bb.2
+    %4:gpr = SEXT8_RC16 %2
+    %6:gpr = ANDI %2, 255
+    $r0 = COPY %1
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.2:
+    %5:gpr = COPY %3
+    JMP8 %bb.1
+  bb.3:
+    $r1 = COPY %4
+    $r2 = COPY %6
+    RETS implicit $s7, implicit $r1, implicit $r2
+...
+---
+name: unknown_input
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr = LDB $r1 :: (load (s8))
+    %1:gpr = COPY $r2
+    JMP8 %bb.1
+  bb.1:
+    %2:gpr = PHI %0, %bb.0, %5, %bb.2
+    %3:gpr = PHI %1, %bb.0, %2, %bb.2
+    %4:gpr = ANDI %2, 255
+    $r0 = COPY %1
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.2:
+    %5:gpr = COPY %3
+    JMP8 %bb.1
+  bb.3:
+    $r1 = COPY %4
+    RETS implicit $s7, implicit $r1
+...
+---
+name: increment_cycle
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr = LDB $r1 :: (load (s8))
+    %1:gpr = COPY $r2
+    JMP8 %bb.1
+  bb.1:
+    %2:gpr = PHI %0, %bb.0, %5, %bb.2
+    %4:gpr = ANDI %2, 255
+    $r0 = COPY %1
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.2:
+    %5:gpr = ADDI %2, 1
+    JMP8 %bb.1
+  bb.3:
+    $r1 = COPY %4
+    RETS implicit $s7, implicit $r1
+...
+---
+name: undef_input
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    %0:gpr = LDB $r1 :: (load (s8))
+    %1:gpr = COPY $r2
+    JMP8 %bb.1
+  bb.1:
+    %2:gpr = PHI %0, %bb.0, %5, %bb.2
+    %3:gpr = PHI undef %0, %bb.0, %2, %bb.2
+    %4:gpr = ANDI %2, 255
+    $r0 = COPY %1
+    BNEZ %bb.2, implicit $r0
+    JMP8 %bb.3
+  bb.2:
+    %5:gpr = COPY %3
+    JMP8 %bb.1
+  bb.3:
+    $r1 = COPY %4
+    RETS implicit $s7, implicit $r1
+...
+---
+name: unseeded_cycle
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $s7
+    $r1 = LDI 0
+    RETS implicit $s7, implicit $r1
+  bb.1:
+    %0:gpr = PHI %0, %bb.1
+    %1:gpr = ANDI %0, 255
+    JMP8 %bb.1
+...

@@ -61,6 +61,8 @@ APInt apply(unsigned Opcode, const APInt &Value, int64_t Immediate) {
     return Value ^ APInt(Width, static_cast<uint64_t>(Immediate));
   case RISCC::SLLI:
     return Value.shl(static_cast<unsigned>(Immediate));
+  case RISCC::ADD:
+    return Value + Value;
   case RISCC::SRLI:
     return Value.lshr(static_cast<unsigned>(Immediate));
   case RISCC::SRAI:
@@ -151,6 +153,10 @@ SmallVector<Inst, 2> generate(const APInt &Value, const RISCCSubtarget &STI,
       for (unsigned Opcode : {RISCC::SLLI, RISCC::SRLI, RISCC::SRAI}) {
         if (Opcode == RISCC::SLLI && STI.isNano())
           continue;
+        // Min/Sys have no SLLI encoding, even for a one-bit shift. Doubling
+        // a register with ADD has the same size and value on those profiles.
+        if (Opcode == RISCC::SLLI && !STI.hasWideShift())
+          Opcode = RISCC::ADD;
         APInt Result = apply(Opcode, Seed.Value, Amount);
         if (Result != Value)
           continue;

@@ -22,6 +22,7 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
   static const TargetInfo::GCCRegAlias GCCRegAliases[];
   std::string CPU = "full";
   bool HasMdu = false;
+  bool HasMulhu = false;
   bool HasIFLUSH = false;
   bool IsRC32 = false;
 
@@ -85,6 +86,8 @@ public:
   bool allowsLargerPreferedTypeAlignment() const override { return false; }
 
   bool hasFeature(StringRef Feature) const override;
+  void setFeatureEnabled(llvm::StringMap<bool> &Features, StringRef Name,
+                         bool Enabled) const override;
   bool handleTargetFeatures(std::vector<std::string> &Features,
                             DiagnosticsEngine &Diags) override;
   bool isValidCPUName(StringRef Name) const override;

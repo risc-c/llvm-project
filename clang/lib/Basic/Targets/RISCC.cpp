@@ -63,7 +63,8 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("nano", CPU == "nano")
       .Case("min", CPU == "min")
       .Case("full", CPU == "full")
-      .Cases({"mdu", "mulhu", "divu"}, HasMdu)
+      .Cases({"mdu", "divu"}, HasMdu)
+      .Case("mulhu", HasMulhu)
       .Case("iflush", HasIFLUSH)
       .Cases({"sys", "system", "jal16"}, CPU == "sys" || CPU == "full")
       .Cases({"wide-shift", "wide-shifts"}, CPU == "full")
@@ -71,9 +72,21 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
       .Default(false);
 }
 
+void RISCCTargetInfo::setFeatureEnabled(llvm::StringMap<bool> &Features,
+                                        StringRef Name, bool Enabled) const {
+  Features[Name] = Enabled;
+  // Resolve dependencies before Clang sorts the feature map. These mirror
+  // the backend's MDU -> MULHU implication, including the reverse disable.
+  if (Name == "mdu" && Enabled)
+    Features["mulhu"] = true;
+  else if (Name == "mulhu" && !Enabled)
+    Features["mdu"] = false;
+}
+
 bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
                                            DiagnosticsEngine &Diags) {
   HasMdu = false;
+  HasMulhu = false;
   HasIFLUSH = false;
   bool HasSys = CPU == "sys" || CPU == "full";
   IsRC32 = false;
@@ -82,6 +95,10 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasMdu = true;
     else if (Feature == "-mdu")
       HasMdu = false;
+    else if (Feature == "+mulhu")
+      HasMulhu = true;
+    else if (Feature == "-mulhu")
+      HasMulhu = false;
     else if (Feature == "+iflush")
       HasIFLUSH = true;
     else if (Feature == "-iflush")
@@ -112,6 +129,11 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
         << "mdu requires -mcpu=full";
     return false;
   }
+  if (HasMulhu && CPU != "full") {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "mulhu requires -mcpu=full";
+    return false;
+  }
   HasIFLUSH &= HasSys && CPU != "nano";
   setDataModel(IsRC32);
   return true;
@@ -133,9 +155,10 @@ void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
   else {
     Builder.defineMacro("__RISCC_FULL__");
     Builder.defineMacro("__RISCC_MUL__");
+    if (HasMulhu)
+      Builder.defineMacro("__RISCC_MULHU__");
     if (HasMdu) {
       Builder.defineMacro("__RISCC_MDU__");
-      Builder.defineMacro("__RISCC_MULHU__");
       Builder.defineMacro("__RISCC_DIVU__");
     }
   }

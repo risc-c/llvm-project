@@ -3,6 +3,8 @@
 # RUN:   FileCheck %s --check-prefixes=CHECK,FULL
 # RUN: llc -mtriple=riscc -mcpu=min -mattr=+rc32 -riscc-synthesize-constants -run-pass=riscc-postra-optimize \
 # RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,MIN
+# RUN: llc -mtriple=riscc -mcpu=sys -mattr=+rc32 -riscc-synthesize-constants -run-pass=riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,MIN
 # RUN: llc -mtriple=riscc -mcpu=full -mattr=+rc32 -riscc-synthesize-constants=false -run-pass=riscc-postra-optimize \
 # RUN:   -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OFF
 
@@ -32,7 +34,8 @@
 # CHECK: $r1 = LDPC %const.0
 # CHECK-LABEL: name: shift_one
 # CHECK: $r1 = LDI32 255
-# CHECK-NEXT: $r1 = SLLI32 killed $r1, 1
+# FULL-NEXT: $r1 = SLLI32 killed $r1, 1
+# MIN-NEXT: $r1 = ADD32 $r1, killed $r1
 # CHECK-LABEL: name: shift_eight
 # FULL: $r1 = LDI32 255
 # FULL-NEXT: $r1 = SLLI32 killed $r1, 8

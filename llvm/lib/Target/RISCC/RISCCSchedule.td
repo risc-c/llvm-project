@@ -21,6 +21,7 @@ def RISCCSchedModel : SchedMachineModel {
 def WriteRISCCALU : SchedWrite;
 def WriteRISCCLoad : SchedWrite;
 def WriteRISCCMul : SchedWrite;
+def WriteRISCCMulhu : SchedWrite;
 
 let SchedModel = RISCCSchedModel in {
   def RISCCPipe : ProcResource<1>;
@@ -37,5 +38,12 @@ let SchedModel = RISCCSchedModel in {
     // instruction issuing in either intervening clock. It remains one
     // architectural instruction, not three instructions for code-size costs.
     let NumMicroOps = 3;
+  }
+  // Paired MULHU writes the low word after the normal multiply and the high
+  // word on the following clock. Execute stays blocked until both complete.
+  def : WriteRes<WriteRISCCMulhu, [RISCCPipe]> {
+    let Latency = 4;
+    let ReleaseAtCycles = [4];
+    let NumMicroOps = 4;
   }
 }

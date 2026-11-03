@@ -336,8 +336,11 @@ def "DIVU"#W.Suffix : RRMdu<0x10, (outs W.RC:$rr, W.RC:$rq),
 let Predicates = !listconcat(W.WidthPredicates, [HasMulhuPred]) in
 def "MULHU"#W.Suffix : RRMdu<0x14, (outs W.RC:$rr, W.RC:$rq),
     (ins W.RC:$rq_in, W.RC:$rb), "mulhu\t$rr, $rq, $rb">,
-    NativeInst<"MULHU", W> {
-  let Constraints = "$rq = $rq_in,@earlyclobber $rr";
+    NativeInst<"MULHU", W>, Sched<[WriteRISCCMulhu]> {
+  let isCommutable = 1;
+  // Both inputs are captured before either output is written. In particular,
+  // the low result may reuse rb; the two result definitions still interfere.
+  let Constraints = "$rq = $rq_in";
 }
 }
 }

@@ -1,8 +1,8 @@
 ; REQUIRES: riscc-registered-target
 ; RUN: llc -mtriple=riscc-none-elf -mcpu=nano -verify-machineinstrs < %s | FileCheck %s --check-prefixes=NANO,SMALL
-; RUN: llc -mtriple=riscc-none-elf -mcpu=min -verify-machineinstrs < %s | FileCheck %s --check-prefixes=MIN,SMALL
-; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -verify-machineinstrs < %s | FileCheck %s --check-prefixes=SYS,SMALL
-; RUN: llc -mtriple=riscc-none-elf -mcpu=full -verify-machineinstrs < %s | FileCheck %s --check-prefixes=FULL,WIDE
+; RUN: llc -mtriple=riscc-none-elf -mcpu=min -verify-machineinstrs < %s | FileCheck %s --check-prefixes=MIN,SMALL,SIGNBIT
+; RUN: llc -mtriple=riscc-none-elf -mcpu=sys -verify-machineinstrs < %s | FileCheck %s --check-prefixes=SYS,SMALL,SIGNBIT
+; RUN: llc -mtriple=riscc-none-elf -mcpu=full -verify-machineinstrs < %s | FileCheck %s --check-prefixes=FULL,WIDE,SIGNBIT
 
 target triple = "riscc-none-elf"
 
@@ -121,13 +121,14 @@ define i16 @shift_right_ten_size(i16 %value) minsize {
 }
 
 define i16 @shift_right_fifteen_fast(i16 %value) {
-; SMALL-LABEL:    shift_right_fifteen_fast:
-; SMALL:          ldi16 [[LIMIT:r[0-7]]], 32767
-; SMALL-NEXT:     sltu r1, [[LIMIT]], r1
-; SMALL:          {{ret s7|jalr r0, r6}}
-; WIDE-LABEL:     shift_right_fifteen_fast:
-; WIDE:           ldi16 [[LIMIT:r[0-7]]], 32767
-; WIDE-NEXT:      sltu r1, [[LIMIT]], r1
+; NANO-LABEL:     shift_right_fifteen_fast:
+; NANO:           ldi16 [[LIMIT:r[0-7]]], 32767
+; NANO-NEXT:      sltu r1, [[LIMIT]], r1
+; NANO:           jalr r0, r6
+; SIGNBIT-LABEL:  shift_right_fifteen_fast:
+; SIGNBIT:        ldi [[ZERO:r[0-7]]], 0
+; SIGNBIT-NEXT:   slt r1, r1, [[ZERO]]
+; SIGNBIT-NEXT:   ret s7
   %result = lshr i16 %value, 15
   ret i16 %result
 }

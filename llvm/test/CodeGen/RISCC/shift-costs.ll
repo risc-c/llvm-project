@@ -16,7 +16,7 @@ target datalayout = "e-p:16:16"
 
 ; Constant shifts are costed by their native instruction count, not as one
 ; generic custom operation. A sign mask can use compare-and-negate except
-; in Nano; Full size builds retain the shorter immediate-shift sequence.
+; in Nano; RC16 Full size builds retain the shorter immediate-shift sequence.
 
 define i16 @shifts16(i16 %x) {
 ; FULL16: cost of 1 for instruction: %a = shl i16 %x, 1
@@ -63,7 +63,7 @@ define i32 @shifts32(i32 %x) {
 }
 
 define i32 @size32(i32 %x) optsize {
-; FULL32: cost of 4 for instruction: %sign = ashr i32 %x, 31
+; FULL32: cost of 3 for instruction: %sign = ashr i32 %x, 31
 ; MIN32: cost of 3 for instruction: %sign = ashr i32 %x, 31
   %sign = ashr i32 %x, 31
   ret i32 %sign

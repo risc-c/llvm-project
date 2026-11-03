@@ -3,7 +3,7 @@
 ; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=full -mattr=+rc32 -verify-machineinstrs \
 ; RUN:   -o - | FileCheck %s --check-prefixes=FAST,LATE
 ; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=full -mattr=+rc32 \
-; RUN:   -riscc-late-sign-mask=false -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,SIZE32
+; RUN:   -riscc-late-sign-mask=false -riscc-size-sign-mask=false -verify-machineinstrs -o - | FileCheck %s --check-prefixes=FAST,SIZE32
 ; RUN: llc -mtriple=riscc -mcpu=min -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=FAST,SMALL
 ; RUN: sed -e 's/i16/i32/g' -e 's/, 15/, 31/g' %s | llc -mtriple=riscc -mcpu=min -mattr=+rc32 -verify-machineinstrs \
 ; RUN:   -o - | FileCheck %s --check-prefixes=FAST,SMALL

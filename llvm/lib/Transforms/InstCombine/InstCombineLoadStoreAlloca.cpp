@@ -19,6 +19,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Transforms/InstCombine/InstCombiner.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -1077,10 +1078,65 @@ Value *InstCombinerImpl::simplifyNonNullOperand(Value *V,
   return nullptr;
 }
 
+// A defined element-aligned read from an immutable integer array must return
+// one of its initializer values. Preserve their range for later IR and DAG
+// combines, including when GEP canonicalization uses byte-array strides.
+static MDNode *getConstantArrayLoadRange(LoadInst &LI, const DataLayout &DL) {
+  if (!LI.isSimple() || !LI.getType()->isIntegerTy() ||
+      LI.getMetadata(LLVMContext::MD_range))
+    return nullptr;
+  auto *GEP = dyn_cast<GEPOperator>(LI.getPointerOperand());
+  if (!GEP || !GEP->isInBounds())
+    return nullptr;
+  auto *GV = dyn_cast<GlobalVariable>(GEP->getPointerOperand());
+  if (!GV || !GV->isConstant() || !GV->hasDefinitiveInitializer())
+    return nullptr;
+  auto *AT = dyn_cast<ArrayType>(GV->getValueType());
+  // Bound initializer scanning independently of the number of uses.
+  if (!AT || AT->getElementType() != LI.getType() || !AT->getNumElements() ||
+      AT->getNumElements() > 256)
+    return nullptr;
+
+  uint64_t Size = DL.getTypeAllocSize(LI.getType()).getFixedValue();
+  if (!isPowerOf2_64(Size))
+    return nullptr;
+  unsigned LowBits = Log2_64(Size);
+  unsigned IndexBits = DL.getIndexTypeSizeInBits(GEP->getType());
+  if (LowBits >= IndexBits)
+    return nullptr;
+  APInt Offset(IndexBits, 0);
+  SmallMapVector<Value *, APInt, 4> Variables;
+  if (!GEP->collectOffset(DL, IndexBits, Variables, Offset) ||
+      Offset.countr_zero() < LowBits)
+    return nullptr;
+  for (const auto &[Index, Scale] : Variables)
+    if (Scale.countr_zero() < LowBits)
+      return nullptr;
+
+  ConstantRange Range =
+      ConstantRange::getEmpty(LI.getType()->getIntegerBitWidth());
+  for (unsigned I = 0, E = AT->getNumElements(); I != E; ++I) {
+    auto *C = dyn_cast_or_null<ConstantInt>(
+        GV->getInitializer()->getAggregateElement(I));
+    if (!C)
+      return nullptr;
+    Range = Range.unionWith(ConstantRange(C->getValue()));
+    if (Range.isFullSet())
+      return nullptr;
+  }
+  return MDBuilder(LI.getContext())
+      .createRange(Range.getLower(), Range.getUpper());
+}
+
 Instruction *InstCombinerImpl::visitLoadInst(LoadInst &LI) {
   Value *Op = LI.getOperand(0);
   if (Value *Res = simplifyLoadInst(&LI, Op, SQ.getWithInstruction(&LI)))
     return replaceInstUsesWith(LI, Res);
+
+  if (MDNode *Range = getConstantArrayLoadRange(LI, DL)) {
+    LI.setMetadata(LLVMContext::MD_range, Range);
+    return &LI;
+  }
 
   // Try to canonicalize the loaded type.
   if (Instruction *Res = combineLoadToOperationType(*this, LI))

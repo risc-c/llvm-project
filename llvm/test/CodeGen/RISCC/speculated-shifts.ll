@@ -29,7 +29,11 @@ define i16 @bounded16(i16 %value, i16 %count) {
 ; RC16-LABEL: bounded16:
 ; RC16: andi {{r[0-7]}}, 7
 ; RC16-NOT: andi
-; RC16: __riscc_lshrhi_fast
+; RC16: srli
+; RC16: bnez
+; RC16-NOT: jal
+; RC16: ret
+; RC16: .size bounded16,
   %bounded = and i16 %count, 7
   %result = lshr i16 %value, %bounded
   ret i16 %result

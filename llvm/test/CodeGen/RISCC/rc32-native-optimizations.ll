@@ -132,14 +132,14 @@ define i32 @funnel_right_variable(i32 %high, i32 %low, i32 %amount) {
 
 define i32 @unsigned_pair(i32 %left, i32 %right, ptr %out) {
 ; MIN-LABEL: unsigned_pair:
-; MIN:       __udivmodsi4
+; MIN:       __riscc_udivmodsi
 ; FULL-LABEL: unsigned_pair:
-; FULL:       __udivmodsi4
+; FULL:       __riscc_udivmodsi
 ; MDU-LABEL: unsigned_pair:
 ; MDU:       ldi r0, 0
 ; MDU-NEXT:  divu r0, r1, r2
 ; MDU-NEXT:  st r0, [r3 + 0]
-; MDU-NOT:   __udivmodsi4
+; MDU-NOT:   __riscc_udivmodsi
   %quotient = udiv i32 %left, %right
   %remainder = urem i32 %left, %right
   store i32 %remainder, ptr %out, align 4
@@ -148,14 +148,14 @@ define i32 @unsigned_pair(i32 %left, i32 %right, ptr %out) {
 
 define i32 @unsigned_reconstructed_pair(i32 %left, i32 %right, ptr %out) {
 ; MIN-LABEL: unsigned_reconstructed_pair:
-; MIN:       __udivmodsi4
+; MIN:       __riscc_udivmodsi
 ; FULL-LABEL: unsigned_reconstructed_pair:
-; FULL:       __udivmodsi4
+; FULL:       __riscc_udivmodsi
 ; MDU-LABEL: unsigned_reconstructed_pair:
 ; MDU:       ldi r0, 0
 ; MDU-NEXT:  divu r0, r1, r2
 ; MDU-NEXT:  st r0, [r3 + 0]
-; MDU-NOT:   __udivmodsi4
+; MDU-NOT:   __riscc_udivmodsi
   %quotient = udiv i32 %left, %right
   %product = mul i32 %quotient, %right
   %remainder = sub i32 %left, %product
@@ -165,9 +165,9 @@ define i32 @unsigned_reconstructed_pair(i32 %left, i32 %right, ptr %out) {
 
 define i32 @signed_pair(i32 %left, i32 %right, ptr %out) {
 ; MIN-LABEL: signed_pair:
-; MIN:       __divmodsi4
+; MIN:       __riscc_divmodsi
 ; FULL-LABEL: signed_pair:
-; FULL:       __divmodsi4
+; FULL:       __riscc_divmodsi
   %quotient = sdiv i32 %left, %right
   %remainder = srem i32 %left, %right
   store i32 %remainder, ptr %out, align 4
@@ -176,9 +176,9 @@ define i32 @signed_pair(i32 %left, i32 %right, ptr %out) {
 
 define i32 @signed_reconstructed_pair(i32 %left, i32 %right, ptr %out) {
 ; MIN-LABEL: signed_reconstructed_pair:
-; MIN:       __divmodsi4
+; MIN:       __riscc_divmodsi
 ; FULL-LABEL: signed_reconstructed_pair:
-; FULL:       __divmodsi4
+; FULL:       __riscc_divmodsi
   %quotient = sdiv i32 %left, %right
   %product = mul i32 %quotient, %right
   %remainder = sub i32 %left, %product

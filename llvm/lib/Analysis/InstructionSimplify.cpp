@@ -18,6 +18,7 @@
 
 #include "llvm/Analysis/InstructionSimplify.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -47,6 +48,7 @@
 #include "llvm/IR/Statepoint.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/KnownFPClass.h"
+#include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <optional>
 using namespace llvm;
@@ -7637,6 +7639,72 @@ Value *llvm::simplifyFreezeInst(Value *Op0, const SimplifyQuery &Q) {
   return ::simplifyFreezeInst(Op0, Q);
 }
 
+// A dynamic load from an array of identical elements is constant when its
+// address selects an element boundary. Unlike a byte-uniform initializer,
+// a repeated multi-byte value cannot be loaded at an arbitrary byte offset.
+static Constant *foldLoadFromSplatArray(LoadInst *LI, Value *Ptr,
+                                        GlobalVariable *GV,
+                                        const SimplifyQuery &Q) {
+  if (!LI->isSimple())
+    return nullptr;
+
+  Type *LoadTy = LI->getType();
+  Type *Ty = GV->getValueType();
+  while (Ty != LoadTy) {
+    auto *AT = dyn_cast<ArrayType>(Ty);
+    if (!AT || AT->getNumElements() == 0)
+      return nullptr;
+    Ty = AT->getElementType();
+  }
+
+  TypeSize Size = Q.DL.getTypeAllocSize(LoadTy);
+  if (Size.isScalable() || !isPowerOf2_64(Size.getFixedValue()))
+    return nullptr;
+  unsigned LowBits = Log2_64(Size.getFixedValue());
+  unsigned IndexBits = Q.DL.getIndexTypeSizeInBits(Ptr->getType());
+  if (LowBits >= IndexBits)
+    return nullptr;
+
+  APInt Offset(IndexBits, 0);
+  SmallMapVector<Value *, APInt, 4> Variables;
+  unsigned Depth = 0;
+  while (Ptr != GV) {
+    auto *GEP = dyn_cast<GEPOperator>(Ptr);
+    if (!GEP || ++Depth > 16 ||
+        !GEP->collectOffset(Q.DL, IndexBits, Variables, Offset))
+      return nullptr;
+    Ptr = GEP->getPointerOperand();
+  }
+  if (Offset.countr_zero() < LowBits)
+    return nullptr;
+  for (const auto &[Index, Scale] : Variables) {
+    unsigned Zeros = Scale.countr_zero();
+    if (Zeros < LowBits &&
+        computeKnownBits(Index, Q).countMinTrailingZeros() < LowBits - Zeros)
+      return nullptr;
+  }
+
+  // Bound work for large initializers. Stop on the first unequal element,
+  // and descend through repeated nested arrays without flattening them.
+  Constant *C = GV->getInitializer();
+  unsigned Budget = 256;
+  while (C->getType() != LoadTy) {
+    auto *AT = cast<ArrayType>(C->getType());
+    uint64_t Count = AT->getNumElements();
+    if (Count > Budget)
+      return nullptr;
+    Budget -= Count;
+    Constant *Element = C->getAggregateElement(0u);
+    if (!Element)
+      return nullptr;
+    for (unsigned I = 1; I != Count; ++I)
+      if (C->getAggregateElement(I) != Element)
+        return nullptr;
+    C = Element;
+  }
+  return C;
+}
+
 Value *llvm::simplifyLoadInst(LoadInst *LI, Value *PtrOp,
                               const SimplifyQuery &Q) {
   if (LI->isVolatile())
@@ -7655,6 +7723,9 @@ Value *llvm::simplifyLoadInst(LoadInst *LI, Value *PtrOp,
   // regardless of its offset.
   if (Constant *C = ConstantFoldLoadFromUniformValue(GV->getInitializer(),
                                                      LI->getType(), Q.DL))
+    return C;
+
+  if (Constant *C = foldLoadFromSplatArray(LI, PtrOp, GV, Q))
     return C;
 
   // Try to convert operand into a constant by stripping offsets while looking

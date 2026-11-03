@@ -7,11 +7,11 @@
 # RUN: llvm-ar rcs %t/runtime16.a %t/runtime16.bc
 # RUN: llvm-ar rcs %t/runtime32.a %t/runtime32.bc
 # RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections --why-extract=%t/why16.txt %t/main16.bc %t/runtime16.a -o %t/rc16
-# RUN: llvm-nm --defined-only %t/rc16 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: llvm-nm --defined-only %t/rc16 | FileCheck %s --check-prefixes=CHECK,RC16 --implicit-check-not=unused_helper
 # RUN: FileCheck %s --check-prefix=WHY --input-file=%t/why16.txt
 # RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections --mllvm=-mattr=+rc32 --why-extract=%t/why32.txt %t/main32.bc \
 # RUN:   %t/runtime32.a -o %t/rc32
-# RUN: llvm-nm --defined-only %t/rc32 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: llvm-nm --defined-only %t/rc32 | FileCheck %s --check-prefixes=CHECK,RC32 --implicit-check-not=unused_helper
 # RUN: FileCheck %s --check-prefix=WHY --input-file=%t/why32.txt
 # RUN: opt -module-summary %t/main16.bc -o %t/thin-main16.bc
 # RUN: opt -module-summary %t/runtime16.bc -o %t/thin-runtime16.bc
@@ -20,10 +20,10 @@
 # RUN: llvm-ar rcs %t/thin-runtime16.a %t/thin-runtime16.bc
 # RUN: llvm-ar rcs %t/thin-runtime32.a %t/thin-runtime32.bc
 # RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections %t/thin-main16.bc %t/thin-runtime16.a -o %t/thin-rc16
-# RUN: llvm-nm --defined-only %t/thin-rc16 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: llvm-nm --defined-only %t/thin-rc16 | FileCheck %s --check-prefixes=CHECK,RC16 --implicit-check-not=unused_helper
 # RUN: ld.lld --threads=1 -Ttext=0x100 --gc-sections --mllvm=-mattr=+rc32 %t/thin-main32.bc %t/thin-runtime32.a \
 # RUN:   -o %t/thin-rc32
-# RUN: llvm-nm --defined-only %t/thin-rc32 | FileCheck %s --implicit-check-not=unused_helper
+# RUN: llvm-nm --defined-only %t/thin-rc32 | FileCheck %s --check-prefixes=CHECK,RC32 --implicit-check-not=unused_helper
 
 ## These helpers have no explicit references in the input IR. Their bitcode
 ## archive member must be extracted before LTO, and the definitions must remain
@@ -31,8 +31,12 @@
 ## extraction instead produces absolute zero symbols with no emitted code.
 # CHECK-DAG: {{[0-9a-f]+}} T _start
 # CHECK-DAG: {{[0-9a-f]+}} T __addsf3
-# CHECK-DAG: {{[0-9a-f]+}} T __divmodsi4
-# CHECK-DAG: {{[0-9a-f]+}} T __udivmodsi4
+# RC16-DAG: {{[0-9a-f]+}} T __divmodsi4
+# RC16-DAG: {{[0-9a-f]+}} T __udivmodsi4
+# RC16-DAG: {{[0-9a-f]+}} T __riscc_divmodhi
+# RC16-DAG: {{[0-9a-f]+}} T __riscc_udivmodhi
+# RC32-DAG: {{[0-9a-f]+}} T __riscc_divmodsi
+# RC32-DAG: {{[0-9a-f]+}} T __riscc_udivmodsi
 # CHECK-DAG: {{[0-9a-f]+}} T memcpy
 # CHECK-DAG: {{[0-9a-f]+}} T memmove
 # CHECK-DAG: {{[0-9a-f]+}} T memset
@@ -43,7 +47,8 @@ target datalayout = "e-m:e-p:WIDTH:WIDTH-i8:8-i16:16-i32:WIDTH-i64:WIDTH-f32:WID
 target triple = "riscc-none-elf"
 
 define float @_start(ptr %dest, ptr %source, iWIDTH %length, float %value,
-                     i32 %numerator, i32 %denominator) #0 {
+                     i32 %numerator, i32 %denominator,
+                     iWIDTH %native_numerator, iWIDTH %native_denominator) #0 {
   call void @llvm.memset.p0.iWIDTH(ptr %dest, i8 90, iWIDTH %length, i1 true)
   call void @llvm.memcpy.p0.p0.iWIDTH(ptr %dest, ptr %source, iWIDTH %length, i1 true)
   call void @llvm.memmove.p0.p0.iWIDTH(ptr %dest, ptr %source, iWIDTH %length, i1 true)
@@ -55,6 +60,14 @@ define float @_start(ptr %dest, ptr %source, iWIDTH %length, float %value,
   %sr = srem i32 %numerator, %denominator
   %s = add i32 %sq, %sr
   store volatile i32 %s, ptr %dest
+  %native_uq = udiv iWIDTH %native_numerator, %native_denominator
+  %native_ur = urem iWIDTH %native_numerator, %native_denominator
+  %native_u = add iWIDTH %native_uq, %native_ur
+  store volatile iWIDTH %native_u, ptr %dest
+  %native_sq = sdiv iWIDTH %native_numerator, %native_denominator
+  %native_sr = srem iWIDTH %native_numerator, %native_denominator
+  %native_s = add iWIDTH %native_sq, %native_sr
+  store volatile iWIDTH %native_s, ptr %dest
   %sum = fadd float %value, 1.0
   ret float %sum
 }
@@ -100,6 +113,26 @@ define i32 @__divmodsi4(i32 %a, i32 %b, ptr %remainder) #0 {
 define i32 @__udivmodsi4(i32 %a, i32 %b, ptr %remainder) #0 {
   store i32 0, ptr %remainder
   ret i32 %a
+}
+
+define { i16, i16 } @__riscc_divmodhi(i16 %a, i16 %b) #0 {
+  %pair = insertvalue { i16, i16 } zeroinitializer, i16 %a, 0
+  ret { i16, i16 } %pair
+}
+
+define { i16, i16 } @__riscc_udivmodhi(i16 %a, i16 %b) #0 {
+  %pair = insertvalue { i16, i16 } zeroinitializer, i16 %a, 0
+  ret { i16, i16 } %pair
+}
+
+define { i32, i32 } @__riscc_divmodsi(i32 %a, i32 %b) #0 {
+  %pair = insertvalue { i32, i32 } zeroinitializer, i32 %a, 0
+  ret { i32, i32 } %pair
+}
+
+define { i32, i32 } @__riscc_udivmodsi(i32 %a, i32 %b) #0 {
+  %pair = insertvalue { i32, i32 } zeroinitializer, i32 %a, 0
+  ret { i32, i32 } %pair
 }
 
 define void @unused_helper() #0 {
