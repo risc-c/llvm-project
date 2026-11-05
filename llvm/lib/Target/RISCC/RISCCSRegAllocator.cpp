@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RISC-C S registers are a small software-managed cache. They cannot
-// participate in ordinary register allocation because ALU instructions cannot
-// use them directly. After register and stack-slot coloring, this pass ranks
+// RISC-C S registers are a small software-managed cache. Ordinary arithmetic
+// uses GPRs; optional ADDS can read an S-register addend directly. After
+// register and stack-slot coloring, this pass ranks
 // the remaining spill slots and the function's entry values, then assigns the
 // cache registers greedily. Spills with disjoint lifetimes can share a
 // register; only calls crossed by a live spill need to preserve its register.
@@ -19,6 +19,8 @@
 #include "RISCCFrameLowering.h"
 #include "RISCCInstrInfo.h"
 #include "RISCCMachineFunctionInfo.h"
+#include "RISCCMachineOptimize.h"
+#include "RISCCSRegLiveness.h"
 #include "RISCCSubtarget.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -34,6 +36,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/MathExtras.h"
 #include <array>
+#include <optional>
 
 using namespace llvm;
 
@@ -54,6 +57,12 @@ static cl::opt<bool> EnableLoopInvariantSpills(
     "riscc-loop-invariant-spills", cl::Hidden, cl::init(true),
     cl::desc(
         "Keep invariant spills resident across disjoint local GPR values"));
+static cl::opt<bool> EnableAddsSpillCost(
+    "riscc-adds-spill-cost", cl::Hidden, cl::init(true),
+    cl::desc("Account for ADDS reload elimination when placing spills"));
+static cl::opt<bool> EnableAddsSRegReuse(
+    "riscc-adds-sreg-reuse", cl::Hidden, cl::init(true),
+    cl::desc("Reuse S registers outside explicit operand live ranges"));
 
 enum class CandidateKind { Spill, CalleeSave, ReturnAddress };
 
@@ -555,16 +564,18 @@ static bool cacheLoopInvariantSpills(MachineFunction &MF,
   return Changed;
 }
 
-static bool analyzeSpillSlot(const MachineFunction &MF, int FI,
+static bool analyzeSpillSlot(MachineFunction &MF, int FI,
                              const MachineBlockFrequencyInfo &MBFI,
                              uint64_t &Weight) {
   bool HasStore = false;
   bool HasLoad = false;
   Weight = 0;
 
-  for (const MachineBasicBlock &MBB : MF) {
+  bool AddsCost =
+      MF.getSubtarget<RISCCSubtarget>().hasAdds() && EnableAddsSpillCost;
+  for (MachineBasicBlock &MBB : MF) {
     uint64_t Frequency = MBFI.getBlockFreq(&MBB).getFrequency();
-    for (const MachineInstr &MI : MBB) {
+    for (MachineInstr &MI : MBB) {
       if (MI.isDebugInstr() || !referencesFrameIndex(MI, FI))
         continue;
       if (!isSimpleSpillAccess(MI, FI))
@@ -573,6 +584,15 @@ static bool analyzeSpillSlot(const MachineFunction &MF, int FI,
       HasStore |= MI.getOpcode() == RISCC::ST || MI.getOpcode() == RISCC::ST32;
       HasLoad |= MI.getOpcode() == RISCC::LD || MI.getOpcode() == RISCC::LD32;
       Weight = SaturatingAdd(Weight, Frequency);
+      if (AddsCost && MI.mayLoad()) {
+        SmallVector<MachineInstr *, 4> Uses;
+        SmallVector<MachineInstr *, 2> DebugUses;
+        // Moving a spill to S avoids the memory access. ADDS can also remove
+        // the reload's MFS, making this slot more valuable than an equal-use
+        // slot whose consumers still require a GPR.
+        if (findRISCCAddsUsers(MI, Uses, DebugUses))
+          Weight = SaturatingAdd(Weight, Frequency);
+      }
     }
   }
   return HasStore && HasLoad;
@@ -649,7 +669,8 @@ struct SpillLiveness {
   SmallVector<BitVector> Clobbers;
 
   SpillLiveness(const MachineFunction &MF, ArrayRef<Candidate> Candidates,
-                const TargetRegisterInfo &TRI) {
+                const TargetRegisterInfo &TRI, bool ReuseExplicit = false,
+                MCRegister EvictableLink = MCRegister()) {
     unsigned Slots = MF.getFrameInfo().getObjectIndexEnd();
     BitVector IsSpill(Slots);
     for (const Candidate &C : Candidates)
@@ -661,6 +682,10 @@ struct SpillLiveness {
     SmallVector<BitVector> LiveOut(LiveIn.size(), BitVector(Slots));
     Conflicts.assign(Slots, BitVector(Slots));
     Clobbers.assign(Slots, BitVector(TRI.getNumRegs()));
+
+    std::optional<RISCCSRegLiveness> Registers;
+    if (ReuseExplicit)
+      Registers.emplace(MF, TRI, EvictableLink);
 
     auto Slot = [&](const MachineInstr &MI) -> int {
       if (MI.isDebugInstr() || MI.getNumOperands() < 3 ||
@@ -678,13 +703,14 @@ struct SpillLiveness {
         for (const MachineBasicBlock *Succ : MBB.successors())
           Live |= LiveIn[Succ->getNumber()];
         LiveOut[MBB.getNumber()] = Live;
-        for (const MachineInstr &MI : llvm::reverse(MBB))
+        for (const MachineInstr &MI : llvm::reverse(MBB)) {
           if (int FI = Slot(MI); FI >= 0) {
             if (MI.mayStore())
               Live.reset(FI);
             else
               Live.set(FI);
           }
+        }
         if (Live != LiveIn[MBB.getNumber()]) {
           LiveIn[MBB.getNumber()] = std::move(Live);
           Changed = true;
@@ -695,6 +721,20 @@ struct SpillLiveness {
     for (const MachineBasicBlock &MBB : MF) {
       BitVector Live = LiveOut[MBB.getNumber()];
       for (const MachineInstr &MI : llvm::reverse(MBB)) {
+        if (Registers) {
+          auto A = Registers->Instructions.lookup(&MI);
+          unsigned Occupied = A.After | A.Uses | A.Defs;
+          auto AddClobbers = [&](int FI) {
+            for (unsigned I = 0; I != RISCCSRegLiveness::Registers.size(); ++I)
+              if (Occupied & (1u << I))
+                Clobbers[FI].set(RISCCSRegLiveness::Registers[I]);
+          };
+          for (unsigned FI : Live.set_bits())
+            AddClobbers(FI);
+          // A dead spill store still overwrites its assigned S register.
+          if (int FI = Slot(MI); FI >= 0 && MI.mayStore())
+            AddClobbers(FI);
+        }
         if (MI.isCall()) {
           bool HasMask = llvm::any_of(
               MI.operands(), [](const auto &MO) { return MO.isRegMask(); });
@@ -948,16 +988,25 @@ static bool allocateSRegisters(MachineFunction &MF,
     return A.Kind < B.Kind;
   });
 
-  SpillLiveness Spills(MF, Candidates, TRI);
+  bool ReuseExplicit = STI.hasAdds() && EnableAddsSRegReuse;
+  // An untouched incoming link can be moved to the planned LR save slot.
+  // Other explicit uses, including ADDS, must keep their original value.
+  bool OnlyReturnsReadLink =
+      HasLink &&
+      llvm::all_of(MRI.use_nodbg_instructions(Link),
+                   [](const MachineInstr &MI) { return MI.isReturn(); });
+  SpillLiveness Spills(MF, Candidates, TRI, ReuseExplicit,
+                       OnlyReturnsReadLink && !IsLinkClobbered ? Link
+                                                               : MCRegister());
   SmallVector<MCRegister, 6> Free;
   // Prefer every caller-saved cache register before paying the entry/exit
   // save cost of S5/S6. S7 can be free when the entry link is private or dead.
   for (MCRegister Reg :
        {RISCC::S2, RISCC::S3, RISCC::S4, RISCC::S7, RISCC::S5, RISCC::S6})
-    // Explicit operands still reserve a register, including link moves before
-    // tail calls. Register-mask clobbers are checked for each candidate below.
+    // With ADDS, explicit operands reserve their live ranges, not the whole
+    // function. Candidate-specific liveness also accounts for call clobbers.
     if (!MRI.isPhysRegUsed(Reg, /*SkipRegMaskTest=*/true) ||
-        (Reg == Link && !IsLinkClobbered))
+        (Reg == Link && !IsLinkClobbered) || ReuseExplicit)
       Free.push_back(Reg);
 
   // Flexible candidates avoid the precolored link register until its value is
@@ -986,7 +1035,9 @@ static bool allocateSRegisters(MachineFunction &MF,
         // Moving the spill itself saves no code bytes. Charge that setup
         // once; disjoint spills can reuse a paid register.
         bool NeedsSave =
-            (!SkipCalleeSaves && (Reg == RISCC::S5 || Reg == RISCC::S6)) ||
+            (!SkipCalleeSaves && (Reg == RISCC::S5 || Reg == RISCC::S6) &&
+             (!ReuseExplicit ||
+              !MRI.isPhysRegModified(Reg, /*SkipRegMaskTest=*/true))) ||
             (HasLink && !IsLinkClobbered && Reg == Link);
         if (NeedsSave && !UsedBySpill(Reg) &&
             (MF.getFunction().hasOptSize() ||
@@ -1006,6 +1057,8 @@ static bool allocateSRegisters(MachineFunction &MF,
     auto SRegIt = llvm::find_if(Free, [&](MCRegister Reg) {
       return (Reg == RISCC::S2 || Reg == RISCC::S3 || Reg == RISCC::S4 ||
               Reg == RISCC::S7) &&
+             (!ReuseExplicit ||
+              !MRI.isPhysRegUsed(Reg, /*SkipRegMaskTest=*/true)) &&
              !UsedBySpill(Reg) && isPreservedByAllCalls(MF, Reg, TRI);
     });
     if (SRegIt == Free.end())

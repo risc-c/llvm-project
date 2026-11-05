@@ -67,6 +67,12 @@ static DecodeStatus DecodeSREGRegisterClass(MCInst &MI, uint64_t RegNo,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus DecodeSREG32RegisterClass(MCInst &MI, uint64_t RegNo,
+                                              uint64_t Address,
+                                              const MCDisassembler *Decoder) {
+  return DecodeSREGRegisterClass(MI, RegNo, Address, Decoder);
+}
+
 static DecodeStatus decodeSigned8(MCInst &MI, uint64_t Value, uint64_t,
                                   const MCDisassembler *) {
   MI.addOperand(MCOperand::createImm(static_cast<int8_t>(Value)));

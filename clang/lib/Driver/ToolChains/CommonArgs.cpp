@@ -905,6 +905,10 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
         Features.push_back(
             A->getOption().matches(options::OPT_mmulhu) ? "+mulhu" : "-mulhu");
     }
+    AddTargetFeature(Args, Features, options::OPT_madds, options::OPT_mno_adds,
+                     "adds");
+    AddTargetFeature(Args, Features, options::OPT_mvsh, options::OPT_mno_vsh,
+                     "vsh");
     if (const Arg *A =
             Args.getLastArg(options::OPT_mrc32, options::OPT_mno_rc32))
       Features.push_back(A->getOption().matches(options::OPT_mrc32) ? "+rc32"

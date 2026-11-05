@@ -13,8 +13,14 @@
 namespace llvm {
 class FunctionPass;
 class PassRegistry;
+class MachineInstr;
+template <typename T> class SmallVectorImpl;
 bool enableRISCCConstantBranches();
 bool coalesceRISCCLocalCopies(MachineFunction &);
+bool placeRISCCAddsOperands(MachineFunction &);
+bool foldRISCCAdds(MachineFunction &);
+bool findRISCCAddsUsers(MachineInstr &, SmallVectorImpl<MachineInstr *> &Uses,
+                        SmallVectorImpl<MachineInstr *> &DebugUses);
 class RISCCMachineOptimizePass
     : public PassInfoMixin<RISCCMachineOptimizePass> {
 public:

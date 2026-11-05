@@ -102,7 +102,7 @@ public:
 };
 } // namespace
 
-void RISCCTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB){
+void RISCCTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
 #define GET_PASS_REGISTRY "RISCCPassRegistry.def"
 #include "llvm/Passes/TargetPassRegistry.inc"
 }

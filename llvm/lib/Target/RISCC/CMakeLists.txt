@@ -15,6 +15,7 @@ tablegen(LLVM RISCCGenSubtargetInfo.inc -gen-subtarget)
 add_public_tablegen_target(RISCCCommonTableGen)
 
 add_llvm_target(RISCCCodeGen
+  RISCCAdds.cpp
   RISCCAsmPrinter.cpp
   RISCCCallPolicy.cpp
   RISCCCodeGenPassBuilder.cpp

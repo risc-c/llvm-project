@@ -61,7 +61,7 @@ body: |
     successors: %bb.1, %bb.2
     BNEZ %bb.2, implicit $r0
   bb.1:
-    INLINEASM &".zero 512", 1
+    INLINEASM &".space 512", 1
     RETS implicit $s7
   bb.2:
     RETS implicit $s7
@@ -76,7 +76,7 @@ body: |
     BNEZ %bb.2, implicit $r0
   bb.1:
     liveins: $r0, $s7
-    INLINEASM &".zero 512", 1
+    INLINEASM &".space 512", 1
     RETS implicit $s7, implicit $r0
   bb.2:
     liveins: $r0, $s7
@@ -97,7 +97,7 @@ body: |
     BNEZ %bb.3, implicit $r0
   bb.2:
     liveins: $s7
-    INLINEASM &".zero 512", 1
+    INLINEASM &".space 512", 1
     RETS implicit $s7
   bb.3:
     liveins: $s7
@@ -114,7 +114,7 @@ body: |
     JMP8 %bb.2
   bb.1:
     liveins: $s7
-    INLINEASM &".zero 512", 1
+    INLINEASM &".space 512", 1
     RETS implicit $s7
   bb.2:
     liveins: $r2, $s7
@@ -141,7 +141,7 @@ body: |
     $s0 = JALR $r2
   bb.3:
     liveins: $s7
-    INLINEASM &".zero 512", 1
+    INLINEASM &".space 512", 1
     RETS implicit $s7
   bb.4:
     liveins: $r2, $s7

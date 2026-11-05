@@ -27,8 +27,8 @@ instead. `-mcpu=nano` selects the incompatible RC16 Nano profile. RC32 and Nano
 cannot be combined. RC32X is not implemented.
 
 `llvm-objdump` selects the width and profile from the ELF header; `--mcpu` and
-`--mattr` can override those defaults. The ELF flags do not record the optional
-`mulhu` and `mdu` extensions, which require `--mattr=+mulhu` or `--mattr=+mdu`.
+`--mattr` can override those defaults. The ELF flags do not record optional
+extensions; select them explicitly, for example `--mattr=+mulhu,+adds,+vsh`.
 
 The `-mcpu` profiles are:
 
@@ -39,9 +39,12 @@ The `-mcpu` profiles are:
 | `full` (default) | `sys`, shifts by 2 through 8, and low-half multiply |
 | `nano` | Separate RC16 encoding and calling convention |
 
-Optional features include `mul`, `mulhu`, and `mdu`; the last enables paired
-unsigned multiply and divide/remainder. Clang currently requires `-mcpu=full`
-with `-mmdu`. Function `target-cpu` and
+Optional features include `mul`, `mulhu`, `mdu`, `adds`, and `vsh`. Clang accepts
+`-mmulhu`, `-mmdu`, `-madds`, and `-mvsh`, with corresponding `-mno-` options.
+MDU enables paired unsigned multiply and divide/remainder; Clang requires
+`-mcpu=full` for it. ADDS adds an S-register operand to integer addition; VSH adds
+variable shifts. Both are disabled by default and unavailable on Nano.
+Function `target-cpu` and
 `target-features` attributes can change instruction availability, but cannot
 change the module's register width or switch between the Nano and mainline ABIs.
 When reassembling text containing several function profiles, select a profile
@@ -73,8 +76,10 @@ provisional.
 ## Backend structure
 
 Instruction selection uses SelectionDAG and the usual LLVM register allocator.
-The mainline S registers can transfer values to and from general registers but
-cannot serve as ordinary arithmetic operands. After register allocation,
+The mainline S registers transfer values to and from general registers; the
+optional ADDS instruction can read one directly as an addition operand.
+Before register allocation, the ADDS pass places suitable values in S registers
+and folds their uses into additions. After register allocation,
 `RISCCSRegAllocator` assigns suitable spill slots and callee-saved values to
 available S registers. Debug locations referring to removed spill slots are
 marked unavailable.

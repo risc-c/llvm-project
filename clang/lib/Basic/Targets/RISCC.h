@@ -23,6 +23,8 @@ class LLVM_LIBRARY_VISIBILITY RISCCTargetInfo : public TargetInfo {
   std::string CPU = "full";
   bool HasMdu = false;
   bool HasMulhu = false;
+  bool HasAdds = false;
+  bool HasVsh = false;
   bool HasIFLUSH = false;
   bool IsRC32 = false;
 

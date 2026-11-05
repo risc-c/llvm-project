@@ -65,6 +65,8 @@ bool RISCCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("full", CPU == "full")
       .Cases({"mdu", "divu"}, HasMdu)
       .Case("mulhu", HasMulhu)
+      .Case("adds", HasAdds)
+      .Case("vsh", HasVsh)
       .Case("iflush", HasIFLUSH)
       .Cases({"sys", "system", "jal16"}, CPU == "sys" || CPU == "full")
       .Cases({"wide-shift", "wide-shifts"}, CPU == "full")
@@ -87,6 +89,8 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
                                            DiagnosticsEngine &Diags) {
   HasMdu = false;
   HasMulhu = false;
+  HasAdds = false;
+  HasVsh = false;
   HasIFLUSH = false;
   bool HasSys = CPU == "sys" || CPU == "full";
   IsRC32 = false;
@@ -99,6 +103,14 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasMulhu = true;
     else if (Feature == "-mulhu")
       HasMulhu = false;
+    else if (Feature == "+adds")
+      HasAdds = true;
+    else if (Feature == "-adds")
+      HasAdds = false;
+    else if (Feature == "+vsh")
+      HasVsh = true;
+    else if (Feature == "-vsh")
+      HasVsh = false;
     else if (Feature == "+iflush")
       HasIFLUSH = true;
     else if (Feature == "-iflush")
@@ -134,6 +146,16 @@ bool RISCCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
         << "mulhu requires -mcpu=full";
     return false;
   }
+  if (HasAdds && CPU == "nano") {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "adds is not available on the Nano profile";
+    return false;
+  }
+  if (HasVsh && CPU == "nano") {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "vsh is not available on the Nano profile";
+    return false;
+  }
   HasIFLUSH &= HasSys && CPU != "nano";
   setDataModel(IsRC32);
   return true;
@@ -162,4 +184,8 @@ void RISCCTargetInfo::getTargetDefines(const LangOptions &Opts,
       Builder.defineMacro("__RISCC_DIVU__");
     }
   }
+  if (HasAdds)
+    Builder.defineMacro("__RISCC_ADDS__");
+  if (HasVsh)
+    Builder.defineMacro("__RISCC_VSH__");
 }

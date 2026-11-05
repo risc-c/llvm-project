@@ -269,7 +269,7 @@ target triple = "riscc-none-elf"
 
 define void @late_call() {
 entry:
-  call void asm sideeffect ".zero 300", ""()
+  call void asm sideeffect ".space 300", ""()
   call void @target()
   ret void
 }

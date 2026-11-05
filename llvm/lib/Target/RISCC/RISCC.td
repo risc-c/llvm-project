@@ -24,6 +24,10 @@ def FeatureMul : SubtargetFeature<"mul", "HasMul", "true",
   "Enable the low-half multiply instruction">;
 def FeatureMulhu : SubtargetFeature<"mulhu", "HasMulhu", "true",
   "Enable paired unsigned multiply-high/low">;
+def FeatureAdds : SubtargetFeature<"adds", "HasAdds", "true",
+  "Enable ADD with an S-register source">;
+def FeatureVsh : SubtargetFeature<"vsh", "HasVsh", "true",
+  "Enable register-count shifts">;
 def FeatureMdu : SubtargetFeature<"mdu", "HasDivu", "true",
   "Enable paired unsigned multiply-high/low and divide/remainder",
   [FeatureMul, FeatureMulhu]>;

@@ -560,7 +560,8 @@ SDValue RISCCTargetLowering::PerformDAGCombine(SDNode *N,
     // the shifted value. Reuse the byte-mask table for variable byte indices.
     // Keep shared shifts intact and retain the short-count/Nano/Oz policies.
     SDValue Shift = N->getOperand(0);
-    if (!STI.isNano() && !DAG.getMachineFunction().getFunction().hasMinSize() &&
+    if (!STI.isNano() && !STI.hasVsh() &&
+        !DAG.getMachineFunction().getFunction().hasMinSize() &&
         isOneConstant(N->getOperand(1)) && Shift.hasOneUse() &&
         (Shift.getOpcode() == ISD::SRL || Shift.getOpcode() == RISCCISD::SRL ||
          Shift.getOpcode() == ISD::SRA || Shift.getOpcode() == RISCCISD::SRA)) {
@@ -851,15 +852,26 @@ SDValue RISCCTargetLowering::lowerFunnelShift(SDValue Op,
     return DAG.getNode(ISD::OR, DL, VT, ShiftedHigh, ShiftedLow);
   }
 
+  if (STI.hasVsh() && High == Low) {
+    // VSH masks each count in hardware. The opposite count also becomes zero
+    // at a whole-word rotation, so OR combines two copies of the input.
+    SDValue Inverse =
+        DAG.getNode(ISD::SUB, DL, VT, DAG.getConstant(0, DL, VT), Amount);
+    SDValue ShiftedHigh = Shift(ISD::SHL, High, IsLeft ? Amount : Inverse);
+    SDValue ShiftedLow = Shift(ISD::SRL, Low, IsLeft ? Inverse : Amount);
+    return DAG.getNode(ISD::OR, DL, VT, ShiftedHigh, ShiftedLow);
+  }
   if (High == Low)
     return lowerRotateLibCall(Op, DAG);
 
   // Mask both variable counts to the word width. The two-step side of
   // each expansion avoids ever shifting by the full word width.
   SDValue Mask = DAG.getConstant(Bits - 1, DL, VT);
-  Amount = DAG.getNode(ISD::AND, DL, VT, Amount, Mask);
-  SDValue Inverse =
-      DAG.getNode(ISD::AND, DL, VT, DAG.getNOT(DL, Amount, VT), Mask);
+  if (!STI.hasVsh())
+    Amount = DAG.getNode(ISD::AND, DL, VT, Amount, Mask);
+  SDValue Inverse = DAG.getNOT(DL, Amount, VT);
+  if (!STI.hasVsh())
+    Inverse = DAG.getNode(ISD::AND, DL, VT, Inverse, Mask);
   SDValue One = DAG.getConstant(1, DL, VT);
   SDValue ShiftedHigh;
   SDValue ShiftedLow;
@@ -1157,6 +1169,18 @@ SDValue RISCCTargetLowering::lowerShift(SDValue Op, SelectionDAG &DAG) const {
       Amount -= Chunk;
     }
     return V;
+  }
+  if (STI.hasVsh()) {
+    SDValue Count = Op.getOperand(1);
+    // The instruction ignores high count bits. Drop a redundant word mask
+    // without changing any other uses of the masked value.
+    if (Count.getOpcode() == ISD::AND) {
+      if (const auto *Mask = dyn_cast<ConstantSDNode>(Count.getOperand(1));
+          Mask && (Mask->getZExtValue() & (VT.getSizeInBits() - 1)) ==
+                      VT.getSizeInBits() - 1)
+        Count = Count.getOperand(0);
+    }
+    return DAG.getNode(TOpc, DL, VT, Op.getOperand(0), Count);
   }
   const Function &Fn = DAG.getMachineFunction().getFunction();
   // Byte-sized single-bit masks can use a shared eight-byte lookup instead of

@@ -27,6 +27,8 @@ class RISCCSubtarget final : public RISCCGenSubtargetInfo {
   bool HasWideShift = false;
   bool HasMul = false;
   bool HasMulhu = false;
+  bool HasAdds = false;
+  bool HasVsh = false;
   bool HasDivu = false;
   bool IsNano = false;
   bool IsRC32 = false;
@@ -48,6 +50,8 @@ public:
   bool hasWideShift() const { return HasWideShift; }
   bool hasMul() const { return HasMul; }
   bool hasMulhu() const { return HasMulhu; }
+  bool hasAdds() const { return HasAdds && !IsNano; }
+  bool hasVsh() const { return HasVsh && !IsNano; }
   bool hasDivu() const { return HasDivu; }
   bool isNano() const { return IsNano; }
   bool isRC32() const { return IsRC32; }

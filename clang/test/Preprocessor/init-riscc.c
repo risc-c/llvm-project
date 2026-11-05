@@ -23,6 +23,23 @@
 // RUN:   -target-cpu full -target-feature +mulhu < /dev/null | FileCheck %s \
 // RUN:   --check-prefixes=COMMON,FULL,MULHU --implicit-check-not=__RISCC_MDU__ \
 // RUN:   --implicit-check-not=__RISCC_DIVU__
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu sys -target-feature +adds < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,SYS,ADDS
+// RUN: not %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu nano -target-feature +adds < /dev/null 2>&1 | FileCheck %s \
+// RUN:   --check-prefix=ADDS-NANO
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu full -target-feature +vsh < /dev/null | FileCheck %s \
+// RUN:   --check-prefixes=COMMON,FULL,VSH
+// RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
+// RUN:   -mvsh -x c /dev/null | FileCheck %s --check-prefix=VSH
+// RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
+// RUN:   -mvsh -mno-vsh -x c /dev/null | FileCheck %s --check-prefix=VSH-OFF \
+// RUN:   --implicit-check-not=__RISCC_VSH__
+// RUN: not %clang_cc1 -E -dM -ffreestanding -triple riscc-none-elf \
+// RUN:   -target-cpu nano -target-feature +vsh < /dev/null 2>&1 | FileCheck %s \
+// RUN:   --check-prefix=VSH-NANO
 // RUN: %clang -E -dM -ffreestanding --target=riscc-none-elf -mcpu=full \
 // RUN:   -mmdu -mno-mulhu -x c /dev/null | FileCheck %s \
 // RUN:   --check-prefixes=COMMON,FULL --implicit-check-not=__RISCC_MDU__ \
@@ -64,6 +81,11 @@
 // MDU-DAG: #define __RISCC_MULHU__ 1
 // MDU-DAG: #define __RISCC_DIVU__ 1
 // MULHU-DAG: #define __RISCC_MULHU__ 1
+// ADDS-DAG: #define __RISCC_ADDS__ 1
+// ADDS-NANO: error: invalid feature combination: adds is not available on the Nano profile
+// VSH-DAG: #define __RISCC_VSH__ 1
+// VSH-OFF: #define __RISCC_FULL__ 1
+// VSH-NANO: error: invalid feature combination: vsh is not available on the Nano profile
 // RC32-DAG: #define __RISCC_RC32__ 1
 // RC32-DAG: #define __RISCC_XLEN__ 32
 // RC32-DAG: #define __POINTER_WIDTH__ 32

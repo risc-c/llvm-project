@@ -1,0 +1,266 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc -mcpu=full -mattr=+adds -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s
+
+# A loop with no register pressure does not justify reserving an S register.
+# CHECK-LABEL: name: low_pressure
+# CHECK-NOT: ADDS
+# CHECK: = ADD %
+# CHECK-NOT: ADDS
+# CHECK: RETS
+
+# A hot non-ADD use costs an MFS on every iteration, so this invariant
+# does not pay for its setup even when the loop is under pressure.
+# CHECK-LABEL: name: non_add_use
+# CHECK-NOT: ADDS
+# CHECK: = ADD %
+# CHECK-NOT: ADDS
+# CHECK: RETS
+
+# Caller-saved S registers already in use leave no legal placement. In
+# particular, placement must not grow the function by reserving S5 or S6.
+# CHECK-LABEL: name: caller_saved_busy
+# CHECK-NOT: ADDS
+# CHECK-NOT: $s5 = COPY
+# CHECK-NOT: $s6 = COPY
+# CHECK: = ADD %
+# CHECK-NOT: ADDS
+# CHECK: RETS
+
+# Size-oriented functions use the post-allocation fold only; placement is
+# intentionally disabled for both optsize and minsize.
+# CHECK-LABEL: name: optsize
+# CHECK-NOT: ADDS
+# CHECK: = ADD %
+# CHECK-NOT: ADDS
+# CHECK: RETS
+# CHECK-LABEL: name: minsize
+# CHECK-NOT: ADDS
+# CHECK: = ADD %
+# CHECK-NOT: ADDS
+# CHECK: RETS
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @low_pressure() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @non_add_use() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @caller_saved_busy() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @optsize() optsize {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @minsize() minsize {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+...
+---
+name: low_pressure
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    %3:gpr = PHI %2, %bb.0, %5, %bb.1
+    %4:gpr = ADD %0, %3
+    ST %4, %1, 0
+    %5:gpr = ADDI %3, 1
+    CMPI %5, 10, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: non_add_use
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    %3:gpr = PHI %2, %bb.0, %7, %bb.1
+    %4:gpr = ADD %0, %3
+    %6:gpr = XOR %0, %3
+    ST %4, %1, 0
+    ST %6, %1, 2
+    ST %8, %1, 4
+    ST %9, %1, 6
+    ST %10, %1, 8
+    ST %11, %1, 10
+    ST %12, %1, 12
+    ST %13, %1, 14
+    ST %14, %1, 16
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: caller_saved_busy
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s2, $s3, $s4, $s7
+    $r0 = MFS $s2
+    $r0 = MFS $s3
+    $r0 = MFS $s4
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s2, $s3, $s4, $s7
+    %3:gpr = PHI %2, %bb.0, %7, %bb.1
+    %4:gpr = ADD %0, %3
+    ST %4, %1, 0
+    ST %8, %1, 2
+    ST %9, %1, 4
+    ST %10, %1, 6
+    ST %11, %1, 8
+    ST %12, %1, 10
+    ST %13, %1, 12
+    ST %14, %1, 14
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2.exit:
+    liveins: $s2, $s3, $s4, $s7
+    $r0 = MFS $s2
+    ST $r0, %1, 0
+    $r0 = MFS $s3
+    ST $r0, %1, 2
+    $r0 = MFS $s4
+    ST $r0, %1, 4
+    RETS implicit $s7
+...
+---
+name: optsize
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    %3:gpr = PHI %2, %bb.0, %7, %bb.1
+    %4:gpr = ADD %0, %3
+    ST %4, %1, 0
+    ST %8, %1, 2
+    ST %9, %1, 4
+    ST %10, %1, 6
+    ST %11, %1, 8
+    ST %12, %1, 10
+    ST %13, %1, 12
+    ST %14, %1, 14
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+---
+name: minsize
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    %3:gpr = PHI %2, %bb.0, %7, %bb.1
+    %4:gpr = ADD %0, %3
+    ST %4, %1, 0
+    ST %8, %1, 2
+    ST %9, %1, 4
+    ST %10, %1, 6
+    ST %11, %1, 8
+    ST %12, %1, 10
+    ST %13, %1, 12
+    ST %14, %1, 14
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1, implicit $r0
+    JMP8 %bb.2
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...

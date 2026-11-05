@@ -40,6 +40,11 @@ def HasMduPred : Predicate<"Subtarget->hasMulhu() && Subtarget->hasDivu()">,
                  AssemblerPredicate<(all_of FeatureMdu)>;
 def HasMulhuPred : Predicate<"Subtarget->hasMulhu()">,
                    AssemblerPredicate<(all_of FeatureMulhu)>;
+def HasAddsPred : Predicate<"Subtarget->hasAdds()">,
+                  AssemblerPredicate<(all_of FeatureAdds, (not FeatureNano))>;
+def HasVshPred : Predicate<"Subtarget->hasVsh()">,
+                 AssemblerPredicate<(all_of FeatureVsh, (not FeatureNano))>;
+def NoVshPred : Predicate<"!Subtarget->hasVsh()">;
 def IsNanoPred : Predicate<"Subtarget->isNano()">,
                  AssemblerPredicate<(all_of FeatureNano)>;
 def NoNanoPred : Predicate<"!Subtarget->isNano()">,
@@ -189,6 +194,7 @@ class NativeType<bit is32> {
   string Suffix = !if(is32, "32", "");
   ValueType VT = !if(is32, i32, i16);
   RegisterClass RC = !if(is32, GPR32, GPR);
+  RegisterClass SReg = !if(is32, SREG32, SREG);
   Operand SImm = !if(is32, s8imm32, s8imm);
   Operand UImm = !if(is32, u8imm32, u8imm);
   Operand ShiftImm = !if(is32, shiftimm32, shiftimm);
@@ -296,6 +302,11 @@ let isCommutable = 1 in
 def "ADD"#W.Suffix : RR<0x00, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
     "add\t$rd, $ra, $rb", [(set W.VT:$rd, (add W.VT:$ra, W.VT:$rb))]>,
     NativeInst<"ADD", W>;
+let Predicates = !listconcat(W.Predicates, [HasAddsPred]) in
+// Assembly follows encoded source A (S) then B (R); MIR keeps GPR/S order.
+def "ADDS"#W.Suffix : RR<0x18, (outs W.RC:$rd),
+    (ins W.RC:$rb, W.SReg:$ra), "adds\t$rd, $ra, $rb">,
+    NativeInst<"ADDS", W>;
 def "SUB"#W.Suffix : RR<0x01, (outs W.RC:$rd), (ins W.RC:$ra, W.RC:$rb),
     "sub\t$rd, $ra, $rb", [(set W.VT:$rd, (sub W.VT:$ra, W.VT:$rb))]>,
     NativeInst<"SUB", W>;
@@ -341,6 +352,37 @@ def "MULHU"#W.Suffix : RRMdu<0x14, (outs W.RC:$rr, W.RC:$rq),
   // Both inputs are captured before either output is written. In particular,
   // the low result may reuse rb; the two result definitions still interfere.
   let Constraints = "$rq = $rq_in";
+}
+}
+}
+
+// VSH reads the value and count before overwriting rd, including rd == ra.
+// Schedule the multiplier path; counts 0 through 8 finish in one clock.
+foreach W = [Native16, Native32] in {
+let Predicates = !listconcat(W.WidthPredicates, [HasVshPred]),
+    DecoderNamespace = W.DecoderNamespace, Constraints = "$rd = $rd_in" in {
+def "SLL"#W.Suffix
+    : RR<0x11, (outs W.RC:$rd), (ins W.RC:$rd_in, W.RC:$ra),
+         "sll\t$rd, $ra",
+         [(set W.VT:$rd, (RISCCshl W.RC:$rd_in, W.RC:$ra))]>,
+      NativeInst<"SLL", W>, Sched<[WriteRISCCMul]> {
+  let rb = 0b010;
+}
+def "SRL"#W.Suffix
+    : RR<0x11, (outs W.RC:$rd), (ins W.RC:$rd_in, W.RC:$ra),
+         "srl\t$rd, $ra",
+         [(set W.VT:$rd, (RISCCsrl W.RC:$rd_in, W.RC:$ra))]>,
+      NativeInst<"SRL", W>,
+      Sched<[!if(W.Is32, WriteRISCCMulhu, WriteRISCCMul)]> {
+  let rb = 0b011;
+}
+def "SRA"#W.Suffix
+    : RR<0x11, (outs W.RC:$rd), (ins W.RC:$rd_in, W.RC:$ra),
+         "sra\t$rd, $ra",
+         [(set W.VT:$rd, (RISCCsra W.RC:$rd_in, W.RC:$ra))]>,
+      NativeInst<"SRA", W>,
+      Sched<[!if(W.Is32, WriteRISCCMulhu, WriteRISCCMul)]> {
+  let rb = 0b111;
 }
 }
 }
@@ -707,7 +749,7 @@ def "PseudoSELECTCC"#W.Suffix : Pseudo<(outs W.RC:$dst),
     [(set W.VT:$dst, (RISCCselectcc W.RC:$lhs, W.RC:$rhs, W.RC:$truev,
                                   W.RC:$falsev, timm:$cc))]>,
     NativeInst<"PseudoSELECTCC", W>;
-let Predicates = W.Predicates in {
+let Predicates = !listconcat(W.Predicates, [NoVshPred]) in {
 def "PseudoSHL"#W.Suffix : Pseudo<(outs W.RC:$dst), (ins W.RC:$src, W.RC:$amount),
     [(set W.VT:$dst, (RISCCshl W.RC:$src, W.RC:$amount))]>,
     NativeInst<"PseudoSHL", W>;

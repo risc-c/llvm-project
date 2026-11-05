@@ -2148,6 +2148,7 @@ static bool optimizePhysicalRegisters(MachineFunction &MF) {
   Changed |= EnableAffineValues && foldPhysicalImmediateChains(MF);
   Changed |= foldR0ImmediateAdds(MF);
   Changed |= removeRepeatedPhysicalValues(MF);
+  Changed |= foldRISCCAdds(MF);
   Changed |= EnableConstantSynthesis && synthesizeUnsharedConstants(MF);
   Changed |= foldReturnTransfers(MF);
   return Changed;
@@ -2168,7 +2169,8 @@ public:
     bool Changed = removeRedundantExtensions(MF);
     Changed |= removeUnusedUpperBits(MF);
     Changed |= foldAddressOffsets(MF);
-    return delayAddsAcrossCalls(MF) || Changed;
+    Changed |= delayAddsAcrossCalls(MF);
+    return placeRISCCAddsOperands(MF) || Changed;
   }
 };
 
@@ -2222,6 +2224,7 @@ RISCCMachineOptimizePass::run(MachineFunction &MF,
   Changed |= removeUnusedUpperBits(MF);
   Changed |= foldAddressOffsets(MF);
   Changed |= delayAddsAcrossCalls(MF);
+  Changed |= placeRISCCAddsOperands(MF);
   return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
 

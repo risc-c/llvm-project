@@ -1,0 +1,663 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+adds \
+# RUN:   -run-pass=riscc-machine-optimize -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/:gpr /:gpr32 /g' -e 's/\bLDI\b/LDI32/g' \
+# RUN:   -e 's/\bADDI\b/ADDI32/g' -e 's/\bCMPI\b/CMPI32/g' \
+# RUN:   -e 's/\bADD\b/ADD32/g' -e 's/\bXOR\b/XOR32/g' \
+# RUN:   -e 's/\bAND\b/AND32/g' -e 's/\bLD\b/LD32/g' \
+# RUN:   -e 's/\bST\b/ST32/g' -e 's/\bCALL\b/CALL32/g' \
+# RUN:   -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc-none-elf \
+# RUN:   -mcpu=full -mattr=+rc32,+adds -run-pass=riscc-machine-optimize \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+
+# A call before the invariant definition is outside its S-register lifetime.
+# The definition is still profitable in the pressured loop.
+# CHECK-LABEL: name: call_before_def
+# CHECK:       CALL
+# CHECK:       $s2 = COPY %0
+# CHECK:       bb.1.loop:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+
+# An earlier explicit S2 value is dead before the candidate definition, so
+# placement can reuse S2 for the loop invariant.
+# CHECK-LABEL: name: explicit_s2_dead
+# CHECK:       $r0 = MFS $s2
+# CHECK:       $s2 = COPY %0
+# CHECK:       bb.1.loop:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+
+# S3, S4 and S7 remain live in both loops.  S2 is reused by two sequential
+# pressured loops whose candidate lifetimes do not overlap.
+# CHECK-LABEL: name: sequential_loops
+# CHECK:       $s2 = COPY %0
+# CHECK:       bb.1.loop1:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       bb.2.between:
+# CHECK:       $s2 = COPY %{{[0-9]+}}
+# CHECK:       bb.3.loop2:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+
+# A cold non-ADD use is retained through an MFS, while two hot loop ADDs read
+# the invariant directly from S2.
+# CHECK-LABEL: name: mixed_cold_xor
+# CHECK:       $s2 = COPY %0
+# CHECK:       bb.1.hot:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       bb.2.cold:
+# CHECK:       %{{[0-9]+}}:gpr{{(32)?}} = COPY $s2
+# CHECK:       XOR{{(32)?}}
+
+# A call in the candidate's live range clobbers caller-saved S registers, so
+# the loop keeps ordinary ADDs rather than selecting an unsafe S placement.
+# CHECK-LABEL: name: call_crossing
+# CHECK-NOT:   ADDS
+# CHECK:       CALL
+# CHECK-NOT:   ADDS
+# CHECK:       ADD{{(32)?}}
+
+# Seven GPR values are active in this loop.  The two additional values are
+# live through it, but are only used after the loop, so they do not create
+# loop pressure and must not trigger an S-register placement.
+# CHECK-LABEL: name: low_pressure_liveouts
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   ADDS
+# CHECK:       ADD{{(32)?}}
+# CHECK:       bb.2.exit:
+
+# The candidate is used in the loop body and again in a separate loop block.
+# Values used only by that block remain live through the first block, making
+# the pressure real across the loop CFG and allowing the candidate in S2.
+# CHECK-LABEL: name: multiblock_pressure
+# CHECK:       $s2 = COPY %0
+# CHECK:       bb.1.loop:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       bb.2.cont:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+
+# Mixed-use placement keeps an ordinary use in the defining block on the
+# original GPR.  The two cold non-ADD consumers share one reload from S2,
+# while the hot loop uses ADDS directly.
+# CHECK-LABEL: name: mixed_block_reload
+# CHECK:       %[[BASE:[0-9]+]]:gpr{{(32)?}} = COPY $r1
+# CHECK:       $s2 = COPY %[[BASE]]
+# CHECK-NOT:   COPY $s2
+# CHECK:       %{{[0-9]+}}:gpr{{(32)?}} = XOR{{(32)?}} %[[BASE]], %1
+# CHECK:       bb.1.hot:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       bb.2.cold:
+# CHECK:       %[[COLD:[0-9]+]]:gpr{{(32)?}} = COPY $s2
+# CHECK-NOT:   COPY $s2
+# CHECK:       %{{[0-9]+}}:gpr{{(32)?}} = XOR{{(32)?}} %[[COLD]], %1
+# CHECK:       %{{[0-9]+}}:gpr{{(32)?}} = AND{{(32)?}} %[[COLD]], %1
+
+# The only candidate is used in a high-pressure loop latch.  A rematerializable
+# LDI can be recreated there, so it should not consume an S register.
+# CHECK-LABEL: name: remat_pressure_ldi
+# CHECK-NOT:   ADDS
+
+# The same pressure shape with a true load cannot be rematerialized.  Keep it
+# in S2 for the latch ADD, avoiding a reload through the crowded loop body.
+# CHECK-LABEL: name: remat_pressure_ld
+# CHECK:       $s2 = COPY %2
+# CHECK:       bb.3.latch:
+# CHECK:       ADDS{{(32)?}} {{.*}}$s2
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @call_before_def() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @explicit_s2_dead() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @sequential_loops() {
+  entry:
+    br label %loop1
+  loop1:
+    br i1 undef, label %loop1, label %between
+  between:
+    br label %loop2
+  loop2:
+    br i1 undef, label %loop2, label %exit
+  exit:
+    ret void
+  }
+  define void @mixed_cold_xor() {
+  entry:
+    br label %hot
+  hot:
+    br i1 undef, label %hot, label %cold
+  cold:
+    ret void
+  }
+  define void @call_crossing() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @low_pressure_liveouts() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %loop, label %exit
+  exit:
+    ret void
+  }
+  define void @multiblock_pressure() {
+  entry:
+    br label %loop
+  loop:
+    br i1 undef, label %cont, label %exit
+  cont:
+    br label %loop
+  exit:
+    ret void
+  }
+  define void @mixed_block_reload() {
+  entry:
+    br label %hot
+  hot:
+    br i1 undef, label %hot, label %cold
+  cold:
+    ret void
+  }
+  define void @remat_pressure_ldi() {
+  entry:
+    br label %header
+  header:
+    br label %body
+  body:
+    br label %latch
+  latch:
+    br i1 undef, label %header, label %exit
+  exit:
+    ret void
+  }
+  define void @remat_pressure_ld() {
+  entry:
+    br label %header
+  header:
+    br label %body
+  body:
+    br label %latch
+  latch:
+    br i1 undef, label %header, label %exit
+  exit:
+    ret void
+  }
+...
+---
+name: call_before_def
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $r6, $s7
+    CALL $r6, csr_riscc, implicit-def $s7, implicit-def $r0, implicit-def $r1, implicit-def $r2
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    successors: %bb.1.loop, %bb.2.exit
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.1.loop
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    ST %8, %1, 4
+    ST %9, %1, 6
+    ST %10, %1, 8
+    ST %11, %1, 10
+    ST %12, %1, 12
+    ST %13, %1, 14
+    ST %14, %1, 16
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+
+---
+name: explicit_s2_dead
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s2, $s7
+    $r0 = MFS $s2
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    successors: %bb.1.loop, %bb.2.exit
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.1.loop
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    ST %8, %1, 4
+    ST %9, %1, 6
+    ST %10, %1, 8
+    ST %11, %1, 10
+    ST %12, %1, 12
+    ST %13, %1, 14
+    ST %14, %1, 16
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+
+---
+name: sequential_loops
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s3, $s4, $s7
+    $r0 = MFS $s3
+    $r0 = MFS $s4
+    $r0 = MFS $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop1:
+    liveins: $s3, $s4, $s7
+    successors: %bb.1.loop1, %bb.2.between
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.1.loop1
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    ST %8, %1, 4
+    ST %9, %1, 6
+    ST %10, %1, 8
+    ST %11, %1, 10
+    ST %12, %1, 12
+    ST %13, %1, 14
+    ST %14, %1, 16
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1.loop1, implicit $r0
+    JMP8 %bb.2.between
+  bb.2.between:
+    liveins: $s3, $s4, $s7
+    %15:gpr = LDI 9
+    %16:gpr = LDI 0
+    %17:gpr = LDI 2
+    %18:gpr = LDI 3
+    %19:gpr = LDI 4
+    %20:gpr = LDI 5
+    %21:gpr = LDI 6
+    %22:gpr = LDI 7
+    %23:gpr = LDI 8
+    JMP8 %bb.3
+  bb.3.loop2:
+    liveins: $s3, $s4, $s7
+    successors: %bb.3.loop2, %bb.4.exit
+    %24:gpr = PHI %16, %bb.2.between, %30, %bb.3.loop2
+    %25:gpr = ADD %15, %24
+    %26:gpr = ADD %24, %15
+    ST %25, %1, 0
+    ST %26, %1, 2
+    ST %17, %1, 4
+    ST %18, %1, 6
+    ST %19, %1, 8
+    ST %20, %1, 10
+    ST %21, %1, 12
+    ST %22, %1, 14
+    ST %23, %1, 16
+    %30:gpr = ADDI %24, 1
+    CMPI %30, 10, implicit-def $r0
+    BNEZ %bb.3.loop2, implicit $r0
+    JMP8 %bb.4.exit
+  bb.4.exit:
+    liveins: $s3, $s4, $s7
+    RETS implicit $s7
+...
+
+---
+name: mixed_cold_xor
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1.hot
+  bb.1.hot:
+    liveins: $s7
+    successors: %bb.1.hot, %bb.2.cold
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.1.hot
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    ST %8, %1, 4
+    ST %9, %1, 6
+    ST %10, %1, 8
+    ST %11, %1, 10
+    ST %12, %1, 12
+    ST %13, %1, 14
+    ST %14, %1, 16
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1.hot, implicit $r0
+    JMP8 %bb.2.cold
+  bb.2.cold:
+    liveins: $s7
+    %6:gpr = XOR %0, %1
+    ST %6, %1, 0
+    RETS implicit $s7
+...
+
+---
+name: call_crossing
+tracksRegLiveness: true
+frameInfo:
+  hasCalls: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %15:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 2
+    %9:gpr = LDI 3
+    %10:gpr = LDI 4
+    %11:gpr = LDI 5
+    %12:gpr = LDI 6
+    %13:gpr = LDI 7
+    %14:gpr = LDI 8
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    successors: %bb.1.loop, %bb.2.exit
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.1.loop
+    CALL %15, csr_riscc, implicit-def $s7, implicit-def $r0
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    ST %8, %1, 4
+    ST %9, %1, 6
+    ST %10, %1, 8
+    ST %11, %1, 10
+    ST %12, %1, 12
+    ST %13, %1, 14
+    ST %14, %1, 16
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    RETS implicit $s7
+
+---
+name: low_pressure_liveouts
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 13
+    %9:gpr = LDI 17
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    successors: %bb.1.loop, %bb.2.exit
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.1.loop
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.1.loop, implicit $r0
+    JMP8 %bb.2.exit
+  bb.2.exit:
+    liveins: $s7
+    %10:gpr = ADD %8, %9
+    ST %10, %1, 0
+    RETS implicit $s7
+
+---
+name: multiblock_pressure
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %8:gpr = LDI 8
+    %9:gpr = LDI 9
+    %10:gpr = LDI 10
+    JMP8 %bb.1
+  bb.1.loop:
+    liveins: $s7
+    successors: %bb.2.cont, %bb.3.exit
+    %3:gpr = PHI %2, %bb.0.entry, %7, %bb.2.cont
+    %4:gpr = ADD %0, %3
+    %5:gpr = ADD %3, %0
+    ST %4, %1, 0
+    ST %5, %1, 2
+    %7:gpr = ADDI %3, 1
+    CMPI %7, 10, implicit-def $r0
+    BNEZ %bb.2.cont, implicit $r0
+    JMP8 %bb.3.exit
+  bb.2.cont:
+    liveins: $s7
+    successors: %bb.1.loop
+    %6:gpr = ADD %0, %4
+    %11:gpr = ADD %8, %9
+    %12:gpr = ADD %11, %10
+    ST %6, %1, 4
+    ST %12, %1, 6
+    JMP8 %bb.1.loop
+  bb.3.exit:
+    liveins: $s7
+    RETS implicit $s7
+
+---
+name: mixed_block_reload
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 0
+    %3:gpr = LDI 2
+    %4:gpr = LDI 3
+    %5:gpr = LDI 4
+    %6:gpr = LDI 5
+    %7:gpr = LDI 6
+    %8:gpr = LDI 7
+    %9:gpr = LDI 8
+    %20:gpr = XOR %0, %1
+    ST %20, %1, 18
+    JMP8 %bb.1.hot
+  bb.1.hot:
+    liveins: $s7
+    successors: %bb.1.hot, %bb.2.cold
+    %10:gpr = PHI %2, %bb.0.entry, %11, %bb.1.hot
+    %12:gpr = ADD %0, %10
+    %13:gpr = ADD %10, %0
+    ST %12, %1, 0
+    ST %13, %1, 2
+    ST %3, %1, 4
+    ST %4, %1, 6
+    ST %5, %1, 8
+    ST %6, %1, 10
+    ST %7, %1, 12
+    ST %8, %1, 14
+    ST %9, %1, 16
+    %11:gpr = ADDI %10, 1
+    CMPI %11, 10, implicit-def $r0
+    BNEZ %bb.1.hot, implicit $r0
+    JMP8 %bb.2.cold
+  bb.2.cold:
+    liveins: $s7
+    %14:gpr = XOR %0, %1
+    %15:gpr = AND %0, %1
+    ST %14, %1, 0
+    ST %15, %1, 2
+    RETS implicit $s7
+...
+
+---
+name: remat_pressure_ldi
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $r3, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LDI 123
+    %3:gpr = COPY $r3
+    JMP8 %bb.1.header
+  bb.1.header:
+    liveins: $s7
+    successors: %bb.2.body
+    %4:gpr = PHI %3, %bb.0.entry, %19, %bb.3.latch
+    %5:gpr = LD %0, 0
+    %6:gpr = LD %0, 2
+    %7:gpr = LD %0, 4
+    %8:gpr = LD %0, 6
+    %9:gpr = LD %0, 8
+    %10:gpr = LD %0, 10
+    %11:gpr = LD %0, 12
+    JMP8 %bb.2.body
+  bb.2.body:
+    liveins: $s7
+    successors: %bb.3.latch
+    %12:gpr = XOR %5, %6
+    %13:gpr = XOR %12, %7
+    %14:gpr = XOR %13, %8
+    %15:gpr = XOR %14, %9
+    %16:gpr = XOR %15, %10
+    %17:gpr = XOR %16, %11
+    ST %17, %1, 0
+    JMP8 %bb.3.latch
+  bb.3.latch:
+    liveins: $s7
+    successors: %bb.1.header, %bb.4.exit
+    %18:gpr = ADD %2, %4
+    ST %18, %1, 2
+    %19:gpr = ADDI %4, 1
+    CMPI %19, 10, implicit-def $r0
+    BNEZ %bb.1.header, implicit $r0
+    JMP8 %bb.4.exit
+  bb.4.exit:
+    liveins: $s7
+    RETS implicit $s7
+...
+
+---
+name: remat_pressure_ld
+tracksRegLiveness: true
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $r3, $s7
+    %0:gpr = COPY $r1
+    %1:gpr = COPY $r2
+    %2:gpr = LD %0, 20
+    %3:gpr = COPY $r3
+    JMP8 %bb.1.header
+  bb.1.header:
+    liveins: $s7
+    successors: %bb.2.body
+    %4:gpr = PHI %3, %bb.0.entry, %19, %bb.3.latch
+    %5:gpr = LD %0, 0
+    %6:gpr = LD %0, 2
+    %7:gpr = LD %0, 4
+    %8:gpr = LD %0, 6
+    %9:gpr = LD %0, 8
+    %10:gpr = LD %0, 10
+    %11:gpr = LD %0, 12
+    JMP8 %bb.2.body
+  bb.2.body:
+    liveins: $s7
+    successors: %bb.3.latch
+    %12:gpr = XOR %5, %6
+    %13:gpr = XOR %12, %7
+    %14:gpr = XOR %13, %8
+    %15:gpr = XOR %14, %9
+    %16:gpr = XOR %15, %10
+    %17:gpr = XOR %16, %11
+    ST %17, %1, 0
+    JMP8 %bb.3.latch
+  bb.3.latch:
+    liveins: $s7
+    successors: %bb.1.header, %bb.4.exit
+    %18:gpr = ADD %2, %4
+    ST %18, %1, 2
+    %19:gpr = ADDI %4, 1
+    CMPI %19, 10, implicit-def $r0
+    BNEZ %bb.1.header, implicit $r0
+    JMP8 %bb.4.exit
+  bb.4.exit:
+    liveins: $s7
+    RETS implicit $s7
+...

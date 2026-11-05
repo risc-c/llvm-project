@@ -1,0 +1,377 @@
+# REQUIRES: riscc-registered-target
+# RUN: llc -mtriple=riscc-none-elf -mcpu=full -mattr=+adds \
+# RUN:   -run-pass=riscc-sreg-allocator,riscc-postra-optimize \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: sed -e 's/\bLD\b/LD32/g' -e 's/\bST\b/ST32/g' \
+# RUN:   -e 's/\bADD\b/ADD32/g' \
+# RUN:   -e 's/\bADDS\b/ADDS32/g' \
+# RUN:   -e 's/\bXOR\b/XOR32/g' \
+# RUN:   -e 's/\bCALL\b/CALL32/g' -e 's/size: 2/size: 4/g' \
+# RUN:   -e 's/alignment: 2/alignment: 4/g' -e 's/maxAlignment: 2/maxAlignment: 4/g' \
+# RUN:   -e 's/(s16)/(s32)/g' %s | llc -x mir -mtriple=riscc-none-elf \
+# RUN:   -mcpu=full -mattr=+rc32,+adds \
+# RUN:   -run-pass=riscc-sreg-allocator,riscc-postra-optimize \
+# RUN:   -verify-machineinstrs -o - | FileCheck %s
+
+# An explicit S2 value dies before the spill lifetime.  The spill may reuse
+# S2, and its reloads are foldable because their only uses are ADD operands.
+# CHECK-LABEL: name: reuse_explicit_dead
+# CHECK:       $r0 = MFS $s2
+# CHECK:       $s2 = MTS{{.*}}$r1
+# CHECK:       bb.1.loop:
+# CHECK-NOT:   LD{{(32)?}}
+# CHECK:       $r3 = ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       $r5 = ADDS{{(32)?}} {{.*}}$s2
+
+# Two disjoint spill lifetimes can share the same caller-saved S register,
+# including after an explicit S2 use in an earlier region.
+# CHECK-LABEL: name: reuse_nonoverlap
+# CHECK:       $s2 = MTS{{.*}}$r1
+# CHECK-NOT:   MFS
+# CHECK:       $r3 = ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       $s2 = MTS{{.*}}$r2
+# CHECK:       $r5 = ADDS{{(32)?}} {{.*}}$s2
+
+# An explicit S2 value remains live across the spill and must not be silently
+# overwritten.  Another S register may still cache the spill.
+# CHECK-LABEL: name: overlap_explicit_s2
+# CHECK-NOT:   $s2 = MTS
+# CHECK:       $r3 = ADDS{{(32)?}} {{.*}}$s3
+
+# A call clobbers caller-saved S registers while the frame index is live.
+# This one-shot spill is not worth a callee-saved S5/S6 setup either.
+# CHECK-LABEL: name: caller_clobber
+# CHECK:       CALL{{(32)?}} $r2, csr_riscc
+# CHECK-NOT:   ADDS
+# CHECK:       $r1 = LD{{(32)?}} %stack.0
+
+# Equal-base-frequency candidates are ranked by foldable reload benefit: the
+# ADD-only spill gets the first S register and folds, while the mixed-use spill
+# remains an explicit MFS/XOR consumer even though it is also cached.
+# CHECK-LABEL: name: foldable_spill_wins
+# CHECK:       $s2 = MTS{{.*}}$r1
+# CHECK:       $s3 = MTS{{.*}}$r2
+# CHECK:       $r3 = ADDS{{(32)?}} {{.*}}$s2
+# CHECK:       $r2 = MFS{{.*}}$s3
+# CHECK:       $r5 = XOR{{(32)?}}
+
+# A store to the same frame index makes the reload sequence unsafe to score
+# as an ADD-only fold.
+# CHECK-LABEL: name: unsafe_store
+# CHECK-NOT:   ADDS
+# CHECK:       $r3 = ADD{{(32)?}}
+
+# A second, non-ADD use also prevents the reload from receiving the bonus.
+# CHECK-LABEL: name: unsafe_mixed_use
+# CHECK-NOT:   ADDS
+# CHECK:       $r3 = ADD{{(32)?}}
+# CHECK:       $r5 = XOR{{(32)?}}
+
+# Calls between reload and use are unsafe even when the immediate consumer is
+# an ADD.
+# CHECK-LABEL: name: unsafe_clobber
+# CHECK:       CALL
+# CHECK-NOT:   ADDS
+# CHECK:       $r3 = ADD{{(32)?}}
+
+# ADDS has one S-register source; ADD r1,r1 cannot be folded into it.
+# CHECK-LABEL: name: unsafe_same_register
+# CHECK-NOT:   ADDS
+# CHECK:       $r3 = ADD{{(32)?}} $r1, $r1
+
+# Keep the existing size-mode rule: one foldable spill does not justify a new
+# S5/S6 save/restore sequence when caller-saved S registers remain live.
+# CHECK-LABEL: name: optsize_single
+# CHECK-NOT:   frame-setup MFS $s5
+# CHECK-NOT:   frame-setup MTS $s5
+# CHECK-NOT:   frame-destroy MFS $s5
+# CHECK-NOT:   frame-destroy MTS $s5
+# CHECK-NOT:   ADDS
+# CHECK:       $r1 = LD{{(32)?}} %stack.0
+
+# A spill reload used by its last ADD may still be followed by a store to the
+# same slot.  The slot retains both store/load coverage, while the old reload
+# GPR is dead after the ADD, so its MFS can fold to ADDS before the later MTS.
+# CHECK-LABEL: name: spill_store_after_last_add
+# CHECK:       $s2 = MTS{{.*}}$r1
+# CHECK-NOT:   LD{{(32)?}}
+# CHECK:       $r3 = ADDS{{(32)?}} {{.*}}$r2, {{.*}}$s2
+# CHECK:       $s2 = MTS{{.*}}$r4
+
+# A later ADD that still reads the old reload GPR makes the preceding store
+# unsafe for this fold and keeps the stack load in place.
+# CHECK-LABEL: name: spill_store_live_gpr
+# CHECK-NOT:   ADDS
+# CHECK:       $r0 = MFS{{.*}}$s2
+# CHECK:       $r3 = ADD{{(32)?}} {{.*}}$r0
+# CHECK:       $r5 = ADD{{(32)?}} {{.*}}$r0
+
+--- |
+  target triple = "riscc-none-elf"
+  define void @reuse_explicit_dead() {
+  entry: br label %loop
+  loop: br label %loop
+  }
+  define void @reuse_nonoverlap() { entry: ret void }
+  define void @overlap_explicit_s2() { entry: ret void }
+  define void @caller_clobber() { entry: ret void }
+  define void @foldable_spill_wins() { entry: ret void }
+  define void @unsafe_store() { entry: ret void }
+  define void @unsafe_mixed_use() { entry: ret void }
+  define void @unsafe_clobber() { entry: ret void }
+  define void @unsafe_same_register() { entry: ret void }
+  define void @optsize_single() optsize { entry: ret void }
+  define void @spill_store_after_last_add() { entry: ret void }
+  define void @spill_store_live_gpr() { entry: ret void }
+...
+
+---
+name: reuse_explicit_dead
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0.entry:
+    liveins: $r1, $r2, $r4, $s2, $s3, $s7
+    successors: %bb.1.loop
+    $r0 = MFS $s2
+    $r0 = MFS $s3
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r2, $r4
+    JMP8 %bb.1.loop
+  bb.1.loop:
+    liveins: $r2, $r4, $s7
+    successors: %bb.1.loop
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r2
+    $r5 = ADD $r1, $r4
+    JMP8 %bb.1.loop
+...
+
+---
+name: reuse_nonoverlap
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r6, $s2, $s3, $s7
+    $r0 = MFS $s2
+    $r0 = MFS $s3
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r4, $r6
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r4
+    ST killed $r2, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r2 = XOR $r4, $r6
+    $r2 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r5 = ADD $r2, $r4
+    RETS implicit $s7, implicit $r3, implicit $r5
+...
+
+---
+name: overlap_explicit_s2
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s2, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r4, $r2
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r2
+    $r0 = MFS $s2
+    $r5 = ADD $r0, $r4
+    RETS implicit $s7, implicit $r3, implicit $r5
+...
+
+---
+name: caller_clobber
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  hasCalls: true
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r6, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r4, $r6
+    CALL $r2, csr_riscc, implicit-def $r2
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r4
+    RETS implicit $s7, implicit $r3
+...
+
+---
+name: foldable_spill_wins
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+  - { id: 1, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r6, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r4, $r6
+    ST killed $r2, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r2 = XOR $r4, $r6
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r4
+    $r2 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r5 = XOR $r2, $r6
+    RETS implicit $s7, implicit $r3, implicit $r5
+...
+
+---
+name: unsafe_store
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r6, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r2, $r4
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r2
+    ST killed $r6, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r4, $r2
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r5 = ADD $r1, $r4
+    RETS implicit $s7, implicit $r3, implicit $r5
+...
+
+---
+name: unsafe_mixed_use
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r2, $r4
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r2
+    $r5 = XOR $r1, $r4
+    RETS implicit $s7, implicit $r3, implicit $r5
+...
+
+---
+name: unsafe_clobber
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  hasCalls: true
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r5, $r6, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r4 = XOR $r5, $r6
+    $r4 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    CALL $r2, csr_riscc, implicit-def $r2
+    $r3 = ADD $r4, $r5
+    RETS implicit $s7, implicit $r3
+...
+
+---
+name: unsafe_same_register
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r2, $r2
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r1
+    RETS implicit $s7, implicit $r3
+...
+
+---
+name: optsize_single
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s2, $s3, $s4, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r2, $r4
+    $r1 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r1, $r2
+    $r0 = MFS $s2
+    $r0 = MFS $s3
+    $r0 = MFS $s4
+    RETS implicit $s7, implicit $r3
+...
+---
+name: spill_store_after_last_add
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 0, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $s7
+    ST killed $r1, %stack.0, 0 :: (store (s16) into %stack.0)
+    $r1 = XOR $r2, $r4
+    $r0 = LD %stack.0, 0 :: (load (s16) from %stack.0)
+    $r3 = ADD $r0, $r2
+    ST killed $r4, %stack.0, 0 :: (store (s16) into %stack.0)
+    RETS implicit $s7, implicit $r3
+...
+---
+name: spill_store_live_gpr
+tracksRegLiveness: true
+noVRegs: true
+frameInfo:
+  maxAlignment: 2
+stack:
+  - { id: 1, type: spill-slot, size: 2, alignment: 2 }
+body: |
+  bb.0:
+    liveins: $r1, $r2, $r4, $r5, $r6, $s7
+    ST killed $r1, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r1 = XOR $r4, $r6
+    $r0 = LD %stack.1, 0 :: (load (s16) from %stack.1)
+    $r3 = ADD $r0, $r2
+    ST killed $r4, %stack.1, 0 :: (store (s16) into %stack.1)
+    $r5 = ADD $r0, $r6
+    RETS implicit $s7, implicit $r3, implicit $r5
+...

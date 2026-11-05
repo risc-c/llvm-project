@@ -6147,6 +6147,14 @@ def mmulhu : Flag<["-"], "mmulhu">, Group<m_Group>,
   HelpText<"Enable RISC-C paired unsigned multiply-high/low">;
 def mno_mulhu : Flag<["-"], "mno-mulhu">, Group<m_Group>,
   HelpText<"Disable RISC-C paired unsigned multiply-high/low">;
+def madds : Flag<["-"], "madds">, Group<m_Group>,
+  HelpText<"Enable RISC-C ADD with an S-register source">;
+def mno_adds : Flag<["-"], "mno-adds">, Group<m_Group>,
+  HelpText<"Disable RISC-C ADD with an S-register source">;
+def mvsh : Flag<["-"], "mvsh">, Group<m_Group>,
+  HelpText<"Enable RISC-C variable shifts">;
+def mno_vsh : Flag<["-"], "mno-vsh">, Group<m_Group>,
+  HelpText<"Disable RISC-C variable shifts">;
 def mmdu : Flag<["-"], "mmdu">, Group<m_Group>,
   HelpText<"Enable the RISC-C multiply-divide extension">;
 def mno_mdu : Flag<["-"], "mno-mdu">, Group<m_Group>,
